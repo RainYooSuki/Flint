@@ -4,10 +4,17 @@
 
 These standards are mandatory when applicable to a change. General contract, documentation, security, and quality rules apply immediately. Target-only structure and composition requirements are gated by the phase applicability matrix below; do not require target crates, registries, or contribution roots before their migration phase introduces them.
 
-The modular architecture in [`ARCHITECTURE.md`](ARCHITECTURE.md) is accepted but **not implemented yet**. Do not assume that target crates, paths, registries, or provider traits exist. Treat a path as real only when it is present in the repository and the architecture document labels it implemented.
+The modular architecture in [`ARCHITECTURE.md`](ARCHITECTURE.md) is **partially implemented**. Do not assume target-only crates, the Rust feature lifecycle registry, active-feature filtering, or completed settings/instance-action slots exist. Treat a path as real only when it is present in the repository and the architecture document labels that phase/milestone implemented.
 
 The system remains a modular monolith until the migration phases in the architecture document are completed. There is no runtime plugin discovery, arbitrary native loading, remote UI loading, or dynamic command registration in the approved scope.
 
+### Current implementation status
+
+The canonical phase-status table is [`ARCHITECTURE.md`](ARCHITECTURE.md#canonical-migration-phase-status); do not duplicate phase-status details here.
+
+Current summary: Phase 1 and Phase 2 provider **registry/selection milestones** are implemented, but both phases remain **partial** because full typed provider contexts/ports and full checker port enforcement are deferred to Phase 4/5. Phase 3 page/navigation contributions are implemented, while `settingsSections`/`instanceActions` remain unpopulated and unmounted. The active checker is a `--phase 2` milestone gate, not full-phase acceptance. Phase 4/5 remain pending.
+
+Future work follows this partial-Phase 1/2 plus partial-Phase 3 boundary: use the implemented provider registries for mod/loader changes, use page/navigation contributions for page/nav work, do not claim or populate an unmounted settingsSection/instanceAction slot, and do not treat Phase 3+ or full-port checker behavior as active until that gate is explicitly advanced.
 Canonical ownership: [ARCHITECTURE.md](ARCHITECTURE.md) is the detailed source for boundaries, provider/registry semantics, lifecycle, frontend contributions, and phases. This document owns process, checklists, and concise mandatory summaries; it links to the architecture instead of duplicating detailed mechanics. The ADR records rationale/consequences, and [README.md](README.md) is the index/source-of-truth map.
 
 ## Sources of truth and precedence
@@ -24,19 +31,19 @@ If two sources conflict about a public command, event, DTO, or user-visible rule
 
 ## Phase applicability and transition matrix
 
-The target architecture is phase-gated. A rule is not mandatory before the structure it governs exists, but work must always follow a compliant current-phase path. Requirements introduced by a phase apply to new work in that phase and to migrated code; after that phase is accepted, the applicable prohibition remains binding.
+The target architecture is phase-gated. A rule is not mandatory before the structure it governs exists, but work must always follow a compliant current-phase path. Requirements introduced by an implemented phase milestone apply to new work and migrated code even while full phase acceptance remains pending; after a phase is accepted, the applicable prohibition remains binding.
 
 A **target-only** item is not required before the named phase and must be marked N/A with that phase basis. **Mandatory now** items apply to the current modular monolith. A phase gate is satisfied only when its stated structure/checker exists and its acceptance criteria pass; documentation labels and implementation status must match.
 
-| Rule group | Baseline / before Phase 1 | Phase 1: ModProvider | Phase 2: LoaderProvider | Phase 3: Frontend registry | Phase 4: Workspace/modules | Phase 5: Hardening |
+| Rule group | Baseline / transition | Phase 1: ModProvider | Phase 2: LoaderProvider | Phase 3: Frontend registry | Phase 4: Workspace/modules | Phase 5: Hardening |
 | --- | --- | --- | --- | --- | --- | --- |
 | Contracts, documentation, security, error/file/network rules | Mandatory now. Update the affected authoritative contract for public behavior; both RPC contracts only for a shared model/command/event surface. | Mandatory. | Mandatory. | Mandatory. | Mandatory. | Mandatory; all claims must match implemented behavior. |
 | Dependency direction and cycle hygiene | Apply the ownership rules to existing modules: no new cycles, no domain logic added to the Tauri wrapper, no private cross-module reach, and no unrelated host coupling. Full crate allowlists are target-only. | Mod pilot stays inside approved current-crate boundaries; no private host import. | Loader pilot follows the same rule. | Frontend features may import only their own subtree plus core/shared; no cross-feature imports, including public entries. | Full crate and TypeScript allowlists become mandatory. | Strict allowlists; no temporary boundary waiver remains. |
-| Provider API, versioned capabilities, registry, and typed contexts | Existing branch implementations are the baseline. A new pre-phase provider may extend the existing single dispatch location with one implementation path and a migration note; parallel dispatch is forbidden. | ModProvider contract, per-capability selection-key bindings, full compatibility/selection predicate, `ModProviderContext`, independent leaves initialized by lexicographic provider ID, and registry or equivalent dispatch are required. After acceptance, new mod hard-coded provider switches are prohibited. | Loader equivalent is required. After acceptance, new loader hard-coded switches are prohibited. | Providers remain behind typed architecture boundaries; no frontend provider branching. | Extract provider/API crates and contexts; all provider implementations use approved ports. | Legacy provider branches are removed. |
-| FeatureDescriptor, Rust feature registry, startup lifecycle, and Rust composition root | Target-only; not required. Continue using the current module/command structure. | A provider registry or equivalent is required for the pilot, but full feature descriptors are target-only. | Provider registry remains required; full feature registry is target-only. | Frontend registry is introduced; Rust feature registry and host availability snapshot remain target-only. Phase 3 renders the static compiled set. | FeatureDescriptor, feature registry, lifecycle coordinator, affected-set propagation, RuntimeFailed/degraded transitions with the every-Required-Ready invariant, availability snapshot/filtering, and explicit Rust composition root are mandatory. | Required for all features; lifecycle behavior is fully tested. |
-| Frontend contribution registry and composition root | Target-only. Changes may follow the current shell/navigation pattern, but must be isolated, state-owned correctly, and documented as transitional. | Current pattern allowed; do not introduce a partial contribution registry. | Current pattern allowed; do not introduce a partial contribution registry. | Typed contributions/composition root are mandatory for new navigation, pages, settings sections, and instance actions. The shell renders the statically registered compiled feature set; no host availability IPC is required. After acceptance, new hard-coded additions are prohibited. | The shell consumes the Phase 4 host active-feature snapshot and filters/mounts contributions by active feature state. | Strict contribution rules; no hard-coded shell feature list remains. |
-| Tauri command thinness and lifecycle | Keep changed commands thin and preserve current compile-time registration. | Migrated ModProvider commands are thin adapters; direct business logic is prohibited. | Migrated loader commands are thin adapters. | Frontend calls use shared typed API/event clients; contributions render the static compiled set. | All commands are thin adapters; RuntimeFailed transition, unavailable-command gating, reverse shutdown, and Tauri `RunEvent::Exit` integration are mandatory. | Reviewed and tested end to end through CI. |
-| Architecture checker and CI gate | Planned only; it does not exist. Use review and the current-phase rules until Phase 1 establishes the gate. | `scripts/check-architecture.mjs` v1 and CI gate are required for phase acceptance. | Extend the allowlist for loader/provider boundaries. | Add TypeScript AST/contribution/dynamic-import checks with no cross-feature imports. | Add `cargo metadata` crate allowlists and full frontend import graph. | Remove temporary waivers; use strict allowlists only. |
+| Provider API, versioned capabilities, registry, and typed contexts | Prior branch baseline is superseded by implemented Phase 1/2 registry/selection milestones; both full phases remain partial. Future provider work starts from `provider_api.rs` and the current adapter leaves. | **Milestone implemented; phase partial:** contract/registry, per-capability selection keys, deterministic full-requirement selection, and mod provider leaves. Full typed ports/checker enforcement pending. | **Milestone implemented; phase partial:** loader list/install contexts, six independent leaves, progress sink, and 75s/600s split. Full `LoaderProviderContext` ports pending. | Providers remain in the single package behind current typed boundaries; no frontend provider branching. | **Pending:** extract provider/API crates and finish full runtime lifecycle/typed ports. | **Pending:** remove helper/import waivers and enforce full typed ports. |
+| FeatureDescriptor, Rust feature registry, startup lifecycle, and Rust composition root | Target-only; not required. Current Rust is one package with no feature registry/lifecycle. | Provider registry required for pilot; full feature descriptors still target-only. | Provider registry remains; full feature registry still target-only. | Frontend page/nav registry is implemented; Rust feature registry and host availability snapshot remain target-only. `settingsSections`/`instanceActions` contracts validate but are empty/unmounted. | **Pending:** FeatureDescriptor, feature registry/lifecycle, RuntimeFailed transitions, availability snapshot/filtering, and explicit Rust composition root. | **Pending:** full lifecycle/feature coverage. |
+| Frontend contribution registry and composition root | Prior hard-coded shell is superseded for pages/navigation by the implemented Phase 3 subset. | Current pattern allowed for not-yet-migrated frontend UI. | Current pattern allowed; do not introduce partial slots. | **Partial:** page/navigation contributions, validation, and frozen registry are implemented. Settings/action contracts/validation exist but are unpopulated/not mounted; existing UI remains page-local. Phase 3 checker gate is not active. | **Pending:** host active-feature snapshot/filtering and remaining slot population/migration. | **Pending:** strict contribution rules and no hard-coded shell feature list. |
+| Tauri command thinness and lifecycle | Keep changed commands thin and preserve current compile-time registration. | **Milestone implemented:** mod commands use registry-selected providers; wrappers remain in `lib.rs`. | **Milestone implemented:** loader commands use registry-selected providers; wrappers remain in `lib.rs`. | Frontend calls use shared typed API/event clients; page/nav contributions render statically. Transitional direct-Tauri frontend imports remain waived until later phases. | **Pending:** all commands thin, RuntimeFailed transition, unavailable gating, reverse shutdown, and `RunEvent::Exit` integration. | **Pending:** end-to-end hardening through CI. |
+| Architecture checker and CI gate | **Milestone implemented:** phase-aware checker/tests and `--phase 2` dedicated/release gate exist. They enforce module/provider import/selection boundaries, forbidden std/process/fs patterns, and exact allowlists; reqwest/shared-client and reviewed parent-helper waivers are intentional. Full typed ports are not enforced; Phase 3+ gates are inactive. | **Milestone implemented:** ModProvider import/selection/forbidden-pattern boundaries covered; full typed-port checker pending Phase 4/5. | **Milestone implemented:** loader provider boundaries covered; full `LoaderProviderContext` port enforcement pending Phase 4/5. | Static TypeScript/contribution/dynamic-import checks exist in checker/tests; advancing the gate is pending. | **Pending:** Cargo workspace metadata allowlists, full frontend graph gate, and full typed-port enforcement. | **Pending:** remove waivers and enforce strict allowlists/full ports. |
 
 ### Mandatory before the target exists
 
@@ -46,19 +53,19 @@ The following are not phase-gated and must be followed now:
 - Update the authoritative contract for a public behavior change. Update both [`API_CONTRACT.md`](API_CONTRACT.md) and [`FEATURE_API_CONTRACT.md`](FEATURE_API_CONTRACT.md) only when the shared model, command, or event surface is affected.
 - Apply security, path/archive/network safety, secret redaction, bounded I/O, and no-panic rules to all changed code.
 - Keep changes inside the owning existing module or adapter, avoid new cycles, and do not put business logic in Tauri command wrappers.
-- Do not claim target crates, registries, contexts, contribution roots, or checkers exist before implementation.
+- Do not claim target-only extracted crates, Rust feature lifecycle/composition root, active-feature filtering, mounted settings/instance-action slots, or future checker phase gates exist/are active before implementation.
 - Do not introduce copied names, branding, identifiers, prose, code, or unrelated product references.
 
-### Compliant pre-phase path
+### Current transition path (Phase 1/2 milestones implemented; full phases partial; Phase 3 partial)
 
-A change made before its target structure exists is compliant when it:
+A change in the current single-package/partial-Phase-3 state is compliant when it:
 
 1. Preserves the current contract and places behavior in the existing owner module with the narrowest necessary surface.
 2. Avoids creating an orphan partial target structure. The relevant phase introduces the contract/registry/crate rather than a pre-phase file tree with no lifecycle owner.
-3. Uses the current provider dispatch only as a single, explicit implementation path. Do not add a second parallel switch, and do not add a new hard-coded provider branch after that provider phase is accepted.
-4. May use the current frontend shell/navigation pattern only before Phase 3. New frontend navigation, page, settings, or instance-action wiring after Phase 3 is prohibited; it must be a registered contribution.
+3. Uses the implemented provider registries for mod/loader work. Do not reintroduce provider-specific call-site branches or add a parallel dispatch path.
+4. Uses the implemented page/navigation contribution registry for new pages/navigation. `settingsSections` and `instanceActions` contracts/validation exist but their slots are unpopulated and unmounted; do not claim those slots migrated or add unrendered contributions. Existing settings/quick actions remain page-local until a scoped slot renderer/population migration is completed.
 5. Records target-only checklist items as `N/A` with the phase basis, rather than falsely claiming the target exists or silently omitting the rule.
-6. Uses CI/review for the current phase. Before `scripts/check-architecture.mjs` exists, the reviewer checks the applicable matrix manually; no automated enforcement may be claimed.
+6. Uses the implemented checker/tests and active `--phase 2` CI/release gate. Phase 3+ checker behavior is not claimed active until the workflow/checker gate is advanced explicitly.
 
 
 ## Before-work checklist
@@ -73,7 +80,7 @@ A change made before its target structure exists is compliant when it:
 - [ ] Draw the intended dependency direction and check it against the current phase and forbidden/cyclic imports.
 - [ ] Identify filesystem, network, archive, process, secret, and path-safety risks.
 - [ ] Decide lifecycle/failure behavior: affected-set propagation, effective criticality (any affected Required is fatal), Required-Ready degraded invariant, dependency skipping, unavailable commands, diagnostic StartupFailed cleanup, partial success, cleanup/shutdown, event semantics, retry, cancellation, and stale UI requests.
-- [ ] Identify the CI checks needed for the change, including the phase-current architecture checker once it exists. Do not substitute reviewer-run local commands for CI.
+- [ ] Identify the CI checks needed for the change, including the implemented architecture checker at the currently active `--phase 2` gate. Do not substitute reviewer-run local commands for CI.
 - [ ] Define an independent logic reviewer before handoff.
 - [ ] Decide whether the work is expected to be committed locally; do not push unless requested.
 
@@ -112,10 +119,10 @@ Internal refactors must preserve the public contract. A passing internal compila
 
 ## Adding a feature or module
 
-Apply this section in the phase that introduces the relevant descriptor, registry, contribution, or extracted module. Before that phase, use the phase applicability matrix and mark target-only items `N/A` with the phase basis. [`ARCHITECTURE.md`](ARCHITECTURE.md) is canonical for descriptor fields, initialization order, lifecycle failures, provider selection, contribution validation, and dependency boundaries.
+Current status: Phase 1/2 provider registry/selection milestones are implemented, but both phases remain partial while full typed provider ports and full checker enforcement are Phase 4/5 work. New mod/loader provider work belongs in the implemented `provider_api.rs` plus `mods/providers.rs` or `loaders/providers.rs` boundaries. Phase 3 page/navigation additions belong in frontend feature modules and the explicit `src/app/composition.ts` registry. The Rust `FeatureDescriptor`/lifecycle fields below remain target-only Phase 4; `settingsSections`/`instanceActions` validate but are unpopulated/unmounted and must not be claimed migrated.
 
 1. **Define ownership.** Choose one cohesive responsibility and record the intended boundary: core service, feature module, provider, adapter, or shared utility. Do not use a new crate or folder as a substitute for an ownership decision.
-2. **Declare the descriptor.** Use the canonical feature contract. Include the stable feature ID, `feature_version`, `api_version`, `startup_policy`, required features, versioned provider capability requirements, one initialization entry point, and backend contributions. Registration data is side-effect free.
+2. **Declare the descriptor.** For a Phase 4 Rust feature, use the canonical Rust feature contract: stable ID, `feature_version`, `api_version`, `startup_policy`, required features, versioned provider requirements, one initialization entry point, and backend contributions. For the implemented Phase 3 frontend page/navigation registry, use the current frontend `FeatureDescriptor` contract. Registration data is side-effect free.
 3. **Initialize safely.** Validate prerequisites before side effects; receive dependencies through typed contexts; start no owned worker until initialization succeeds. On failure, clean every partial resource before returning the error. Follow the canonical startup/runtime states and reverse shutdown order.
 4. **Register contributions.** Use the approved registry slot, stable feature-prefixed IDs, declared requirements, and deterministic order. Reject duplicates instead of overriding and do not mutate a frozen registry. After the relevant registry phase, do not add a central hard-coded feature/provider switch.
 5. **Wire boundaries.** Add thin host/command/API adapters where public behavior changes, explicitly register commands in the compile-time handler, and add frontend contributions through the composition root. No feature imports another frontend feature module or its public entry; cross-feature use goes through typed core/shell contracts or contribution slots.
@@ -126,16 +133,17 @@ Apply this section in the phase that introduces the relevant descriptor, registr
 
 [`ARCHITECTURE.md`](ARCHITECTURE.md) is canonical for the detailed provider descriptor, compatibility/selection predicate, context ports, lifecycle, and port-enforcement mechanics. The following implementation rules are mandatory summaries.
 
-- These rules apply to Phase 1/2 provider work and all later provider work. Before a provider phase, the compliant pre-phase path may extend the existing single dispatch location. After that phase is accepted, new hard-coded provider branches are prohibited.
-- Define the provider trait in the provider API contract. During Phase 1/2 it may live inside the current crate; Phase 4 extracts it to the API crate. Features depend on the trait, not a concrete provider.
+- The Phase 1/2 registry/selection milestones are implemented, but both phases remain partial until full typed provider contexts/ports and full checker enforcement land in Phase 4/5. Future mod/loader provider work starts from the implemented `provider_api.rs` and adapter registries; do not reintroduce hard-coded provider branches or parallel dispatch.
+- Define provider behavior in the provider contract. It currently lives in `src-tauri/src/provider_api.rs` plus the mod/loader provider modules inside the single package; Phase 4 extraction into API crates is pending. Features depend on the trait, not a concrete provider.
+- Current mod/loader provider adapters still use reviewed transitional local helper imports from `mods.rs`/`loaders.rs`; extracting those helpers and expiring Phase 5 waivers remains later-phase work.
 - Provider descriptors expose `provider_version`, `provider_api`, and capabilities. Each capability binds `{ id, api_version, selection_keys }`; selection keys are not a separate provider-level list.
 - Providers are independent leaves. Do not declare provider-to-provider dependencies, build a provider dependency graph, or run provider-cycle detection. Cross-provider coordination belongs in core services or feature orchestration.
-- Initialize provider leaves in deterministic lexicographic provider-ID order after descriptor/capability validation. Do not use `HashMap` iteration, filesystem discovery, or registration order.
-- Select providers by the full feature requirement: host provider-API compatibility, capability ID and capability-API compatibility, provider-version constraint, optional selection key bound to that capability, and active provider state. Exactly one provider must match; zero is unavailable and multiple is ambiguous. No fallback.
-- Map public enum values such as `ModSource` and `LoaderKind` to stable selection keys in one adapter location. After the relevant provider phase, do not add call-site `match` branches in commands, UI-facing services, or shared helpers.
+- Provider registries sort and validate provider leaves deterministically by provider ID after descriptor/capability validation. Full provider runtime lifecycle/initialization state remains pending Phase 4; do not use `HashMap` iteration, filesystem discovery, or registration order.
+- Select providers by the full feature requirement: host provider-API compatibility, capability ID and capability-API compatibility, provider-version constraint, optional selection key bound to that capability, and active provider state. Exactly one provider must match; zero is unavailable and multiple is ambiguous. No fallback. Current active state means a successfully constructed immutable registry entry; mutable provider health/lifecycle is pending Phase 4.
+- Map public enum values such as `ModSource` and `LoaderKind` to stable selection keys in one adapter location. For the implemented selection milestones, do not add call-site `match` branches in commands, UI-facing services, or shared helpers.
 - Keep provider payloads private and normalize to public DTOs at the boundary. Provider IDs, versions, capabilities, and raw payloads do not leak into public DTOs unless a contract change introduces them.
-- Providers receive only typed `ModProviderContext`/`LoaderProviderContext` ports for network, safe paths/archive/process access, progress, deadline/cancellation, scoped settings/credentials, and logging. No Tauri handle, raw settings path, unrestricted filesystem root, or unrestricted process handle.
-- The planned `scripts/check-architecture.mjs` uses Cargo metadata plus Rust source/import checks to reject manifests, imports, or calls that bypass approved ports. Temporary exceptions must be explicit, owned, scoped, and phase-expiring.
+- Providers receive typed `ModProviderContext`/`LoaderProviderContext` operation contexts. Current contexts hide Tauri handles and centralize shared clients/credentials/root/progress, but the full network/path/archive/process/settings/logging/cancellation port decomposition remains Phase 4/5 work. No Tauri handle, raw settings path, unrestricted filesystem root, or unrestricted process handle.
+- The implemented `scripts/check-architecture.mjs` at `--phase 2` enforces module/provider import and selection boundaries, explicitly forbidden std/process/fs patterns, and exact allowlists. It intentionally allows reqwest/shared-client use and reviewed parent-helper waivers for provider adapters. It does **not** enforce full typed network/path/process/settings/logging/cancellation ports; that is an explicit Phase 4/5 acceptance gate. Temporary exceptions must be explicit, owned, scoped, and phase-expiring.
 - Mod providers never execute a downloaded mod archive. Loader providers run only trusted installer flows with bounded processes, captured/redacted output, timeouts, and safe archive policy.
 - Do not fall back to another provider silently. Provider-specific credentials, headers, and error bodies must not leak into logs, DTOs, events, or notices.
 - Provider progress publication uses the shared progress port. Command results and committed durable state are authoritative; default progress events are best-effort. If a contract marks an event as required protocol, delivery failure must return an error or typed partial-success without rolling back committed state.
@@ -147,17 +155,18 @@ Apply this section in the phase that introduces the relevant descriptor, registr
 
 ### Contributions
 
-- Phase 3 introduces the typed frontend contribution registry and composition root. It renders the statically registered, compiled feature set and does not depend on Rust lifecycle state or host availability IPC. Phase 4 adds the read-only host active-feature snapshot and availability filtering.
-- Navigation, pages, settings sections, and instance actions are declared through typed contributions from the explicit composition root. The shell must not keep a second hard-coded feature/navigation list.
+- Phase 3 page/navigation registry and explicit static composition root are implemented. Page/navigation contributions render the compiled feature set and do not depend on Rust lifecycle state or host-availability IPC. `settingsSections` and `instanceActions` contracts/validation exist but are unpopulated/unmounted; existing settings/quick-action UI remains page-local. Phase 4 adds host active-feature snapshot/filtering.
+- New pages/navigation must use typed contributions from the explicit composition root; the shell must not keep a second hard-coded page/navigation list. Do not populate or claim migrated settings-section/instance-action slots until their shell renderer and population migration are completed.
 - Frontend contribution IDs are feature-prefixed and globally unique across all frontend slots. A page contribution ID is canonical contract data; navigation uses `targetPageId`.
 - Reject duplicate contribution IDs across any slot and unknown/ambiguous `targetPageId` targets before rendering. Order by explicit `order`, then stable ID.
 - A frontend feature may import only its own subtree plus frontend core/shared contracts. It must not import another feature module, including that feature public entry. Cross-feature composition/state/actions use typed core contracts, app-shell services/contexts, or contribution slots.
 - Static imports and one-string-literal local `lazy(() => import("./literal-path"))` are allowed only inside the importing feature subtree or an explicitly allowlisted local chunk. Variable/template specifiers, absolute paths, file/HTTP URLs, runtime string loaders, remote code, `eval`, `new Function`, and module federation are prohibited.
-- The planned TypeScript AST checker enforces the strict import policy: a feature may import only its own subtree plus frontend core/shared, and all cross-feature imports including public entries are violations.
+- The implemented TypeScript AST checker rules enforce the strict target import policy: a feature may import only its own subtree plus frontend core/shared, and all cross-feature imports including public entries are violations. These Phase 3 checks exist in the checker/tests but are not the active CI gate yet; the current gate is `--phase 2`.
 - Contribution registration is pure declaration. Do not perform I/O, subscriptions, timers, or store creation at module evaluation. Freeze the registry before render.
-- Wrap page/settings contributions in a safe error boundary. Contribution loaders are component/lazy-function references; the registry cannot runtime-prove an arbitrary string path.
+- Page contributions are wrapped by the existing contribution error boundary. When the settings-section slot is eventually mounted it must receive equivalent isolation. Contribution loaders are component/lazy-function references; the registry cannot runtime-prove an arbitrary string path.
 
 ### State ownership
+Current Phase 3 ownership: `src/app/App.tsx` owns shared settings/account/instance/query/action state and exposes `AppPageContext` to page modules. Feature pages own local presentation state; settings sections remain inside the settings page and quick/instance actions remain page-local. `settingsSections`/`instanceActions` contribution state is not mounted. The rules below are the target ownership model.
 
 - App/shell state is limited to cross-feature presentation and selection: active page contribution ID, selected instance, effective game directory, global notices, registry, and typed shell services.
 - Each feature owns its query results, non-shared drafts, progress, modals, and action busy/error state.
@@ -166,6 +175,7 @@ Apply this section in the phase that introduces the relevant descriptor, registr
 - Do not introduce a mutable global singleton to avoid explicit dependency passing.
 
 ### API and event use
+Current Phase 3 still has reviewed transitional direct Tauri event/dialog/opener imports in the shell, accounts, saves, and versions/downloads modules, tracked by Phase 5 checker waivers. The active CI/release gate remains `--phase 2`; do not claim full typed API/event adapter migration. The target rules below remain mandatory for new work and later cleanup.
 
 - Call commands through the shared typed API client; keep TypeScript request/response types identical to the serialized contract.
 - Type event payloads, keep literal names contract-compatible, and clean up every listener on rejected and resolved registration.
@@ -222,7 +232,7 @@ Apply this section in the phase that introduces the relevant descriptor, registr
 - Treat malformed local metadata, provider responses, downloaded archives, and user-selected paths as expected failure modes, not panics.
 - Validate early and fail with a user-actionable message. Preserve enough technical context for safe logs.
 - Classify failures: invalid input, unsupported capability, unavailable external service, permission/path error, malformed data, timeout, partial operation, and internal defect. Map them consistently at the boundary.
-- Follow the canonical startup/runtime lifecycle in [`ARCHITECTURE.md`](ARCHITECTURE.md). Failure propagates to the failed feature plus all transitive dependents. If the affected set contains any `Required` feature, startup takes `StartupFailed` with feature/provider/core cleanup, while runtime takes `RuntimeFailed` -> `Stopping` -> `Stopped` or exit after diagnostics. An optional-only affected set may leave the host `Degraded` only while every `Required` feature remains `Ready`; a `Required` feature must never remain `Ready` with a non-ready dependency/provider. There is no feature-level `Degraded`.
+- The Rust feature lifecycle/registry is **not implemented yet** (Phase 4). The canonical target summary for Phase 4 is: failure propagates to the failed feature plus all transitive dependents; any affected `Required` feature takes `StartupFailed` with feature/provider/core cleanup or `RuntimeFailed` -> `Stopping` -> `Stopped`/exit; an optional-only affected set may leave the host `Degraded` only while every `Required` feature remains `Ready`; a `Required` feature must never remain `Ready` with a non-ready dependency/provider. There is no feature-level `Degraded`. Current Phase 1/2 provider registries are immutable per-operation and do not implement this host lifecycle yet.
 - A command owned by or dependent on a non-ready feature returns a concise unavailable-feature error. It must not fall back, perform partial work, or access I/O directly.
 - Initialization failure is atomic: the feature cleans its own partial resources before returning the error. Successful features shut down in reverse initialization order; shutdown is idempotent and errors are logged without hiding the primary failure.
 - Command results and committed durable state are authoritative. Default progress-event delivery is best-effort and does not fail a successful command or roll back committed state. If a contract marks an event as a required protocol step, delivery failure returns an error or typed partial-success result and is never reported as success.
@@ -281,8 +291,8 @@ Apply this section in the phase that introduces the relevant descriptor, registr
 
 ## Documentation and comments
 
-- Documentation must clearly label **Implemented**, **Planned**, and **Deferred** behavior.
-- Never describe a target crate, module, registry, provider, folder, context, composition root, or architecture checker as if it already exists. Planned structures and phase gates require explicit labels.
+- Documentation must clearly label **Implemented**, **Partially implemented**, **Planned**, and **Deferred** behavior.
+- Never describe target-only extracted crates, full typed provider ports, the Rust feature lifecycle/composition root, active-feature filtering, mounted settings/instance-action slots, or later-phase checker gates as implemented/active. Describe the Phase 1/2 registry/selection milestones and partial Phase 3 surface accurately.
 - Update the affected authoritative contract for every public behavior change. Update both RPC contract files only when the affected shared model, command, or event surface appears in both. Update architecture/standards when a boundary or phase rule changes.
 - Use only relative Markdown links that resolve inside `docs/`. Do not link to another checkout, an external site, or a file outside the documentation tree.
 - Keep headings concrete and stable. Avoid marketing language, invented claims, and comparisons to unrelated products.
@@ -311,6 +321,7 @@ Do not mention unrelated products anywhere in code, identifiers, comments, docs,
 - Favor clear ownership of async work, timeouts, cleanup, and partial-failure reporting.
 
 ## New-module checklist
+Current status: Phase 1/2 provider registry/selection milestones are implemented but both phases remain partial; new mod/loader providers extend the existing registry/leaves and their Phase 2 milestone checker coverage, not a full typed-port checker. Phase 3 page/navigation modules use the contribution registry; settings/instance-action slot items remain pending and must be marked accordingly. Rust `FeatureDescriptor`/lifecycle/composition-root items are Phase 4 target-only.
 
 Use this checklist when adding a module, feature, provider, or major service boundary in the phase that introduces it. Before that phase, apply the phase applicability matrix and mark target-only checks `N/A` with the phase basis.
 
@@ -326,7 +337,7 @@ Use this checklist when adding a module, feature, provider, or major service bou
 - [ ] Failure propagation covers the failed feature plus all transitive dependents. Effective criticality makes any affected `Required` feature fatal (`StartupFailed` or `RuntimeFailed`), `Degraded` is allowed only while every `Required` remains `Ready`, no `Required` remains `Ready` with a non-ready dependency/provider, and diagnostic `StartupFailed` cleanup covers initialized providers and core.
 - [ ] Every frontend contribution has a globally unique feature-prefixed ID across all slots, an explicit slot/order, and declared requirements; navigation identifies its page with `targetPageId`.
 - [ ] After the relevant registry phase, no central hard-coded feature/provider branch was added.
-- [ ] Where crates exist, Cargo metadata and the planned architecture checker verify layer rules; no core-to-host, module-to-host, module-to-private-module, provider-to-host, or port-bypass edge exists.
+- [ ] The implemented checker passes its active `--phase 2` CI gate for provider boundaries. Where later crates/workspace exist, the Phase 4 Cargo metadata/allowlist gate must be activated before claiming full layer enforcement.
 - [ ] Frontend imports are limited to the feature own subtree plus core/shared; no cross-feature imports exist, including public feature entries. Cross-feature composition uses typed core/shell contracts or contribution slots.
 - [ ] Tauri types and command macros remain in the host/adapters layer.
 - [ ] New commands are thin, explicitly registered in the compile-time handler, and documented.
@@ -345,7 +356,7 @@ Use this checklist when adding a module, feature, provider, or major service bou
 
 ## Code-review checklist
 
-The reviewer is independent of the implementer, reviews logic and current-phase boundary correctness, and does not execute builds/tests. Apply the phase applicability matrix first: target-only checks are `N/A` before their phase, while mandatory current-phase checks still apply. Reviewing is not a substitute for CI execution.
+The reviewer is independent of the implementer, reviews logic and current-phase boundary correctness, and does not execute builds/tests. Apply the phase applicability matrix first: target-only checks are `N/A` before their phase, while mandatory current-phase checks still apply. Reviewing is not a substitute for CI execution. Current review baseline: Phase 1/2 registry/selection milestones implemented but both phases partial, Phase 3 page/navigation only, checker active at `--phase 2` for import/selection/forbidden-pattern boundaries and exact allowlists (not full typed ports); full port enforcement, Rust feature lifecycle/Phase 4/5, and mounted settings/instance-action slots remain out of scope until their phases land.
 
 ### 1. Correctness and logic
 
@@ -366,7 +377,7 @@ The reviewer is independent of the implementer, reviews logic and current-phase 
 - [ ] Tauri types, `AppHandle`, event emission, and command macros remain in host/adapters.
 - [ ] When the Rust composition root exists, it is the only place that instantiates concrete feature/provider implementations; before Phase 4, provider registration follows the approved pilot path.
 - [ ] When the frontend composition root exists in Phase 3, it is the only place that imports concrete modules for assembly; before then, current shell changes follow the compliant pre-phase path. Every feature import stays within its own subtree plus frontend core/shared; no cross-feature import, including a public entry, is allowed.
-- [ ] No new Cargo or TypeScript dependency creates an avoidable cycle or expands a public layer unnecessarily. Cargo/TypeScript module systems alone do not enforce arbitrary allowlists; the planned `scripts/check-architecture.mjs` must check cargo metadata, Rust source/imports, and TypeScript AST edges, including rejection of every cross-feature frontend import.
+- [ ] No new Cargo or TypeScript dependency creates an avoidable cycle or expands a public layer unnecessarily. Cargo/TypeScript module systems alone do not enforce arbitrary allowlists; the implemented checker supplies the active `--phase 2` Rust/TypeScript gate, while Phase 3+ Cargo/full-AST gates must be advanced explicitly before they are claimed active.
 - [ ] Tauri command handlers are thin and delegate behavior to feature/application services.
 
 ### 3. Contracts and models
@@ -434,7 +445,7 @@ The reviewer is independent of the implementer, reviews logic and current-phase 
 
 ### CI authority and completion
 
-- CI is the build/test authority for the change. A green local build does not replace CI evidence. Once Phase 1 establishes it, the phase-current `scripts/check-architecture.mjs` result is required and must not be replaced by an informal review claim.
+- CI is the build/test authority for the change. The dedicated architecture workflow and release workflow currently require a `--phase 2` milestone gate: module/provider import and selection boundaries, forbidden std/process/fs patterns, and exact allowlists. It intentionally allows reqwest/shared-client and reviewed parent-helper waivers and does not enforce full typed ports. Phase 3+, full typed-port, and Phase 4/5 gates remain pending advancement. A green local build or informal review does not replace CI evidence.
 - CI failures go back to the implementer. The reviewer does not rerun the build, test suite, or architecture checker locally to diagnose them.
 - Do not mark work complete while required CI checks are failing or uncollected. If the repository has no CI coverage for a required check, record that gap explicitly and add or schedule verification through the appropriate scoped work.
 - Do not push, publish, tag, or release unless the task explicitly requests it.

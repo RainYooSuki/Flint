@@ -2,19 +2,33 @@
 
 ## Document status
 
-This document is the canonical detailed source for architecture boundaries, provider/registry semantics, lifecycle, frontend contributions, and migration phases. It defines the baseline, the accepted target design, and the migration path between them.
+This document is the canonical detailed source for architecture boundaries, provider/registry semantics, lifecycle, frontend contributions, and migration phases. It defines the implemented baseline, the accepted target design, and the migration path between them.
 
 | Label | Meaning |
 | --- | --- |
 | **Implemented** | Present in the repository at the recorded baseline. |
+| **Partially implemented** | A named milestone is present, but the full target or full phase is not complete. |
 | **Planned** | Approved target design that has not been implemented yet. |
 | **Deferred** | Explicitly outside the current design and requires a separate decision. |
 
-Baseline: `main` at local commit `188f359`, with a clean worktree when this document was written.
+Baseline source commit: `9731c19`. The four architecture documents are the only worktree changes; this document owns the canonical phase-status table below.
 
-Important boundary: the current application is a **modular monolith**. The target Cargo workspace, `flint-core`, feature/provider API crates, feature modules, provider registries/contexts, lifecycle coordinator, frontend contribution registry, and `scripts/check-architecture.mjs` described below **do not exist yet**. No target path is an implemented path merely because it appears in this document.
+### Canonical migration phase status
 
-Target-only requirements are phase-gated. [DEVELOPMENT_STANDARDS.md](DEVELOPMENT_STANDARDS.md) defines the transition matrix and the compliant path for work performed before the relevant target structure exists.
+| Area | Status |
+| --- | --- |
+| **Rust structure** | A single Cargo package rooted at `src-tauri`. No Cargo workspace or extracted core/API/feature/provider crates exists yet. |
+| **Phase 1: ModProvider** | **Partial: pilot milestone implemented; full phase pending.** Generic versioned provider contracts/registry and mod provider adapters/leaves are implemented in `provider_api.rs` and `mods/providers.rs`, and shared mod operations select through the registry. Full typed provider network/path/process/settings/logging/cancellation ports and full checker enforcement remain open for Phase 4/5; provider-local helper waivers also remain. |
+| **Phase 2: LoaderProvider** | **Partial: loader registry/leaf milestone implemented; full phase pending.** `loaders/providers.rs` has six independent loader leaves, typed list/install contexts, a progress sink, deterministic selection, and the preserved 75-second metadata/600-second installer timeout split. Full `LoaderProviderContext` port decomposition and full checker enforcement remain open for Phase 4/5. |
+| **Phase 3: Frontend page/navigation registry** | **Implemented milestone; Phase 3 not fully complete.** Typed contracts, validation, the frozen registry, and the explicit static composition root are in `src/core/contributions.ts`, `src/app/composition.ts`, and `src/app/`; page and navigation rendering are registry-driven. `settingsSections` and `instanceActions` contracts/validation exist but are intentionally unpopulated; their UIs remain inside page components and those slots are not rendered/migrated yet. |
+| **Architecture checker and CI** | **Implemented milestone at Phase 2; full port enforcement pending.** `scripts/check-architecture.mjs` and its tests run through the dedicated `architecture.yml` workflow and release workflow at `--phase 2`. The active checker enforces module/provider import and selection boundaries, explicitly forbidden std/process/fs patterns, and exact allowlists, while intentionally allowing reqwest/shared-client and reviewed parent-helper waivers for provider adapters. It does **not** yet enforce full typed network/path/process/settings ports; full port enforcement is an explicit Phase 4/5 gate. Phase 3+ checker gates are not active yet. |
+| **Phase 4: Workspace/module extraction and Rust feature lifecycle** | **Pending.** No Cargo workspace/extracted crates, Rust `FeatureDescriptor`/feature lifecycle registry/Rust composition root, or host active-feature snapshot/filtering exists. |
+| **Phase 5: Hardening and documentation closeout** | **Pending.** Temporary transitional waivers and remaining migration work continue. |
+| **Public RPC contract** | Existing public commands, DTOs, and events remain unchanged. |
+
+Important current boundary: the application is still a **modular monolith**. Provider contract/registry and loader/provider pilot milestones are implemented inside the current structure, and the frontend page/navigation contribution registry is implemented. Full typed provider port decomposition, full provider lifecycle, the Cargo workspace, extracted API/feature/provider crates, Rust feature lifecycle registry/composition root, and host active-feature availability filtering remain planned. No target path is an implemented path merely because it appears in this document.
+
+Target-only requirements are phase-gated. [`DEVELOPMENT_STANDARDS.md`](DEVELOPMENT_STANDARDS.md) defines the transition matrix and the compliant path for work performed before the relevant target structure exists.
 
 The frontend/backend RPC contracts remain authoritative:
 
@@ -31,7 +45,7 @@ Related documents:
 
 ## Purpose
 
-The launcher is growing across several independent capabilities: local version discovery, installation, launch, accounts, loader installation, mod discovery and management, saves, and settings. Those capabilities currently share one Rust package and one large React composition surface. Growth in place risks hidden coupling, feature-specific branches in shared code, and a frontend shell that must know every feature.
+The launcher spans several independent capabilities: local version discovery, installation, launch, accounts, loader installation, mod discovery and management, saves, and settings. They still share one Rust package, while the frontend now has a page/navigation contribution registry. Provider and frontend registries are implemented inside the current structure; crate extraction, the Rust feature lifecycle, and complete slot migration remain target work.
 
 The target architecture introduces explicit boundaries while preserving the current application behavior and release outputs. It is a **compile-time modular monolith**, not an arbitrary runtime plugin system. Features and providers are selected and registered by the application composition root before the app starts.
 
@@ -74,13 +88,12 @@ The target architecture introduces explicit boundaries while preserving the curr
 
 ### Backend shape
 
-The backend is a single Tauri v2 package rooted at `src-tauri`:
+The Rust backend is still a single Tauri v2 package rooted at `src-tauri`:
 
-- `src-tauri/Cargo.toml` declares package `flint`, library crate `flint_lib`, the Tauri build dependency, and all runtime dependencies.
-- `src-tauri/Cargo.lock` is the lockfile for that package.
+- `src-tauri/Cargo.toml` remains the one package manifest; `src-tauri/Cargo.lock` is its lockfile.
 - `src-tauri/src/main.rs` is a thin desktop entry point that calls `flint_lib::run()`.
-- `src-tauri/src/lib.rs` declares every Rust module, contains 29 `#[tauri::command]` wrappers, and registers them with the compile-time `tauri::generate_handler!` macro.
-- `src-tauri/src/models.rs` contains the serializable Rust DTOs. Public DTO fields use `#[serde(rename_all = "camelCase")]` where the contract requires it.
+- `src-tauri/src/lib.rs` declares every Rust module, contains the 29 `#[tauri::command]` wrappers, and registers them with the compile-time `tauri::generate_handler!` macro.
+- `src-tauri/src/models.rs` contains the serializable Rust DTOs. Existing public command/DTO/event contracts remain unchanged.
 - Blocking network, filesystem, process, and archive work is generally moved off Tauri async commands with `tokio::task::spawn_blocking`.
 - Public command failures are currently returned as display-ready `String` errors. `error.rs` maps background-task join failures.
 
@@ -88,12 +101,15 @@ The current Rust module responsibilities are:
 
 | Module | Implemented responsibility |
 | --- | --- |
+| `provider_api.rs` | Generic versioned provider descriptors, capability bindings, provider requirements, compatibility checks, immutable deterministic provider registry, and unavailable/ambiguous selection errors. |
+| `mods/providers.rs` | `ModProvider` trait and operation-scoped `ModProviderContext`; mod-source provider leaves; centralized `ModSource`-to-selection-key binding; mod provider registry construction and selection. |
+| `loaders/providers.rs` | `LoaderProvider` trait; typed list/install contexts; progress sink; six independent loader leaves; centralized `LoaderKind`-to-selection-key binding; loader provider registry construction and selection. |
 | `auth.rs` | Local account store, interactive account flow, token refresh, account selection/removal, launch identity resolution, and sensitive-value redaction. |
 | `install.rs` | Remote game-version listing, verified downloads, asset and library installation, progress emission, and install result assembly. |
 | `java.rs` | Java executable discovery, inspection, path validation, version parsing, and architecture parsing. |
 | `launch.rs` | Local version resolution for launch, argument construction, native extraction, process start, command display, and launch-log path creation. |
-| `loaders.rs` | Loader metadata discovery, loader-specific installation flows, shared vanilla preparation, installer execution, profile writing, and progress emission. |
-| `mods.rs` | Mod catalog calls, provider-specific payload mapping, dependency planning, archive validation, sidecar persistence, installed-mod scanning, enable/disable, deletion, and progress emission. |
+| `loaders.rs` | Shared loader orchestration plus provider-specific helper implementations still resident in this module: validation, vanilla preparation, provider selection, install helpers, client/timeout construction, progress adaptation, and result assembly. |
+| `mods.rs` | Shared mod orchestration plus provider-specific HTTP/payload helper implementations still resident in this module: validation, dependency planning, archive inspection, sidecar persistence, installed-mod management, provider selection, and progress adaptation. |
 | `net.rs` | Shared blocking HTTP client creation, HTTPS validation, bounded response reads, atomic downloads, temporary paths, and directory creation. |
 | `paths.rs` | Application and game directory resolution, settings path, path normalization, safe joining, deduplication keys, and SHA-1 helpers. |
 | `saves.rs` | Save discovery, bounded NBT parsing, ZIP import/export/backup, rename, and delete behavior. |
@@ -102,30 +118,34 @@ The current Rust module responsibilities are:
 | `models.rs` | Serializable request, response, progress, and enum DTOs shared across current modules. |
 | `error.rs` | Conversion of background-task failures to public error strings. |
 
-These are **logical** boundaries only. The modules are siblings in one crate and import each other directly. For example, account, install, launch, loader, mod, and save code call `paths`, `net`, `settings`, `version`, `java`, or `install` directly. There is no feature descriptor, feature registry, dependency resolution, provider trait, or lifecycle manager in the current tree.
+The Phase 1 and Phase 2 provider registry/selection milestones are implemented inside this single package, while full typed-port and checker phases remain partial:
 
-Current provider-specific branching is also present at call sites:
+- `src-tauri/src/provider_api.rs` provides the shared `Provider` contract, `ApiVersion`, `ProviderCapability`, `ProviderDescriptor`, `ProviderRequirement`, and `ProviderRegistry`.
+- The registry is immutable after construction, validates provider/capability/version/API/selection-key constraints, rejects duplicate provider/capability IDs and duplicate capability/selection-key bindings, sorts providers by stable ID, and returns explicit unavailable or ambiguous errors from selection.
+- `src-tauri/src/mods/providers.rs` contains the implemented mod-provider layer. Shared mod operations build the registry and select by the central `ModSource` binding instead of branching on source at each call site.
+- `src-tauri/src/loaders/providers.rs` contains six independent loader provider leaves with typed list/install contexts, a typed progress sink, and one central `LoaderKind` binding. `loaders.rs` constructs separate shared metadata and installer clients to preserve the 75-second metadata and 600-second installer timeout split.
+- The provider implementations do not depend on one another. Current provider entries are active when successfully constructed in the immutable per-operation registry; the full Phase 4 provider/feature lifecycle and availability state are still pending.
+- Provider adapter modules still use reviewed transitional local helper imports from the current `mods.rs`/`loaders.rs`; extracting those helpers behind the full provider/core ports and expiring the checker waivers belong to later phases.
 
-- Mod operations dispatch on the serialized `ModSource` value in `mods.rs`, and several later points branch or request provider-specific credentials.
-- Loader listing and installation dispatch on `LoaderKind` in `loaders.rs`.
-
-Those branches are the pilot targets for the provider migration. The DTO enums themselves are stable frontend/backend contract identifiers and should remain unless the contract is intentionally versioned and changed.
+The remaining Rust boundaries are still logical module boundaries, not crates. The current tree has **no** Rust `FeatureDescriptor`/feature lifecycle registry, Rust composition root, active-feature snapshot, Cargo workspace, or extracted `flint-core`/feature/provider API crates. Those remain Phase 4 work. Existing public commands, DTOs, and events are unchanged by Phases 1-3.
 
 ### Frontend shape
 
-The frontend is a React 18 and TypeScript application rooted at `src`:
+The frontend is a React 18 and TypeScript application rooted at `src`. Phase 3 page/navigation modularization is implemented without changing the public RPC contract:
 
-- `src/main.tsx` mounts the application.
-- `src/App.tsx` is the current shell and the largest composition surface. It owns app-level settings, account, instance, remote-version, install, launch, and notice state; it also imports every top-level view and conditionally renders one page.
-- `src/components/AppSidebar.tsx` contains a static `navItems` array typed with `SectionId`.
-- `src/types.ts` mirrors serialized DTOs and defines the current `SectionId` union.
-- `src/api.ts` contains one typed `invoke` wrapper per backend command.
-- `src/views/LaunchView.tsx`, `VersionsView.tsx`, `SaveManagerView.tsx`, `SettingsView.tsx`, and `AboutView.tsx` are imported statically by `App.tsx`.
-- Loader, mod discovery, and installed-mod panels under `src/views/downloads` keep feature-local transient state and call `api.ts` directly.
-- Tauri event listeners are attached directly where needed. The shell listens for the vanilla install event; feature panels listen for loader and mod install events.
-- Navigation is a `SectionId` state value plus a central chain of equality checks. Page titles and sidebar entries are maintained in separate hard-coded maps/lists.
+- `src/main.tsx` mounts `src/app/App.tsx`.
+- `src/core/contributions.ts` defines typed `FeatureDescriptor`, page, navigation, settings-section, and instance-action contracts; validates stable IDs, feature requirements/cycles, page targets, duplicate contribution IDs across slots, ordering, and component/handler references; then builds and deeply freezes a deterministic contribution registry.
+- `src/app/composition.ts` is the explicit static frontend composition root. It imports the approved feature modules and exports the frozen `frontendRegistry`; there is no glob auto-discovery or remote contribution manifest.
+- `src/app/AppSidebar.tsx` renders navigation contributions and resolves the active page by canonical `targetPageId`/page contribution ID.
+- `src/app/App.tsx` owns shared app-level state and renders the active page contribution through `ContributionBoundary`, a typed error boundary. Page modules receive `AppPageContext` from `src/core/app-context.ts`.
+- `src/modules/` contains the current feature page modules: launch, versions/downloads, saves, settings, about, and accounts. The first five expose pages/navigation; accounts exposes the account-dialog surface required by the shell.
+- Existing settings fields/sections and quick actions still live inside their page components. All current `settingsSections` and `instanceActions` contribution arrays are intentionally empty, and the shell does not yet mount those slots. Their contracts and validation exist, but those UIs are not migrated or active contributions.
+- `src/api.ts`, `src/types.ts`, `src/utils.ts`, and the remaining generic components still live at `src` and have not completed the target `core`/`shared` extraction.
+- Some current modules and the shell still use reviewed transitional direct Tauri event/dialog/opener imports. Those are checker waivers expiring in Phase 5, so full typed adapter extraction is not complete.
+- The frontend has no router or host active-feature availability filtering. Phase 3 renders the statically registered compiled feature set; Phase 4 planning will add the Rust lifecycle/availability snapshot and filtering.
+- The implemented Phase 3 checker logic is static; the dedicated CI workflow and release workflow currently invoke the architecture checker at `--phase 2`, so Phase 3+ checks are not the active CI/release gate yet.
 
-There is currently no router, frontend contribution registry, page registration, settings-section registration, instance-action registration, runtime remote module loading, or module-level state contract. Folder names are conventions, not enforced boundaries.
+Phase 3 therefore has a completed **page/navigation registry milestone**, not a completed full Phase 3 migration. Settings-section and instance-action contracts/validation are implemented, but population, shell rendering, and migration of existing UI remain pending.
 
 ### Build and release constraints (Implemented)
 
@@ -139,6 +159,12 @@ The current build and release automation assumes these paths and identities:
 - Release/version tooling inspects the package versions in `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.lock`, plus the root package metadata. The lockfile validator expects exactly one package named `flint`.
 - `build.rs` performs Tauri code generation and adds the Windows GNU cdylib link argument.
 - The library crate is named `flint_lib` and keeps staticlib, cdylib, and rlib crate types.
+Current architecture-checker and CI facts:
+
+- `scripts/check-architecture.mjs` and `scripts/test-architecture-checker.mjs` are implemented.
+- The dedicated `architecture.yml` workflow installs frontend dependencies, runs `node --test scripts/test-architecture-checker.mjs`, and then runs `node scripts/check-architecture.mjs --phase 2`.
+- The release workflow in `flint-release.yml` runs the same `--phase 2` architecture gate after frontend dependency installation and before applying the release version.
+- The Phase 2 checker performs static Rust source/module checks and TypeScript AST checks without invoking Cargo. Its active Rust scope covers module/provider import and selection boundaries, forbidden std/process/fs patterns, and exact allowlists, while intentionally allowing reqwest/shared-client and reviewed parent-helper waivers. It does not enforce full typed provider ports; full port enforcement is deferred to Phase 4/5, and Phase 4 workspace metadata checks require the not-yet-created Cargo workspace.
 
 Consequences for migration:
 
@@ -149,7 +175,8 @@ Consequences for migration:
 5. Keep `main.rs` as the executable entry and `flint_lib::run()` as the library entry unless a release-path migration is explicitly approved.
 6. Do not move or redefine the Tauri configuration or frontend output path during the architecture migration.
 
-## Target architecture (Planned)
+## Target architecture (Partially implemented; extraction/lifecycle pending)
+The target layer model remains normative. The current tree has an implemented generic provider API/registry and a page/navigation frontend contribution registry inside the single Rust package and current frontend folders. The extracted crate layout, Rust feature lifecycle/composition root, full provider runtime lifecycle, and active-feature availability filtering are still target-only. The table below describes required end-state boundaries, not the current crate layout.
 
 ### Layer model
 
@@ -232,7 +259,7 @@ Rust:
 7. Tauri types, `AppHandle`, event emission, window APIs, and command macros stay in the host/adapters layer. They must not leak into core, API, feature, or provider crates.
 8. Only the host composition root may instantiate concrete feature and provider implementations and inject them into registries.
 9. A module's public API is the minimum needed by the composition root or an approved contract. Private implementation modules remain private.
-10. Cargo manifests and TypeScript imports define actual edges, but neither Cargo nor TypeScript inherently enforces an arbitrary layer allowlist. A planned phase-aware architecture checker (below) and human review must reject forbidden edges and cycles.
+10. Cargo manifests and TypeScript imports define actual edges, but neither Cargo nor TypeScript inherently enforces an arbitrary layer allowlist. The implemented Phase 2 milestone checker (current CI/release gate) enforces module/provider import and selection boundaries, forbidden std/process/fs patterns, and exact allowlists, with reqwest/shared-client and reviewed parent-helper waivers intentional. Full typed-port enforcement is deferred to Phase 4/5, and later-phase checker policies become binding when the gate advances.
 
 Frontend:
 
@@ -242,36 +269,43 @@ Frontend:
 4. Domain/API behavior belongs in feature services or the shared API client, not in generic shared components.
 5. The composition root creates and freezes the frontend registry before rendering. Components read the registry and typed shell services; they do not mutate global registration state at render time.
 
-### Architecture boundary checker (Planned)
+### Architecture boundary checker (Phase 2 milestone implemented; full port enforcement pending)
 
-The planned checker is `scripts/check-architecture.mjs`. It does **not exist yet** and must not be described as a current gate. Phase 1 acceptance requires the first working version and CI integration; later phases expand its allowlist as the target structure appears.
+The checker is implemented at `scripts/check-architecture.mjs`, with automated coverage in `scripts/test-architecture-checker.mjs`. It is phase-aware, fail-closed, and reads checked-in reviewed allowlists. A broad directory or package wildcard is not an allowlist. Temporary waivers name the exact rule, file/package, phase, owner, and removal condition and fail closed when the phase ends.
 
-The checker is phase-aware (`--phase 1` through `--phase 5`) and reads a checked-in, reviewable edge allowlist. A broad directory or package wildcard is not an allowlist. Temporary waivers must name the exact rule, file/package, phase, owner, and removal condition; they fail closed when the phase ends.
+Current integration status:
+
+- The dedicated `architecture.yml` workflow installs frontend dependencies, runs the checker test suite, then runs `node scripts/check-architecture.mjs --phase 2`.
+- The release workflow in `flint-release.yml` runs `node scripts/check-architecture.mjs --phase 2` after frontend dependency installation and before applying the release version.
+- The implemented Phase 1/2 milestone boundaries are the active CI/release gate. The script contains phase-aware policy for later phases, but Phase 3+ checks are not the active gate yet; Phase 4 workspace metadata and full typed-port enforcement must wait for the Cargo workspace/extracted-crate and port work.
 
 #### Rust checks
 
-- Run `cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1` and parse workspace packages, targets, and normal/build/dev dependency edges.
-- For Phase 4 and later, enforce the layer table and composition-root rules on crate edges. In particular, reject host/Tauri dependencies from core, API, feature, and provider crates; reject cycles; reject provider-to-module, provider-to-provider, and module-to-private-module edges; allow only explicit cross-feature public Rust API edges. Frontend feature imports are stricter and never cross feature boundaries.
-- Until crates are extracted, Cargo metadata cannot distinguish sibling modules inside one package. The same checker therefore parses Rust `mod` declarations and `use` paths against the current phase's in-package allowlist.
-- Reject forbidden direct I/O, network, process, and framework imports in feature/provider implementation code once the corresponding ports exist. Examples include `tauri`, direct HTTP clients, `std::fs`, `std::process`, `std::net`, `Command::new`, and direct process spawning. `std::path` value types remain allowed. Core port implementations and host adapters are the only approved homes for the underlying I/O/process/framework calls.
+- The active Phase 2 path performs static Rust source/module analysis; it does not invoke Cargo. It masks comments/strings, scopes test-only modules correctly, enforces reviewed module/provider import and selection boundaries, rejects the explicitly forbidden std/process/fs patterns, and uses exact allowlists. It intentionally allows reqwest/shared-client use and reviewed parent-helper waivers for provider adapters. It does **not** enforce full typed network/path/process/settings/logging/cancellation ports; that is an explicit Phase 4/5 acceptance gate.
+- For Phase 4 and later, the checker contains Cargo metadata logic for the planned workspace: `cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1` parses workspace packages and dependency edges against reviewed crate allowlists. This logic is not an active gate while Rust remains one package and the workspace is pending.
+- The target crate rules remain mandatory when Phase 4 begins: reject host/Tauri dependencies from core, API, feature, and provider crates; reject cycles; reject provider-to-module, provider-to-provider, and module-to-private-module edges; allow only explicit cross-feature public Rust API edges. Frontend feature imports are stricter and never cross feature boundaries.
+- The target source rules remain mandatory as ports and extracted crates appear: reject forbidden direct I/O, network, process, and framework imports in feature/provider implementation code once the corresponding ports exist. Core port implementations and host adapters are the only approved homes for underlying I/O/process/framework calls.
 - Manifest checks reject dependencies that would bypass approved ports; source checks catch standard-library or macro paths that Cargo metadata cannot see. The checker is not a security sandbox: review must reject obfuscation, FFI, or unsafe escape hatches intended to avoid the allowlist, and unsafe FFI is prohibited absent a separate accepted decision.
 
 #### TypeScript checks
 
-- Use the installed TypeScript compiler API to parse every `.ts`/`.tsx` file and collect static imports, re-exports, side-effect imports, `import type`, `require` forms if any, and dynamic `import()` calls.
-- Enforce the frontend layer rules: `src/app` is the only assembly layer allowed to import all concrete feature modules; `src/core` and `src/shared` cannot import `src/app` or `src/modules`; a feature module may import only its own subtree plus frontend core/shared APIs. No feature may import another feature module at all, including that feature public entry. Cross-feature composition/state/actions use typed core contracts, shell services/contexts, or contribution slots.
-- Restrict framework imports to the approved transport/adapter layer. Feature components call the typed API/event clients rather than importing Tauri packages directly.
-- Treat external packages as part of the allowlist. Adding a new package to a feature requires a dependency review, not merely an import that happens to compile.
+- The checker uses the installed TypeScript compiler API to parse every `.ts`/`.tsx` file and collect static imports, re-exports, side-effect imports, `import type`, `require` forms if any, and dynamic `import()` calls.
+- The implemented target frontend rules are strict: `src/app` is the only assembly layer allowed to import all concrete feature modules; `src/core` and `src/shared` cannot import `src/app` or `src/modules`; a feature module may import only its own subtree plus frontend core/shared APIs. No feature may import another feature module at all, including that feature public entry. Cross-feature composition/state/actions use typed core contracts, shell services/contexts, or contribution slots.
+- Framework imports are restricted to approved transport/adapter layers. Feature components should call typed API/event clients rather than importing Tauri packages directly; reviewed temporary Phase 5 waivers currently remain in the checker.
+- External packages are part of the allowlist. Adding a new package to a feature requires dependency review, not merely an import that happens to compile.
 - Dynamic imports are allowed only with exactly one string-literal, relative, bundler-resolvable specifier inside the importing feature's own subtree or an explicitly allowlisted local chunk. Reject variable/template-computed specifiers, absolute paths, file/HTTP URLs, package specifiers for contribution loading, `eval`, and `new Function`.
 - A contribution loader is a component reference or a locally declared lazy function. It must never be a string path that the registry evaluates at runtime. The checker and bundler can prove a literal import target; the registry cannot runtime-prove an arbitrary filesystem or URL string.
+- The checker contains Phase 3 static manifest/import/registry-shape checks, but the current CI/release gate remains `--phase 2`. Advancing the gate is part of finishing Phase 3/4.
 
 #### CI gate
 
-- The planned CI architecture job runs `node scripts/check-architecture.mjs --phase <current-phase>` before build artifacts are accepted.
-- Phase 1 must establish the script and CI gate for the then-current Rust/TypeScript edges and ModProvider pilot boundaries. Phase 3 adds TypeScript contribution/dynamic-import checks and strict feature-to-core/shared import boundaries (no cross-feature imports). Phase 4 enables the extracted-crate allowlist and full module graph. Phase 5 removes temporary waivers and requires the strict allowlist.
-- Any allowlist change is an architecture change and must be reviewed as such. CI failure blocks phase acceptance; there is no implicit "warn only" mode after Phase 1.
+- CI failure blocks completion; there is no warn-only mode.
+- The current phase gate is Phase 2. The implemented checker milestone covers module/provider import and selection boundaries, forbidden std/process/fs patterns, and exact allowlists, while intentionally allowing reqwest/shared-client and reviewed parent-helper waivers. It does not establish full Phase 1/2 typed-port acceptance. Full network/path/process/settings/logging/cancellation port enforcement remains Phase 4/5 work.
+- Advancing the gate to Phase 3 requires making the implemented frontend contribution/import checks the active gate, resolving/expiring transitional Tauri import waivers only when appropriate, and meeting full Phase 3 acceptance. Advancing to Phase 4 requires the Cargo workspace and activated metadata gate.
+- Any allowlist change is an architecture change and must be reviewed as such.
 
-## Feature contract (Planned)
+## Rust feature contract and lifecycle registry (Planned)
+Status: **Pending Phase 4.** The current tree has provider registries and a frontend contribution `FeatureDescriptor`, but it does not have the Rust `FeatureDescriptor`, feature dependency/lifecycle registry, Rust composition root, or active-feature snapshot described in this section. Event/error/lifecycle rules below remain the target specification.
 
 A feature is registered by declaration and has one initialization entry point. A planned Rust-shaped contract looks like the following; names may change during implementation, but the semantics must not be weakened:
 
@@ -282,7 +316,7 @@ pub struct FeatureDescriptor {
     pub api_version: ApiVersion,
     pub startup_policy: StartupPolicy,
     pub requires: Vec<FeatureRequirement>,
-    pub provider_requirements: Vec<ProviderCapabilityRequirement>,
+    pub provider_requirements: Vec<ProviderRequirement>,
     pub init: FeatureInit,
     pub contributions: Vec<ContributionDescriptor>,
 }
@@ -321,7 +355,8 @@ The feature may return a runtime handle after initialization with lifecycle meth
 - Provider IDs follow the same stable-ID discipline and are distinct from feature IDs.
 - Backend registration IDs are globally unique across the backend registry and prefixed with the owning feature ID. Frontend contribution IDs are a separate namespace and use the single global-across-all-slots rule in the frontend section.
 
-## Registry semantics (Planned)
+## Rust feature registration and lifecycle (Planned)
+Status: **Pending Phase 4.** Provider registry construction and deterministic selection exist, but the Rust feature dependency graph, feature initialization lifecycle, active-feature availability snapshot, and application-level lifecycle coordinator do not. These rules remain target requirements.
 
 The feature registry is built from explicit composition-root declarations. It validates all metadata before feature side effects, initializes in deterministic order, exposes only active contributions, and is immutable after startup.
 
@@ -424,33 +459,37 @@ The Tauri host adapter owns the lifecycle bridge; no feature or provider imports
 - Retry/backoff, if later added, must not make initialization order depend on wall-clock timing.
 - All registry mutations are forbidden after freeze; dynamic plugin loading is deferred and cannot use the stable registry as an unreviewed escape hatch.
 
-## Provider contracts (Planned)
+## Provider contracts (Phase 1/2 milestones implemented; full ports/extraction/lifecycle pending)
 
-The provider layer separates reusable feature behavior from provider-specific external I/O. It replaces call-site `match` branches while preserving the existing serialized `ModSource`, `LoaderKind`, and DTO contracts.
+The provider layer separates reusable feature behavior from provider-specific external I/O. The Phase 1/2 registry/selection milestones are implemented in the current single Rust package: `provider_api.rs`, `mods/providers.rs`, and `loaders/providers.rs`. Existing serialized `ModSource`, `LoaderKind`, and DTO contracts remain unchanged. Full typed provider contexts/ports, extracted provider API crates, and the full runtime provider lifecycle remain Phase 4/5 work.
 
 ### Versioned provider and capability model
 
-Every provider declares a planned descriptor like this:
+The implemented provider API uses these shapes (simplified; current fields use borrowed static identifiers):
 
 ```rust
 pub struct ProviderDescriptor {
-    pub id: ProviderId,
-    pub provider_version: Version,
+    pub id: &'static str,
+    pub provider_version: &'static str,
     pub provider_api: ApiVersion,
-    pub capabilities: Vec<ProviderCapability>,
+    pub capabilities: &'static [ProviderCapability],
 }
 
 pub struct ProviderCapability {
-    pub id: CapabilityId,
+    pub id: &'static str,
     pub api_version: ApiVersion,
-    pub selection_keys: Vec<ProviderSelectionKey>,
+    pub selection_keys: &'static [&'static str],
 }
 
-pub struct ProviderCapabilityRequirement {
-    pub capability: CapabilityId,
+pub struct ProviderRequirement {
+    pub capability: &'static str,
     pub api_version: ApiVersion,
-    pub provider_version_req: VersionReq,
-    pub selection_key: Option<ProviderSelectionKey>,
+    pub provider_version_req: &'static str,
+    pub selection_key: Option<&'static str>,
+}
+
+pub trait Provider {
+    fn descriptor(&self) -> ProviderDescriptor;
 }
 ```
 
@@ -460,9 +499,9 @@ Definitions:
 - `provider_version` is the semantic version of the implementation.
 - `provider_api` is the provider API contract version the implementation was built against.
 - Each capability binds its own ID, capability API version, and selection keys. Selection keys are not an independent provider-level list.
-- A feature's `provider_requirements` are `ProviderCapabilityRequirement` values. They say which capability it needs, which capability API it was compiled against, which provider implementation versions are acceptable, and optionally which selection key is required.
+- The target Rust `FeatureDescriptor` carries `ProviderRequirement` values. They say which capability a feature needs, which capability API it was compiled against, which provider implementation versions are acceptable, and optionally which selection key is required. The current provider registry already consumes this requirement shape.
 - Providers are independent leaves. A provider must not declare or resolve a dependency on another provider; cross-provider coordination belongs in core services or feature orchestration. Provider-to-provider dependency graphs and cycles are therefore not built.
-- Provider initialization order is deterministic lexicographic `ProviderId` order after all descriptors and capability bindings validate. It never depends on `HashMap` iteration, filesystem discovery, or registration order.
+- Current registry construction sorts providers by stable `ProviderId`, validates all descriptors/capability bindings, and never depends on `HashMap` iteration, filesystem discovery, or registration order. Full provider initialization/lifecycle coordination remains Phase 4 work.
 
 ### Compatibility and selection predicate
 
@@ -480,107 +519,108 @@ Selection then requires exactly one provider satisfying the full requirement:
 - more than one match: return an ambiguous-selection error;
 - never use `HashMap` iteration, filesystem discovery, thread completion order, a first match, or an implicit fallback.
 
-Selection keys are unique within one capability binding. The same key under different capability IDs is qualified by capability ID and does not create cross-capability ambiguity. Duplicate capability IDs within a provider and malformed duplicate key bindings in one capability are descriptor-validation errors. Multiple providers satisfying the same full requirement produce the explicit ambiguous-selection result above.
+Selection keys are unique within one capability binding. The same key under different capability IDs is qualified by capability ID and does not create cross-capability ambiguity. Duplicate capability IDs within a provider and malformed duplicate key bindings in one capability are descriptor-validation errors. Multiple providers satisfying the same full requirement produce the explicit ambiguous-selection result above. The implemented registry additionally rejects duplicate `(capability, selection_key)` claims across providers during construction; ambiguous selection remains possible for keyless or differently keyed requirements and is returned explicitly.
 
 These checks occur before feature initialization. A missing, incompatible, ambiguous, or failed provider requirement makes a `Required` feature fail startup and makes an `Optional` feature fail or block according to the architecture lifecycle rules.
 
 A provider that fails initialization is unavailable for selection. Features requiring it handle the failure through their `Required`/`Optional` startup policy; provider initialization itself does not create a separate provider dependency graph.
+Current implementation status: the provider registry is immutable per operation and every successfully constructed entry is active for selection. There is no separate mutable provider health/lifecycle registry yet; that active-state integration belongs to the pending Phase 4 Rust lifecycle work.
 
-### `ModProvider`
+### `ModProvider` (Phase 1 pilot milestone implemented; full ports pending)
 
-`ModProvider` owns source-specific catalog and artifact metadata behavior:
+`ModProvider` owns source-specific catalog and version metadata behavior while the shared mod feature owns common dependency planning, downloads, archive inspection, and filesystem management.
 
-- search its catalog;
-- list versions for a project;
-- fetch one version or resolve a dependency reference;
-- map provider payloads into public DTOs;
-- resolve an artifact and its safe download metadata.
-
-The planned method shape is:
+Implemented method shape:
 
 ```text
 ModProvider
-  search(ctx, query) -> ModSearchPage
-  list_versions(ctx, query) -> [ModVersionInfo]
-  get_version(ctx, project_id, version_id) -> ModVersionInfo
-  artifact(ctx, version) -> validated artifact descriptor
+  search(ctx, query, game_version, loader, offset, limit) -> ModSearchPage
+  list_versions(ctx, project_id, game_version, loader) -> [ModVersionInfo]
+  version_by_id(ctx, project_id, version_id, game_version, loader) -> ModVersionInfo
+  dependency_version(ctx, dependency, game_version, loader) -> Option<ModVersionInfo>
 ```
 
-The shared mod feature owns common orchestration: input validation, dependency planning with cycle/depth/node limits, provider selection through the registry, atomic download through the shared network policy, archive validation, sidecar persistence, installed-mod scanning, enable/disable/delete behavior, and progress publication.
+Current implementation:
 
-`ModProviderContext` is a typed, operation-scoped context injected by the feature/host composition layer. It exposes only approved ports:
+- `src-tauri/src/mods/providers.rs` defines the `ModProvider` trait, two concrete source providers, the `ModProviderContext`, provider descriptors, and selection bindings.
+- The current `ModProviderContext` is operation-scoped and exposes only a shared blocking HTTP client and an optional provider credential/API key. It contains no Tauri handle or settings-file path. Shared mod code controls validation, dependency graph limits, downloads, archive checks, sidecar persistence, installed-mod management, and progress publication.
+- The provider registry is built in the shared mod feature for each operation; provider methods return public DTOs or provider data to that feature rather than performing final game-directory writes.
 
-- `network`: bounded HTTPS request/download operations, redirect/protocol policy, size limits, and timeouts;
-- `instance_paths`: validated game/instance roots and safe relative-path helpers, with no arbitrary destination selection;
-- `progress`: best-effort progress publication with non-secret payloads;
-- `deadline` and `cancellation`: cooperative timeout/cancellation checks for long operations;
-- `settings` and `credentials`: scoped read-only access to the provider-specific values the feature is allowed to use;
-- `log`: redacted structured diagnostics.
+Target Phase 4/5 context expectations remain:
 
-The provider must not receive an `AppHandle`, raw window handle, unrestricted filesystem root, unrestricted process runner, direct HTTP client, or direct settings-file path. Final mod placement and sidecar writes remain in the shared mod feature, not a provider.
+- replace feature-local HTTP/credential details with approved core network, safe instance/path, scoped settings/credential, logging, and cancellation/deadline ports;
+- keep final mod placement and sidecar writes in the shared mod feature;
+- forbid direct Tauri handles, raw windows, unrestricted filesystem roots, unrestricted process runners, and direct settings-file paths.
 
-### `LoaderProvider`
+### `LoaderProvider` (Phase 2 registry/leaf milestone implemented; full ports pending)
 
-`LoaderProvider` owns loader-specific discovery and installation planning/execution:
+`LoaderProvider` owns loader-specific discovery and installation implementation while the shared loader feature owns validation, vanilla preparation, shared clients/safety policy, progress adaptation, and result assembly.
 
-- loader-specific version discovery and normalization;
-- profile/installer planning and execution;
-- mapping loader payloads into public loader DTOs;
-- provider-specific diagnostics while using shared safety and progress services.
-
-The planned method shape is:
+Implemented method shape:
 
 ```text
 LoaderProvider
-  list_versions(ctx, game_version) -> [LoaderVersionInfo]
-  install(ctx, request) -> LoaderInstallResult
+  list_versions(ctx: LoaderListContext) -> [LoaderVersionInfo]
+  install(ctx: LoaderProviderContext) -> LoaderInstallOutput
 ```
 
-The shared loader feature owns common orchestration: request validation, provider selection, vanilla baseline preparation, Java validation, shared downloader policy, output logging, progress publication, installed-version refresh, and final result assembly.
+Current implementation:
 
-`LoaderProviderContext` is the equivalent typed, operation-scoped boundary and exposes only approved ports:
+- `src-tauri/src/loaders/providers.rs` defines `LoaderProvider`, `LoaderListContext`, `LoaderProviderContext`, a typed `LoaderProgressSink`, six independent loader leaves, and centralized `LoaderKind` selection bindings.
+- The six leaves are the implemented loader providers. They do not depend on one another; registry construction is deterministic and shared loader code performs one registry selection.
+- `LoaderListContext` carries only the metadata client, requested game version, and progress sink. `LoaderProviderContext` carries separate metadata and installer clients, the resolved game root, the install request, and the progress sink.
+- `src-tauri/src/loaders.rs` retains shared orchestration: request validation, vanilla baseline preparation, separate 75-second metadata and 600-second installer clients, provider selection, progress adaptation, version validation, and final `LoaderInstallResult` assembly. Provider methods do not receive `AppHandle` or emit Tauri events directly.
+- The current contexts are typed but are not yet the full Phase 4/5 decomposition into core network, safe archive/path, Java-runner, settings, logging, and deadline/cancellation ports.
 
-- shared network/download policy with HTTPS, size, redirect, and timeout rules;
-- safe game/instance path and archive policy, including extraction bounds;
-- a bounded Java process runner with captured/redacted output and timeout;
-- the shared vanilla baseline installer;
-- progress and logging sinks;
-- deadline and cooperative cancellation;
+Target Phase 4/5 context expectations remain:
+
+- approved core network/download and safe archive/path ports;
+- a bounded Java process runner with captured/redacted output;
+- shared vanilla baseline installation;
+- progress/logging sinks and deadline/cancellation;
 - read-only settings needed by the operation.
 
-A loader provider may run only the trusted installer flows permitted by the contract. It must not receive an `AppHandle`, construct an unbounded process itself, choose an unchecked destination, or emit Tauri events directly. A mod provider must never execute a downloaded mod archive.
+Loader providers may run only trusted installer flows, with bounded processes, captured/redacted output, timeouts, and safe archive policy. A mod provider must never execute a downloaded mod archive.
 
 ### Enforcing shared ports
 
-The planned architecture checker and provider API design together prevent bypasses:
+Phase 2 checker status:
 
-- Provider and feature-module Cargo manifests are allowed only the dependencies in the phase allowlist. Direct Tauri, HTTP, process, and filesystem implementation dependencies are rejected where the layer must use ports.
-- A source scan rejects restricted standard-library paths and calls such as `std::fs`, `std::process`, `std::net`, `Command::new`, and direct process spawning in module/provider implementation code once corresponding ports exist.
+- The implemented Phase 2 checker enforces reviewed module/provider import and selection boundaries, explicitly forbidden std/process/fs patterns, and exact allowlists through static Rust source analysis. It intentionally allows reqwest/shared-client use and reviewed parent-helper waivers for provider adapters. It does not invoke Cargo and does not enforce full typed ports.
+- The current typed provider contexts already hide Tauri handles, settings-file paths, and direct final destination selection from providers, but full network/path/process/settings/logging/cancellation port decomposition is not complete.
+- The current checker contains transitional Tauri import waivers that expire at a later phase; the current active gate remains Phase 2.
+
+Target Phase 4/5 enforcement rules remain:
+
+- Extracted provider and feature-module Cargo manifests may depend only on reviewed phase allowlist entries. Direct Tauri, HTTP, process, and filesystem implementation dependencies are rejected where the layer must use ports.
+- The source checker rejects restricted standard-library paths and calls such as `std::fs`, `std::process`, `std::net`, `Command::new`, and direct process spawning in module/provider implementation code once the corresponding ports exist.
 - Only core implementations and host adapters may implement the network, path, Java-runner, settings, logging, and progress ports.
 - Provider API crates expose context/port traits, not a handle to a global adapter, so a provider cannot obtain unrestricted file/process/network access through the contract.
 - The checker is not a sandbox. Review rejects obfuscation, unsafe FFI, macro tricks, or new manifest paths intended to evade the allowlist; any temporary exception is explicit, scoped, and phase-expiring.
 
-The checker itself is planned, not implemented. See **Architecture boundary checker (Planned)** above for its cargo-metadata and TypeScript-AST responsibilities and phase gates.
+The checker is implemented for its Phase 2 milestone. Full typed network/path/process/settings/logging/cancellation port enforcement is an explicit Phase 4/5 acceptance gate, alongside Phase 4 Cargo metadata checks. See **Architecture boundary checker (Phase 2 milestone implemented; full port enforcement pending)** above for current and target responsibilities.
 
 ### Enum and DTO compatibility during migration
+The Phase 1/2 registry/selection milestones are implemented without changing public commands, DTOs, enum serialization, or events. Provider selection uses centralized source/loader bindings in the provider adapters; provider-internal IDs/versions remain internal. Full typed-port and checker acceptance remains Phase 4/5 work.
 
 - `ModSource` and `LoaderKind` remain serialized enum/DTO values while the frontend contract depends on them.
-- The host adapter translates a deserialized enum to a provider selection key in one place. Feature services use registry lookup, not provider-specific branching.
+- The active provider adapter translates the deserialized `ModSource`/`LoaderKind` enum to a provider selection key in one place. Shared feature services use registry lookup, not provider-specific branching.
 - Unknown enum values fail during deserialization as they do today.
 - Adding or removing an enum variant is a public contract change: update Rust and TypeScript DTOs and the affected authoritative contract together.
 - Provider IDs, provider versions, capability versions, and provider payloads are internal. They must not replace or appear inside public DTOs unless a contract change explicitly introduces them.
 - Provider-internal response types are normalized and validated into public DTOs before crossing the adapter boundary.
 - Provider API/capability versions are separate from the public RPC contract version and from `feature_version`.
 
-### Migration order
+### Provider migration order and status
 
-1. Introduce the provider API, capability model, typed contexts, and a provider registry inside the current crate.
-2. Implement the `ModProvider` pilot with an explicit provider map while keeping command wrappers and DTOs stable.
-3. Move all mod-source dispatch to the registry and keep shared dependency/install logic in the mod feature.
-4. Repeat with `LoaderProvider`, extracting shared install context and progress ports.
-5. Only after both contracts work in the modular monolith should crates be extracted.
+1. **Milestone implemented; full phase pending:** introduced the provider API, capability model, operation contexts, and provider registry inside the current crate.
+2. **Milestone implemented; full phase pending:** implemented the ModProvider pilot with explicit provider leaves while keeping command wrappers and DTOs stable.
+3. **Milestone implemented; full phase pending:** moved mod-source dispatch to the provider registry and kept shared dependency/install logic in the mod feature.
+4. **Milestone implemented; full phase pending:** repeated the migration for LoaderProvider, including typed list/install contexts, six independent leaves, and the preserved metadata/installer timeout split.
+5. **Pending Phase 4/5:** extract provider API crates and complete the target typed ports, provider-local helper cleanup, runtime lifecycle, and full checker enforcement.
 
 ## Tauri host and adapter boundary (Planned)
+Status: **Partially realized.** Commands remain compile-time registered in `src-tauri/src/lib.rs` and call the current modules. Mod/loader provider selection is now inside shared feature modules, not command bodies. Separate command-adapter modules, a Rust composition root, and the full Tauri run-event lifecycle remain Phase 4 work. The target adapter rules below remain mandatory for future extraction.
 
 The host is an adapter layer, not a place for domain logic.
 
@@ -627,7 +667,8 @@ The composition root may assemble feature services and provider registries, but 
 - Timeouts and bounded operations belong in the core/feature policy, not only in the UI.
 - Cancellation is not promised unless a contract defines it; if a request becomes stale, the frontend must still ignore/clean up its own result safely.
 
-## Frontend architecture and contribution registry (Planned)
+## Frontend architecture and contribution registry (Phase 3 page/navigation implemented; full slots pending)
+Status: **Partially implemented.** The typed registry/contracts, frozen validation, explicit static composition root, and registry-driven page/navigation rendering are implemented. `settingsSections` and `instanceActions` contracts/validation are implemented but currently unpopulated and not mounted; existing settings sections and quick actions remain page-local. Host availability filtering, complete core/shared extraction, and full Phase 3 population/renderer migration remain pending.
 
 ### Target frontend layout
 
@@ -660,22 +701,23 @@ src/
       state/                  # feature-owned state
 ```
 
-These paths are planned. The current `App.tsx`, `api.ts`, `components`, and `views` remain the implemented baseline until the frontend migration is complete.
+This tree is the target shape, not a complete current tree. The implemented subset is `src/app/` (`App.tsx`, `AppSidebar.tsx`, `ContributionBoundary.tsx`, `composition.ts`), `src/core/` (`contributions.ts`, `app-context.ts`), and `src/modules/` feature page modules. `src/shared/`, the remaining `src/core` transport/event/error/type extraction, and a separate generic `AppShell`/bootstrap/provider layer are still target-only. `src/main.tsx` currently mounts `src/app/App.tsx` directly.
 
 ### Contribution slots
 
 The frontend registry accepts typed contributions for at least these slots:
 
-| Slot | Required semantics |
-| --- | --- |
-| **Navigation** | `id`, owning `featureId`, label, icon, `targetPageId`, numeric order, and optional typed visibility/capability selector. `targetPageId` must equal the canonical `id` of a registered page contribution. The shell renders the ordered list; it must not maintain a second hard-coded nav array. |
-| **Page** | `id` (the canonical page contribution ID and navigation target), owning `featureId`, title, component or local lazy-loader, numeric order, and any declared shell inputs. An optional URL path may be presentation metadata, but it is not a second identity or target. A page is mounted only through the shell contribution boundary. |
-| **Settings section** | `id`, owning `featureId`, title, component or local lazy-loader, order, and a declared settings namespace/validation hook. Sections edit through the shared settings owner; they do not write their own copy of the settings file. |
-| **Instance action** | `id`, owning `featureId`, label, icon, order, typed enabled/visible selector, and an action handler receiving an `InstanceActionContext` with the selected instance, effective game directory, and approved navigation/API services. Examples include launch, open directory, manage content, and open a launch log. |
+| Slot | Required target semantics | Current implementation status |
+| --- | --- | --- |
+| **Navigation** | `id`, owning `featureId`, label, icon, `targetPageId`, numeric order, and optional typed visibility/capability selector. `targetPageId` must equal the canonical `id` of a registered page contribution. The shell renders the ordered list; it must not maintain a second hard-coded nav array. | Implemented and rendered. Current modules provide ordered nav contributions and optional indicators. |
+| **Page** | `id` (the canonical page contribution ID and navigation target), owning `featureId`, title, component or local lazy-loader, numeric order, and any declared shell inputs. An optional URL path may be presentation metadata, but it is not a second identity or target. A page is mounted only through the shell contribution boundary. | Implemented and rendered through `ContributionBoundary`; current modules use static component references. |
+| **Settings section** | `id`, owning `featureId`, title, component or local lazy-loader, order, and a declared settings namespace/validation hook. Sections edit through the shared settings owner; they do not write their own copy of the settings file. | Contract, validation, and frozen registry support are implemented. All current feature manifests provide empty arrays; the shell does not mount this slot; the existing settings sections remain inside the settings page. |
+| **Instance action** | `id`, owning `featureId`, label, icon, order, typed enabled/visible selector, and an action handler receiving an `InstanceActionContext` with the selected instance, effective game directory, and approved navigation/API services. Examples include launch, open directory, manage content, and open a launch log. | Contract, validation, and frozen registry support are implemented. All current feature manifests provide empty arrays; quick/instance actions remain page-local and this slot is not mounted/migrated. |
 
 A contribution declaration must be data plus a locally bundled component/function reference only. It must not perform registration side effects such as I/O, network calls, timers, event listeners, or stores during module evaluation. A contribution loader is never a runtime string path: the registry can validate metadata, but only the TypeScript AST checker and bundler can prove that a literal module specifier resolves to bundled code.
 
 ### Registry rules
+Current Phase 3 implementation validates feature descriptors and all four contribution-slot shapes, enforces globally unique IDs/page targets/ordering/feature requirement cycles, freezes the registry, and renders page/navigation contributions from `frontendRegistry`. The Phase 3 static checker rules are implemented in the checker/test suite but are not yet the active CI/release gate (currently `--phase 2`). The rules below remain the full target contract.
 
 - Every frontend contribution has a globally unique stable ID across every frontend slot, not merely within its slot, and is prefixed by the owning feature ID (for example `flint.mods.page.discovery`).
 - Any duplicate contribution ID across any slot is rejected before render; last-registration-wins is forbidden. Navigation targets must resolve to exactly one registered page contribution by its canonical page ID.
@@ -689,19 +731,22 @@ A contribution declaration must be data plus a locally bundled component/functio
 
 ### Composition root
 
-The target bootstrap sequence is:
+Current implemented sequence:
 
 ```text
-main.tsx
-  -> create the explicit feature registration list
-  -> create and validate the frontend registry
-  -> install root providers and shared API/event clients
-  -> render AppShell with the frozen registry
+src/main.tsx
+  -> src/app/App.tsx
+  -> src/app/composition.ts imports approved feature modules
+  -> buildContributionRegistry validates/freezes frontendRegistry
+  -> AppSidebar renders navigation and App renders the active page contribution
 ```
 
-The composition root is the only frontend file that should know the complete feature list. `AppShell` is intentionally generic: it renders registered navigation, the active page, settings sections, global notices, and instance-action slots. Individual feature modules provide their own components and handlers.
+`src/app/composition.ts` is the only current frontend file that imports the complete feature-module list. The shell keeps shared state and passes `AppPageContext` into page components. The page/navigation registry is live; settings-section and instance-action slots are validated but not yet populated or mounted.
+
+Target evolution: install the remaining shared core/event/error/type providers and a fully generic shell, populate/mount settings and instance-action slots, and add the Phase 4 host active-feature availability snapshot/filter. The frontend composition root remains the only place that imports concrete feature modules for assembly.
 
 ### State ownership
+Current Phase 3 state: `src/app/App.tsx` owns shared shell state and exposes `AppPageContext`; feature page modules own their local UI state. Settings sections remain inside the settings page, and quick/instance actions remain page-local. Accounts contributes a dialog surface while the shell still owns shared account state. Settings-section and instance-action contribution state/renderers are not yet active. The table below is the target ownership model.
 
 | State | Owner |
 | --- | --- |
@@ -716,6 +761,7 @@ The composition root is the only frontend file that should know the complete fea
 No feature may import another feature module, its store, or its public entry. Cross-feature actions, state, and navigation pass through typed core contracts or shell services/contexts supplied by the app composition root; contribution slots compose the resulting UI.
 
 ### Static imports and lazy loading
+Current Phase 3 page/navigation contributions use static component references. Local lazy contribution loading remains a target capability. The checker/test suite contains the static import/dynamic-import rules, but the current CI/release gate remains `--phase 2`.
 
 - Contributions use static imports or a local `lazy(() => import("./Page"))` whose specifier is a literal bundled path.
 - Lazy loading splits the application's own build output. It does not load arbitrary JavaScript from disk, a URL, a provider, or a plugin package.
@@ -777,11 +823,13 @@ No feature may import another feature module, its store, or its public entry. Cr
 - Errors surfaced to the user should be concise and actionable; detailed technical context may go to a safe log.
 - Health and registry snapshots should expose stable IDs, versions, dependency state, and failure reasons without leaking credentials.
 
-## Migration phases (Planned)
+## Migration phases (Implementation status)
 
 The sequence is deliberate. Do not start a later phase by silently creating its target structure while earlier contracts are unverified. Each phase must preserve the existing external contracts, name any intentional deviation, and satisfy the phase applicability matrix in [`DEVELOPMENT_STANDARDS.md`](DEVELOPMENT_STANDARDS.md).
 
-### Phase 1: ModProvider pilot
+### Phase 1: ModProvider pilot (Partial: registry/selection milestone implemented; full ports/checker pending)
+
+Status: **Partial.** The provider contract/registry and mod selection milestone is implemented in `src-tauri/src/provider_api.rs` and `src-tauri/src/mods/providers.rs`, and shared mod operations select through the immutable registry. The active Phase 2 checker covers module/provider import and selection boundaries plus forbidden std/process/fs patterns; it allows reqwest/shared-client and reviewed parent-helper waivers by design. It does not yet enforce the full typed network/path/process/settings/logging/cancellation ports. Full Phase 1 acceptance therefore remains open for Phase 4/5 port and checker enforcement.
 
 Scope:
 
@@ -793,20 +841,22 @@ Scope:
 - Define the versioned provider descriptor, per-capability API/selection-key bindings, full capability/provider-version compatibility predicate, independent provider leaves, and `ModProviderContext` ports described in this architecture.
 - Implement the first phase of `scripts/check-architecture.mjs` and its CI gate for the available Rust module/import and frontend import graph.
 
-Acceptance criteria:
+Target acceptance criteria (full phase not yet met):
 
 - No command body or shared mod service branches on individual mod sources after lookup.
 - Duplicate provider IDs, duplicate capabilities, malformed duplicate selection-key bindings within one capability, incompatible provider/capability API versions, and unmet provider version requirements are rejected explicitly.
 - Provider leaves initialize in lexicographic provider-ID order and have no provider-to-provider dependency graph. Selection filters active providers by the full requirement predicate, then requires exactly one match; zero or multiple matches fail without fallback.
-- Providers receive only typed contexts; direct Tauri/network/filesystem/process bypasses are rejected by the planned checker and review.
+- Target: providers receive only the full typed network/path/process/settings/logging/cancellation ports; direct Tauri/host handles and unrestricted filesystem/process access are outside the provider boundary. The active Phase 2 checker enforces only the implemented import/selection/forbidden-pattern boundaries and intentionally allows reqwest/shared-client and reviewed parent-helper waivers, so full port enforcement is deferred to Phase 4/5.
 - Unknown, incompatible, ambiguous, or unavailable providers return an actionable error and never fall back silently.
 - All existing mod commands, inputs, results, events, and error behavior remain contract-compatible.
 - The provider cannot emit Tauri events, choose arbitrary write destinations, execute a downloaded mod, or import private host state.
 - The phase does not introduce a Cargo workspace, runtime plugin loader, or dynamic provider discovery.
 - Applicable Rust and TypeScript checks pass in CI, and the reviewer verifies logic and boundaries without running local build/test commands.
-- Phase 1 does not complete until `scripts/check-architecture.mjs` v1 exists and passes in CI for the phase-current Rust/TypeScript edges and ModProvider boundaries. It must fail closed, contain an explicit reviewed allowlist, and support no warn-only mode.
+- The implemented registry/selection milestone is backed by the fail-closed `scripts/check-architecture.mjs`, its tests, and the Phase 2 CI gate for module/provider import and selection boundaries. Full Phase 1 acceptance is not claimed while typed provider ports and full port checks remain deferred to Phase 4/5.
 
-### Phase 2: LoaderProvider
+### Phase 2: LoaderProvider (Partial: loader registry/leaf milestone implemented; full LoaderProvider ports pending)
+
+Status: **Partial.** The loader provider/registry milestone is implemented in `src-tauri/src/loaders/providers.rs`: six independent loader leaves use typed list/install contexts and a progress sink, deterministic registry selection is preserved, and the 75-second metadata/600-second installer timeout split remains intact. Full `LoaderProviderContext` decomposition into network/path/archive/process/settings/logging/cancellation ports remains Phase 4/5 work. The Phase 2 checker active in CI verifies import and selection boundaries but intentionally does not enforce those full ports.
 
 Scope:
 
@@ -816,7 +866,7 @@ Scope:
 - Keep all existing loader DTOs, commands, events, and UI behavior stable.
 - Define the versioned `LoaderProvider` per-capability bindings and typed `LoaderProviderContext` ports for network, safe paths/archives, Java execution, vanilla preparation, progress, cancellation/timeouts, settings, and logging. Providers remain independent leaves initialized in lexicographic ID order.
 
-Acceptance criteria:
+Target acceptance criteria (full phase not yet met):
 
 - Loader list and install commands no longer contain provider-specific branches.
 - Providers initialize as independent leaves in lexicographic provider-ID order after descriptor/capability validation; no provider-to-provider dependency graph or provider-cycle detection exists. Duplicate provider/capability IDs and malformed capability/key bindings fail explicitly.
@@ -824,11 +874,13 @@ Acceptance criteria:
 - Existing loader install result and progress contracts are unchanged.
 - No loader provider imports Tauri, feature internals, or another provider. Provider cross-coordination goes through core services or feature orchestration.
 - Selection filters active providers by host provider-API compatibility, capability ID and capability-API compatibility, provider-version requirement, and optional per-capability selection key; exactly one match is required. Zero/multiple matches fail without `HashMap` ordering or first-match fallback.
-- Loader providers receive only `LoaderProviderContext`; direct Tauri, HTTP, filesystem, or process implementations that bypass the approved ports fail the architecture checker.
+- Target: loader providers receive only the fully decomposed `LoaderProviderContext` ports; direct Tauri, HTTP, filesystem, or process implementations that bypass those ports fail the full Phase 4/5 architecture checker. The active Phase 2 checker intentionally allows reqwest/shared-client and reviewed parent-helper waivers, so this criterion is not yet met.
 - CI verification is green before completion and the phase is reviewed for logic only by an independent reviewer.
-- The architecture checker allowlist is extended for the loader pilot and passes in CI before Phase 2 acceptance.
+- The architecture checker allowlist is extended for the loader registry/leaf milestone and passes in CI. Full Phase 2 acceptance is not claimed while full typed ports and full port enforcement remain deferred to Phase 4/5.
 
-### Phase 3: Frontend contribution registry
+### Phase 3: Frontend contribution registry (Partial: page/navigation complete; slots pending)
+
+Status: **Partial.** Page/navigation contributions, validation, the frozen registry, and registry-driven rendering are implemented. `settingsSections` and `instanceActions` contracts/validation are implemented but intentionally unpopulated and not mounted; existing settings sections and quick actions remain page-local. Full Phase 3 also needs the Phase 3 checker gate to become the active CI/release gate and those slots to be populated/migrated.
 
 Scope:
 
@@ -851,7 +903,9 @@ Acceptance criteria:
 - Existing navigation, settings, accounts, downloads, saves, launch, and instance actions remain behaviorally compatible.
 - Host active-feature availability filtering is a Phase 4 requirement, not a Phase 3 dependency; Phase 3 acceptance verifies only the static compiled contribution registry and composition root.
 
-### Phase 4: Workspace and module extraction
+### Phase 4: Workspace and module extraction (Pending)
+
+Status: **Pending.** Rust remains one package; the Cargo workspace/extracted crates, Rust feature lifecycle registry, Rust composition root, provider runtime lifecycle, and active-feature availability filtering are not implemented.
 
 Scope:
 
@@ -878,7 +932,9 @@ Acceptance criteria:
 - The contract documents, Rust DTOs, TypeScript DTOs, adapters, and client wrappers remain synchronized.
 - The full release/build path assumptions are re-validated by CI before the phase is considered complete.
 
-### Phase 5: Hardening and documentation closeout
+### Phase 5: Hardening and documentation closeout (Pending)
+
+Status: **Pending.** Transitional checker waivers, remaining migration shims, and final hardening are still open.
 
 Scope:
 
@@ -913,11 +969,11 @@ Until a separate accepted ADR exists, all registrations are compile-time and the
 
 ## Architecture acceptance gates
 
-A change is architecture-compliant only when all applicable statements hold:
+These are the end-state acceptance gates. The current baseline satisfies the implemented Phase 1/2 provider milestones and the Phase 3 page/navigation milestone only; Phase 3 settings/action migration, Phase 4, and Phase 5 remain pending. A change is architecture-compliant only when all applicable statements for its current phase hold:
 
 - The current implementation is described as implemented, and every unimplemented target path is labeled planned/target/deferred.
 - Applicable phase rules from the transition matrix in `DEVELOPMENT_STANDARDS.md` are satisfied; at full extraction, dependencies point inward/downward according to the layer table with no core-to-host, module-to-host, provider-to-host, or private-module edge.
-- Cargo manifests and TypeScript imports are checked by the planned phase-aware architecture checker; Cargo and TypeScript alone are not treated as enforcing arbitrary allowlists.
+- Cargo manifests and TypeScript imports are covered by the implemented Phase 2 milestone checker at the current `--phase 2` CI/release gate. It enforces module/provider import and selection boundaries, forbidden std/process/fs patterns, and exact allowlists while intentionally allowing reqwest/shared-client and reviewed parent-helper waivers. It does not enforce full typed ports; full typed-port and later-phase checks become normative when their gates advance. Cargo and TypeScript alone are not treated as enforcing arbitrary allowlists.
 - Feature descriptors use `feature_version`, `api_version`, declared dependencies/provider requirements, startup policy, one initialization entry point, and declared backend contributions.
 - Startup/runtime failure propagation includes the failed feature plus all transitive dependents. If the affected set contains any `Required` feature, the host is fatal: `StartupFailed` with feature/provider/core cleanup at startup, or `RuntimeFailed` -> `Stopping` -> `Stopped`/exit at runtime. `Degraded` is valid only when every `Required` feature remains `Ready` and the affected set is optional-only. No `Required` feature may remain `Ready` with a non-ready dependency/provider, and there is no feature-level `Degraded`. Unavailable commands, atomic init cleanup, and reverse shutdown are explicit.
 - Progress events are best-effort and command results/durable state are authoritative; explicitly required protocol events fail the operation result without rolling back committed state.
@@ -926,6 +982,6 @@ A change is architecture-compliant only when all applicable statements hold:
 - Feature order is deterministic topological order with feature-ID tie-breaking; provider leaves initialize in provider-ID order. Failure and shutdown behavior is explicit and tested.
 - Provider selection uses active providers, per-capability selection-key bindings, and the full capability/API/provider-version requirement; exactly one match is required, with no fallback or call-site `match` branches after the relevant phase.
 - Tauri commands are thin, compile-time registered, and contain no domain or provider logic.
-- Frontend contribution IDs are globally unique across all slots and navigation uses canonical `targetPageId` page IDs. Phase 3 renders the statically registered compiled set; Phase 4 adds host active-feature filtering. Feature modules import only their own subtree plus core/shared, with no cross-feature imports. No arbitrary remote or runtime-string UI code is loaded.
+- Frontend contribution IDs are globally unique across all slots, navigation uses canonical `targetPageId` page IDs, and feature modules import only their own subtree plus core/shared. The current implementation covers page/navigation contributions; `settingsSections`/`instanceActions` contracts validate but remain unpopulated/unmounted until full Phase 3 migration. Phase 4 adds host active-feature filtering. No arbitrary remote or runtime-string UI code is loaded.
 - The affected authoritative contract, Rust/TypeScript DTOs, events, adapters, and documentation are updated together for every public behavior change; both RPC contract files are updated only when a shared model, command, or event surface is affected.
 - No names, branding, identifiers, text, or code are copied from another project; references only inform expected behavior and the implementation remains original.
