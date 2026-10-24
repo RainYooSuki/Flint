@@ -8,7 +8,6 @@ mod models;
 mod mods;
 mod net;
 mod paths;
-mod provider_api;
 mod saves;
 mod settings;
 mod version;

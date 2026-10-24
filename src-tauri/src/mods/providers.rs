@@ -2,12 +2,10 @@ use super::{
     curseforge_list_versions, curseforge_search, modrinth_list_versions, modrinth_search,
     modrinth_version_by_id, validate_provider_id,
 };
-use crate::{
-    models::{ModDependencyRef, ModSearchPage, ModSource, ModVersionInfo},
-    provider_api::{
-        ApiVersion, Provider, ProviderCapability, ProviderDescriptor, ProviderRequirement,
-        ProviderRegistry,
-    },
+use crate::models::{ModDependencyRef, ModSearchPage, ModSource, ModVersionInfo};
+use flint_provider_api::{
+    ApiVersion, Provider, ProviderCapability, ProviderDescriptor, ProviderRequirement,
+    ProviderRegistry,
 };
 use reqwest::blocking::Client;
 
@@ -356,7 +354,7 @@ pub(super) fn select_for_source<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider_api::Provider as _;
+    use flint_provider_api::Provider as _;
 
     #[test]
     fn providers_declare_the_versioned_mod_catalog_contract() {

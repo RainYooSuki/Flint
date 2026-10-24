@@ -1057,6 +1057,8 @@ dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
  "flate2",
+ "flint-core",
+ "flint-provider-api",
  "md5",
  "regex",
  "reqwest 0.12.12",
@@ -1070,6 +1072,18 @@ dependencies = [
  "tauri-plugin-opener",
  "tokio",
  "zip",
+]
+
+[[package]]
+name = "flint-core"
+version = "0.1.0"
+
+[[package]]
+name = "flint-provider-api"
+version = "0.1.0"
+dependencies = [
+ "flint-core",
+ "semver",
 ]
 
 [[package]]

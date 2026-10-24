@@ -18,6 +18,8 @@ const REPO_ROOT = path.resolve(HERE, "..");
 const FRONTEND_ROOT = path.join(REPO_ROOT, "src");
 const RUST_SOURCE_ROOT = path.join(REPO_ROOT, "src-tauri", "src");
 const RUST_MANIFEST = path.join(REPO_ROOT, "src-tauri", "Cargo.toml");
+const PROVIDER_API_SOURCE = "src-tauri/crates/flint-provider-api/src/lib.rs";
+const FOUNDATION_WORKSPACE_MEMBERS = [".", "crates/flint-core", "crates/flint-provider-api"];
 const COMPOSITION_ROOT = "src/app/composition.ts";
 const CONTRIBUTIONS_CONTRACT = "src/core/contributions.ts";
 const toPosix = (value) => value.split(path.sep).join("/");
@@ -989,7 +991,7 @@ function moduleParts(moduleId) {
 function moduleId(parts) {
   return parts.length === 0 ? "crate" : parts.join("::");
 }
-const RUST_MODULE_ALLOWLIST = new Set(["crate", "main", "auth", "error", "install", "java", "launch", "loaders", "models", "mods", "mods::providers", "net", "paths", "provider_api", "saves", "settings", "version", "loader_api", "loader_providers", "loaders::provider_api", "loaders::providers"]);
+const RUST_MODULE_ALLOWLIST = new Set(["crate", "main", "auth", "error", "install", "java", "launch", "loaders", "models", "mods", "mods::providers", "net", "paths", "saves", "settings", "version", "loader_api", "loader_providers", "loaders::provider_api", "loaders::providers"]);
 const RUST_MODULE_EDGE_ALLOWLIST = new Map(Object.entries({
   crate: ["auth", "error", "install", "java", "launch", "loaders", "models", "mods", "paths", "saves", "settings", "version", "loader_api", "loader_providers"],
   main: [],
@@ -1001,18 +1003,20 @@ const RUST_MODULE_EDGE_ALLOWLIST = new Map(Object.entries({
   loaders: ["install", "java", "models", "net", "paths", "version", "loaders::provider_api", "loaders::providers"],
   models: ["paths"],
   mods: ["models", "net", "paths", "mods::providers", "settings"],
-  "mods::providers": ["models", "mods", "provider_api"],
+  "mods::providers": ["models", "mods"],
   net: ["paths"],
   paths: [],
-  provider_api: [],
   saves: ["models", "net", "paths"],
   settings: ["models", "paths"],
   version: ["models", "paths"],
-  loader_api: ["models", "provider_api"],
-  loader_providers: ["loader_api", "loaders", "models", "provider_api"],
-  "loaders::provider_api": ["models", "provider_api"],
-  "loaders::providers": ["loader_api", "loaders", "models", "provider_api"],
+  loader_api: ["models"],
+  loader_providers: ["loader_api", "loaders", "models"],
+  "loaders::provider_api": ["models"],
+  "loaders::providers": ["loader_api", "loaders", "models"],
 }));
+export function reviewedHostRustModuleIds() {
+  return [...RUST_MODULE_ALLOWLIST].sort();
+}
 function cargoExternalRoots(manifestText, packageName) {
   const roots = new Set(["std", "core", "alloc", "crate", "self", "super", "flint_lib"]);
   if (packageName) roots.add(packageName.replace(/-/g, "_"));
@@ -1052,11 +1056,11 @@ function extractRustUseDeclarations(productionText) {
   }
   return declarations;
 }
-function firstUseRoot(payload) {
-  const match = /^\s*::?\s*(?:r#)?([A-Za-z_][A-Za-z0-9_]*)/.exec(payload);
+export function firstUseRoot(payload) {
+  const match = /^\s*(?:::)?\s*(?:r#)?([A-Za-z_][A-Za-z0-9_]*)/.exec(payload);
   return match?.[1] ?? null;
 }
-function moduleTargetsFromUse(payload, currentModuleId, moduleSet) {
+export function moduleTargetsFromUse(payload, currentModuleId, moduleSet) {
   const targets = new Set();
   const tokens = [...payload.matchAll(/(?:r#)?([A-Za-z_][A-Za-z0-9_]*)/g)];
   for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex += 1) {
@@ -1075,6 +1079,8 @@ function moduleTargetsFromUse(payload, currentModuleId, moduleSet) {
       candidate = next;
       suffix = suffix.slice(extension[0].length);
     }
+    // `crate` and `main` are graph roots, not importable target modules.
+    if (candidate === "crate" || candidate === "main") continue;
     targets.add(candidate);
   }
   const root = firstUseRoot(payload);
@@ -1235,23 +1241,32 @@ const HOST_PRIVATE_MODULES = new Set([
   "auth", "error", "install", "java", "launch", "net", "saves", "settings", "paths", "version",
 ]);
 // Exact provider files/import roots. transitional entries are named and expire at phase 5.
-const providerTarget = (file, role, localTargets, transitional = {}, external = ["std", "semver"]) => ({
+const providerTarget = (file, role, localTargets, transitional = {}, external = ["std", "semver", "flint_core"]) => ({
   file, role, localTargets: new Set(localTargets), transitionalLocalTargets: new Map(Object.entries(transitional)), externalRoots: new Set(external),
 });
 const MOD_PROVIDER_TARGETS = [
-  providerTarget("src-tauri/src/provider_api.rs", "mod-provider-api", []),
-  providerTarget("src-tauri/src/mods/providers.rs", "mod-provider-adapter", ["models", "provider_api"], {
+  providerTarget(PROVIDER_API_SOURCE, "mod-provider-api", []),
+  providerTarget("src-tauri/src/mods/providers.rs", "mod-provider-adapter", ["models"], {
     mods: { owner: "mod-provider-pilot", removeByPhase: 5, removal: "Extract shared helper leaves behind typed provider API/core ports." },
-  }, ["std", "reqwest"]),
+  }, ["std", "reqwest", "flint_provider_api"]),
 ];
-const LOADER_API_FILES = ["src-tauri/src/provider_api.rs", "src-tauri/src/loader_api.rs", "src-tauri/src/loaders/provider_api.rs"];
+const LOADER_API_FILES = [PROVIDER_API_SOURCE, "src-tauri/src/loader_api.rs", "src-tauri/src/loaders/provider_api.rs"];
 const LOADER_ADAPTER_FILES = ["src-tauri/src/loader_providers.rs", "src-tauri/src/loaders/providers.rs"];
 const LOADER_PROVIDER_TARGETS = [
-  ...LOADER_API_FILES.map((file) => providerTarget(file, "loader-provider-api", ["models", "provider_api"])),
-  ...LOADER_ADAPTER_FILES.map((file) => providerTarget(file, "loader-provider-adapter", ["loader_api", "models", "provider_api"], {
+  ...LOADER_API_FILES.map((file) => providerTarget(file, "loader-provider-api", file === PROVIDER_API_SOURCE ? [] : ["models", "provider_api"])),
+  ...LOADER_ADAPTER_FILES.map((file) => providerTarget(file, "loader-provider-adapter", ["loader_api", "models"], {
     loaders: { owner: "loader-provider-pilot", removeByPhase: 5, removal: "Extract loader helper leaves behind typed loader API/core ports." },
-  }, ["std", "reqwest"])),
+  }, ["std", "reqwest", "flint_provider_api"])),
 ];
+export function reviewedProviderTargets() {
+  return [...MOD_PROVIDER_TARGETS, ...LOADER_PROVIDER_TARGETS].map((target) => ({
+    file: target.file,
+    role: target.role,
+    localTargets: [...target.localTargets].sort(),
+    transitionalLocalTargets: [...target.transitionalLocalTargets.keys()].sort(),
+    externalRoots: [...target.externalRoots].sort(),
+  }));
+}
 const FORBIDDEN_PROVIDER_CODE = [
   [/\btauri(?:_[A-Za-z0-9_]+)?\s*::/g, "direct Tauri path"],
   [/\bstd\s*::[^;\n]*\b(?:fs|process|net)\b/g, "direct std filesystem/process/network path"],
@@ -1278,8 +1293,22 @@ function forbiddenProviderUse(payload, targets) {
   return null;
 }
 function checkProviderTarget(phase, target, graph, report) {
-  const record = graph.records.find((candidate) => candidate.relative === target.file);
-  if (!record) return;
+  let record = graph.records.find((candidate) => candidate.relative === target.file);
+  if (!record) {
+    const absolutePath = path.join(REPO_ROOT, target.file);
+    if (!fs.existsSync(absolutePath)) return;
+    try {
+      record = {
+        absolutePath,
+        relative: target.file,
+        moduleId: "crate",
+        productionText: prepareRustProductionSource(readText(absolutePath)),
+      };
+    } catch (error) {
+      report("RUST-LEX-001", target.file, 1, `cannot statically mask Rust source: ${error.message}`);
+      return;
+    }
+  }
   const localTargets = new Set();
   for (const declaration of extractRustUseDeclarations(record.productionText)) {
     const root = firstUseRoot(declaration.payload);
@@ -1542,6 +1571,61 @@ function checkCargoDependencyCycles(graph, packages, report) {
   }
   for (const name of graph.keys()) if (!state.has(name)) visit(name);
 }
+function manifestSectionText(manifestText, sectionName) {
+  const lines = manifestText.split(/\r?\n/);
+  const sectionLines = [];
+  let found = false;
+  let active = false;
+  for (const line of lines) {
+    const header = /^\s*\[([^\]]+)\]\s*(?:#.*)?$/.exec(line);
+    if (header) {
+      active = header[1].trim() === sectionName;
+      if (active) found = true;
+      continue;
+    }
+    if (active) sectionLines.push(line);
+  }
+  return found ? sectionLines.join("\n") : null;
+}
+export function parseFoundationWorkspaceManifest(manifestText) {
+  const section = manifestSectionText(manifestText, "workspace");
+  if (section === null) return { present: false, resolver: null, members: null };
+  const resolverMatch = /^\s*resolver\s*=\s*("([^"]*)"|'([^']*)')\s*(?:#.*)?$/m.exec(section);
+  const membersMatch = /^\s*members\s*=\s*\[([\s\S]*?)\]\s*(?:#.*)?$/m.exec(section);
+  let members = null;
+  if (membersMatch) {
+    const rawMembers = membersMatch[1];
+    const quotedMembers = [...rawMembers.matchAll(/"((?:[^"\\]|\\.)*)"|'([^']*)'/g)];
+    if (quotedMembers.every((match) => !(match[1] ?? match[2]).includes("\\"))) {
+      const remainder = rawMembers
+        .replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, "")
+        .replace(/,/g, "")
+        .replace(/\s+/g, "");
+      if (remainder === "") members = quotedMembers.map((match) => match[1] ?? match[2]);
+    }
+  }
+  return {
+    present: true,
+    resolver: resolverMatch ? (resolverMatch[2] ?? resolverMatch[3]) : null,
+    members,
+  };
+}
+function checkFoundationWorkspaceManifest(manifestText, report) {
+  const foundation = parseFoundationWorkspaceManifest(manifestText);
+  if (!foundation.present) return;
+  if (foundation.resolver !== "2") {
+    report("RUST-CARGO-WORKSPACE-001", "src-tauri/Cargo.toml", 1, 'the phase-3 workspace foundation must declare resolver = "2".');
+  }
+  const expectedMembers = JSON.stringify(FOUNDATION_WORKSPACE_MEMBERS);
+  if (foundation.members === null || JSON.stringify(foundation.members) !== expectedMembers) {
+    report(
+      "RUST-CARGO-WORKSPACE-001",
+      "src-tauri/Cargo.toml",
+      1,
+      `the phase-3 workspace foundation members must be exactly ${JSON.stringify(FOUNDATION_WORKSPACE_MEMBERS)}.`,
+    );
+  }
+}
 function checkCargoGate(phase, report) {
   if (!fs.existsSync(RUST_MANIFEST)) {
     report("RUST-CARGO-MANIFEST-001", "src-tauri/Cargo.toml", 1, "required Cargo manifest is missing.");
@@ -1550,9 +1634,7 @@ function checkCargoGate(phase, report) {
   const manifestText = readText(RUST_MANIFEST);
   const hasWorkspace = /^\s*\[workspace\]\s*(?:#.*)?$/m.test(manifestText);
   if (phase < 4) {
-    if (hasWorkspace) {
-      report("RUST-CARGO-PHASE-001", "src-tauri/Cargo.toml", 1, `Cargo workspace exists at phase ${phase}; phase-4 metadata checks are not implemented before the requested phase.`);
-    }
+    if (hasWorkspace) checkFoundationWorkspaceManifest(manifestText, report);
     return;
   }
   if (!hasWorkspace) {

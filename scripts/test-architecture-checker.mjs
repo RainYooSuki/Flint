@@ -15,16 +15,21 @@ import {
   evaluatePhase3Orchestration,
   findLoaderKindDispatchSites,
   findMatchSourceSites,
+  firstUseRoot,
   findModSourceAliasDispatchSites,
   findModSourceDispatchSites,
   getExportedFeatureDescriptors,
+  moduleTargetsFromUse,
   packageRootFromPackageId,
+  parseFoundationWorkspaceManifest,
   parsePhase,
   parseTypeScriptSource,
   policyPackageRoot,
   prepareRustProductionSource,
   requiredLoaderFiles,
   resolveFrontendModule,
+  reviewedHostRustModuleIds,
+  reviewedProviderTargets,
 } from "./check-architecture.mjs";
 
 test("phase parsing defaults to 1 and rejects unsupported/unknown input", () => {
@@ -42,6 +47,83 @@ test("phase 2 fails closed when mandatory loader targets are absent", () => {
   assert.deepEqual(files, []);
   assert.equal(violations.length, 2);
   assert.equal(violations.every((violation) => violation.rule === "RUST-PHASE-TARGET-001"), true);
+});
+
+test("provider API policy targets the extracted crate and drops the host-local module", () => {
+  const providerApi = "src-tauri/crates/flint-provider-api/src/lib.rs";
+  const loaderAdapter = "src-tauri/src/loaders/providers.rs";
+  const targets = reviewedProviderTargets();
+  const providerApiTargets = targets.filter((target) => target.file === providerApi);
+  assert.deepEqual(
+    providerApiTargets.map((target) => target.role).sort(),
+    ["loader-provider-api", "mod-provider-api"],
+  );
+  const genericApi = providerApiTargets.find((target) => target.role === "mod-provider-api");
+  assert.ok(genericApi);
+  assert.deepEqual(genericApi.localTargets, []);
+  assert.deepEqual(genericApi.externalRoots, ["flint_core", "semver", "std"]);
+  assert.equal(targets.some((target) => target.file === "src-tauri/src/provider_api.rs"), false);
+  assert.equal(reviewedHostRustModuleIds().includes("provider_api"), false);
+
+  const modAdapter = targets.find((target) => target.role === "mod-provider-adapter");
+  assert.ok(modAdapter);
+  assert.deepEqual(modAdapter.localTargets, ["models"]);
+  assert.deepEqual(modAdapter.externalRoots, ["flint_provider_api", "reqwest", "std"]);
+  const loaderAdapterTarget = targets.find(
+    (target) => target.role === "loader-provider-adapter" && target.file === loaderAdapter,
+  );
+  assert.ok(loaderAdapterTarget);
+  assert.deepEqual(loaderAdapterTarget.localTargets, ["loader_api", "models"]);
+  assert.deepEqual(loaderAdapterTarget.externalRoots, ["flint_provider_api", "reqwest", "std"]);
+
+  const violations = [];
+  const report = (rule, file, line, message) => violations.push({ rule, file, line, message });
+  const files = requiredLoaderFiles(2, report, (file) => file === providerApi || file === loaderAdapter);
+  assert.deepEqual(files, [providerApi, loaderAdapter]);
+  assert.deepEqual(violations, []);
+});
+
+test("phase-3 workspace foundation parser recognizes the exact reviewed members", () => {
+  const manifest = [
+    "[package]",
+    'name = "flint"',
+    'version = "2026.10.1-d1cce64"',
+    "",
+    "[workspace]",
+    'resolver = "2"',
+    'members = [".", "crates/flint-core", "crates/flint-provider-api"]',
+    "",
+    "[dependencies]",
+    'flint-core = { path = "crates/flint-core" }',
+  ].join("\n");
+  assert.deepEqual(parseFoundationWorkspaceManifest(manifest), {
+    present: true,
+    resolver: "2",
+    members: [".", "crates/flint-core", "crates/flint-provider-api"],
+  });
+  assert.deepEqual(parseFoundationWorkspaceManifest('[package]\nname = "flint"'), {
+    present: false,
+    resolver: null,
+    members: null,
+  });
+});
+
+test("Rust use roots accept normal and leading-:: paths", () => {
+  assert.equal(firstUseRoot(" semver::{Version, VersionReq}"), "semver");
+  assert.equal(firstUseRoot(" ::std::collections::BTreeMap"), "std");
+  assert.equal(firstUseRoot(" r#crate::models"), "crate");
+});
+
+test("Rust crate-root use paths resolve to imported modules rather than graph sentinels", () => {
+  const modules = new Set(["crate", "main", "models", "mods", "mods::providers"]);
+  assert.deepEqual(
+    [...moduleTargetsFromUse("use crate::models::{ModSource};", "mods::providers", modules)].sort(),
+    ["models"],
+  );
+  assert.deepEqual(
+    [...moduleTargetsFromUse("use super::{helper};", "mods::providers", modules)].sort(),
+    ["mods"],
+  );
 });
 
 test("cfg(test) modules are stripped while production inline modules remain", () => {

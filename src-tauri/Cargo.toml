@@ -10,6 +10,10 @@ rust-version = "1.90"
 name = "flint_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[workspace]
+resolver = "2"
+members = [".", "crates/flint-core", "crates/flint-provider-api"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -29,3 +33,5 @@ md5 = "=0.7.0"
 flate2 = "1"
 base64 = "0.22"
 tokio = { version = "1", features = ["rt"] }
+flint-core = { path = "crates/flint-core" }
+flint-provider-api = { path = "crates/flint-provider-api" }

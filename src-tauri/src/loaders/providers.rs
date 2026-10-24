@@ -3,12 +3,10 @@ use super::{
     list_fabric, list_forge, list_liteloader, list_neoforge, list_optifine, list_quilt,
     FABRIC_LOADER_LIST, QUILT_LOADER_LIST,
 };
-use crate::{
-    models::{LoaderInstallRequest, LoaderKind, LoaderVersionInfo},
-    provider_api::{
-        ApiVersion, Provider, ProviderCapability, ProviderDescriptor, ProviderRequirement,
-        ProviderRegistry,
-    },
+use crate::models::{LoaderInstallRequest, LoaderKind, LoaderVersionInfo};
+use flint_provider_api::{
+    ApiVersion, Provider, ProviderCapability, ProviderDescriptor, ProviderRequirement,
+    ProviderRegistry,
 };
 use reqwest::blocking::Client;
 use std::path::Path;
@@ -486,7 +484,7 @@ pub(super) fn select_for_loader<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider_api::{Provider as _, ProviderSelectionError};
+    use flint_provider_api::{Provider as _, ProviderSelectionError};
 
 
     #[test]

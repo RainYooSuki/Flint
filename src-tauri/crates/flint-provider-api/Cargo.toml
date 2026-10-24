@@ -1,0 +1,11 @@
+[package]
+name = "flint-provider-api"
+version = "0.1.0"
+description = "Framework-neutral provider contracts and registry for Flint"
+authors = ["Flint Contributors"]
+edition = "2021"
+rust-version = "1.90"
+
+[dependencies]
+flint-core = { path = "../flint-core" }
+semver = "1"

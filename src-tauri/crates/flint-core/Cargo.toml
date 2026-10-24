@@ -1,0 +1,9 @@
+[package]
+name = "flint-core"
+version = "0.1.0"
+description = "Shared contract primitives for Flint"
+authors = ["Flint Contributors"]
+edition = "2021"
+rust-version = "1.90"
+
+[dependencies]
