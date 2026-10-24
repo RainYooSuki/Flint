@@ -58,8 +58,10 @@ export function AppSidebar({
             <Icon name={item.icon} />
             <span>{item.label}</span>
             {item.id === "settings" && settingsDirty ? (
-              <span className="nav-dirty" title="设置有未保存更改" aria-hidden="true" />
-              <span className="sr-only">设置有未保存更改</span>
+              <>
+                <span className="nav-dirty" title="设置有未保存更改" aria-hidden="true" />
+                <span className="sr-only">设置有未保存更改</span>
+              </>
             ) : null}
           </button>
         ))}
