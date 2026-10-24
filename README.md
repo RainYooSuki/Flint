@@ -146,6 +146,8 @@ YYYY.M.N-<sha7>
 
 The release workflow computes the version before building and applies it to `VERSION`, `package.json`, `tauri.conf.json`, `Cargo.toml`, and `Cargo.lock`. After a successful release, it commits only the released value to `VERSION` on the triggering branch as `github-actions[bot]`. A rerun at the same source commit reuses an existing valid tag at that commit.
 
+`VERSION` is the release ledger. Generated package/Tauri/Cargo metadata can lag the ledger, and SHA prereleases are identifiers rather than chronological ordering signals. The version-only prepare validation checks version syntax and internal metadata consistency without treating a SHA-only difference as "ahead"; it cannot be combined with `--version`, `--require-exact`, or asset validation. Exact checks after `apply-version` and `--require-exact` remain strict.
+
 ## Release artifacts
 
 For version `<version>`, releases contain the Windows `.exe`, the Linux/macOS raw executables, a matching ZIP for every executable, and `sha.txt`. Files follow `Flint-<platform>-<version>` naming, with `.exe` on Windows and `.zip` for archives. Each ZIP contains the matching raw executable and a `RUNNING.txt`; `sha.txt` contains SHA-256 hashes for the eight raw/ZIP assets, not for itself.

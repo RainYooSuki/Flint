@@ -31,12 +31,14 @@ function usage() {
   return [
     "Usage:",
     "  node scripts/validate-release.mjs [--root <path>] [--version <YYYY.M.N-sha7>] [--require-exact]",
+    "  node scripts/validate-release.mjs [--root <path>] --allow-divergent-metadata",
     "  node scripts/validate-release.mjs --assets <dir> --platform <platform>",
     "  node scripts/validate-release.mjs --assets <dir> [--write-sha]",
     "",
     `Platforms: ${PLATFORMS.map((platform) => platform.id).join(", ")}`,
     "With --assets and no --platform, all four platform artifact pairs and sha.txt are validated.",
     "--write-sha regenerates sha.txt from the eight raw/ZIP assets before validating it.",
+    "--allow-divergent-metadata accepts a generated baseline whose SHA differs within the same year/month/N or whose year/month/N is behind VERSION; generated metadata ahead of VERSION remains an error. It is version-only and cannot be combined with --version, --require-exact, or asset validation.",
   ].join("\n");
 }
 
@@ -55,6 +57,7 @@ export function parseCliArguments(argv = process.argv.slice(2)) {
   let expectedVersion;
   let writeSha = false;
   let requireExact = false;
+  let allowDivergentMetadata = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -82,6 +85,8 @@ export function parseCliArguments(argv = process.argv.slice(2)) {
       writeSha = true;
     } else if (argument === "--require-exact") {
       requireExact = true;
+    } else if (argument === "--allow-divergent-metadata") {
+      allowDivergentMetadata = true;
     } else if (argument === "--help" || argument === "-h") {
       console.log(usage());
       process.exit(0);
@@ -99,8 +104,13 @@ export function parseCliArguments(argv = process.argv.slice(2)) {
   if (platform && writeSha) {
     throw new Error(`--write-sha is only valid when validating all platform assets. ${usage()}`);
   }
+  if (allowDivergentMetadata && (assetsDirectory || expectedVersion !== undefined || requireExact || writeSha || platform)) {
+    throw new Error(
+      `--allow-divergent-metadata is only valid for version-only release-prep validation and cannot be combined with --version, --require-exact, or asset validation. ${usage()}`,
+    );
+  }
 
-  return { root, assetsDirectory, platform, expectedVersion, writeSha, requireExact };
+  return { root, assetsDirectory, platform, expectedVersion, writeSha, requireExact, allowDivergentMetadata };
 }
 
 export function assetBaseName(platformId, version) {
@@ -417,11 +427,25 @@ export function validateChecksumFile(assetsDirectory, version) {
 }
 
 export function validateRelease(options) {
+  if (
+    options.allowDivergentMetadata &&
+    (options.assetsDirectory || options.expectedVersion !== undefined || options.requireExact || options.writeSha || options.platform)
+  ) {
+    throw new Error(
+      "--allow-divergent-metadata is only valid for version-only release-prep validation and cannot be combined with --version, --require-exact, or asset validation.",
+    );
+  }
   const state = validateVersionConsistency(options.root, options.expectedVersion, {
     requireExact: options.requireExact,
+    allowDivergentMetadata: options.allowDivergentMetadata,
   });
   if (state.exactMetadata) {
     console.log(`Version metadata consistent: ${state.version}`);
+  } else if (options.allowDivergentMetadata) {
+    console.log(
+      `Release-prep metadata accepted: VERSION ledger ${state.version}; generated metadata baseline ${state.metadataVersion}. ` +
+      "SHA prereleases are not chronological ordering signals; post-apply validation remains exact.",
+    );
   } else {
     console.log(
       `VERSION records ${state.version}; generated metadata baseline is ${state.metadataVersion}. ` +
@@ -430,7 +454,7 @@ export function validateRelease(options) {
   }
 
   if (!options.assetsDirectory) {
-    console.log("Version-only release validation passed.");
+    console.log(options.allowDivergentMetadata ? "Release-prep validation passed." : "Version-only release validation passed.");
     return state;
   }
 

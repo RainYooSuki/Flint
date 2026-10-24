@@ -211,6 +211,17 @@ function parseLoadedVersion(value, label, allowLegacyCurrent) {
   return parseReleaseVersion(value, label).version;
 }
 
+export function compareReleaseCores(left, right) {
+  const a = parseReleaseVersion(left, "left version");
+  const b = parseReleaseVersion(right, "right version");
+  for (const key of ["year", "month", "releaseOrdinal"]) {
+    if (a[key] !== b[key]) {
+      return a[key] < b[key] ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
 function loadVersionInputs(root, options = {}) {
   const rootDir = resolve(root);
   const entries = {};
@@ -312,6 +323,23 @@ export function validateVersionConsistency(root = repoRootFromScript(), expected
       throw new Error(`Version files are not exact; VERSION=${state.version}, ${offenders.join(", ")}`);
     }
     return { ...state, metadataVersion, exactMetadata: true, pendingVersionCommit: false };
+  }
+
+  if (options.allowDivergentMetadata) {
+    const metadataCoreDirection = compareReleaseCores(metadataVersion, state.version);
+    if (metadataCoreDirection > 0) {
+      throw new Error(
+        `Generated version metadata ${metadataVersion} is ahead of VERSION ${state.version} by year/month/release ordinal; ` +
+        "SHA prereleases are not chronological ordering signals.",
+      );
+    }
+    const exactMetadata = metadataVersion === state.version;
+    return {
+      ...state,
+      metadataVersion,
+      exactMetadata,
+      pendingVersionCommit: !exactMetadata,
+    };
   }
 
   const metadataDirection = compareReleaseVersions(metadataVersion, state.version);

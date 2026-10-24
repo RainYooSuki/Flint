@@ -28,6 +28,8 @@ If exactly one valid monthly release tag already points at the workflow `HEAD`, 
 
 The release job fetches tags again and recomputes the version immediately before publishing. If the monthly inventory changed after the build and the prepared version is stale, publishing stops.
 
+`VERSION` is a release ledger; generated package/Tauri/Cargo metadata may lag it until the next build applies a computed version. Prepare runs the version-only `validate-release.mjs --allow-divergent-metadata` mode, which requires valid versions and internally consistent generated metadata, accepts a generated year/month/N at or behind the ledger, and does not use SHA prereleases for ordering. Generated metadata ahead of the ledger still fails. The mode cannot be combined with `--version`, `--require-exact`, or asset validation; those checks remain strict after `apply-version`.
+
 ## Triggers
 
 The workflow is `.github/workflows/flint-release.yml`.

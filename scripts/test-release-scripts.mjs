@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   applyVersion,
+  compareReleaseCores,
   extractCargoLockPackageVersion,
   readVersionState,
   validateVersionConsistency,
@@ -36,6 +37,7 @@ import {
   crc32,
   expectedAllAssets,
   expectedPlatformAssets,
+  parseCliArguments,
   rawAssetName,
   validateRelease,
 } from "./validate-release.mjs";
@@ -612,6 +614,145 @@ try {
     validateVersionConsistency(pendingRoot, RELEASE_VERSION);
   });
 
+  runTest("release prepare accepts VERSION ledger and SHA-only generated metadata divergence", () => {
+    const ledgerVersion = "2026.10.1-7736d6e";
+    const generatedVersion = "2026.10.1-d1cce64";
+    const root = createVersionFixture(generatedVersion);
+    temporaryDirectories.push(root);
+    writeFileSync(join(root, "VERSION"), `${ledgerVersion}\n`, "utf8");
+
+    assert.equal(compareReleaseCores(generatedVersion, ledgerVersion), 0);
+    assert.throws(
+      () => validateVersionConsistency(root),
+      /Generated version metadata 2026\.10\.1-d1cce64 is ahead of VERSION 2026\.10\.1-7736d6e/,
+    );
+
+    const prepState = validateVersionConsistency(root, undefined, { allowDivergentMetadata: true });
+    assert.equal(prepState.version, ledgerVersion);
+    assert.equal(prepState.metadataVersion, generatedVersion);
+    assert.equal(prepState.exactMetadata, false);
+    assert.equal(prepState.pendingVersionCommit, true);
+
+    const parsed = parseCliArguments(["--root", root, "--allow-divergent-metadata"]);
+    assert.equal(parsed.allowDivergentMetadata, true);
+    assert.equal(parsed.requireExact, false);
+    const released = validateRelease({ root, allowDivergentMetadata: true });
+    assert.equal(released.version, ledgerVersion);
+    assert.equal(released.metadataVersion, generatedVersion);
+
+    assert.throws(
+      () => validateVersionConsistency(root, undefined, { requireExact: true, allowDivergentMetadata: true }),
+      /not exact/,
+    );
+    assert.throws(
+      () => validateVersionConsistency(root, ledgerVersion, { allowDivergentMetadata: true }),
+      /Version files must all equal/,
+    );
+    assert.throws(
+      () => parseCliArguments(["--allow-divergent-metadata", "--require-exact"]),
+      /only valid for version-only release-prep validation/,
+    );
+    assert.throws(
+      () => parseCliArguments(["--allow-divergent-metadata", "--version", ledgerVersion]),
+      /only valid for version-only release-prep validation/,
+    );
+    assert.throws(
+      () => parseCliArguments(["--allow-divergent-metadata", "--assets", root]),
+      /only valid for version-only release-prep validation/,
+    );
+    assert.throws(
+      () => validateRelease({ root, allowDivergentMetadata: true, assetsDirectory: root }),
+      /only valid for version-only release-prep validation/,
+    );
+  });
+
+  runTest("release prepare rejects conflicting metadata, malformed versions, and later release cores", () => {
+    const ledgerVersion = "2026.10.1-7736d6e";
+    const generatedVersion = "2026.10.1-d1cce64";
+    const conflictVersion = "2026.10.1-eeeeeee";
+
+    const mutators = [
+      ["package.json", (root) => {
+        const path = join(root, "package.json");
+        const value = JSON.parse(readFileSync(path, "utf8"));
+        value.version = conflictVersion;
+        writeJson(path, value);
+      }],
+      ["src-tauri/tauri.conf.json", (root) => {
+        const path = join(root, "src-tauri", "tauri.conf.json");
+        const value = JSON.parse(readFileSync(path, "utf8"));
+        value.version = conflictVersion;
+        writeJson(path, value);
+      }],
+      ["src-tauri/Cargo.toml", (root) => {
+        const path = join(root, "src-tauri", "Cargo.toml");
+        writeFileSync(
+          path,
+          readFileSync(path, "utf8").replace(`version = "${generatedVersion}"`, `version = "${conflictVersion}"`),
+          "utf8",
+        );
+      }],
+      ["src-tauri/Cargo.lock", (root) => {
+        const path = join(root, "src-tauri", "Cargo.lock");
+        writeFileSync(
+          path,
+          readFileSync(path, "utf8").replace(`version = "${generatedVersion}"`, `version = "${conflictVersion}"`),
+          "utf8",
+        );
+      }],
+    ];
+
+    for (const [label, mutate] of mutators) {
+      const root = createVersionFixture(generatedVersion);
+      temporaryDirectories.push(root);
+      writeFileSync(join(root, "VERSION"), `${ledgerVersion}\n`, "utf8");
+      mutate(root);
+      assert.throws(
+        () => validateVersionConsistency(root, undefined, { allowDivergentMetadata: true }),
+        /inconsistent|does not match/,
+        label,
+      );
+    }
+
+    const malformedVersionRoot = createVersionFixture(generatedVersion);
+    temporaryDirectories.push(malformedVersionRoot);
+    writeFileSync(join(malformedVersionRoot, "VERSION"), "not-a-release-version\n", "utf8");
+    assert.throws(
+      () => validateVersionConsistency(malformedVersionRoot, undefined, { allowDivergentMetadata: true }),
+      /must match/,
+    );
+
+    const malformedMetadataRoot = createVersionFixture(generatedVersion);
+    temporaryDirectories.push(malformedMetadataRoot);
+    writeFileSync(join(malformedMetadataRoot, "VERSION"), `${ledgerVersion}\n`, "utf8");
+    const packagePath = join(malformedMetadataRoot, "package.json");
+    const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
+    packageJson.version = "not-a-release-version";
+    writeJson(packagePath, packageJson);
+    assert.throws(
+      () => validateVersionConsistency(malformedMetadataRoot, undefined, { allowDivergentMetadata: true }),
+      /must match/,
+    );
+
+    for (const laterVersion of ["2026.10.2-def5678", "2026.11.1-def5678"]) {
+      const laterRoot = createVersionFixture(laterVersion);
+      temporaryDirectories.push(laterRoot);
+      writeFileSync(join(laterRoot, "VERSION"), `${ledgerVersion}\n`, "utf8");
+      assert.throws(
+        () => validateVersionConsistency(laterRoot, undefined, { allowDivergentMetadata: true }),
+        /ahead of VERSION .* by year\/month\/release ordinal/,
+      );
+    }
+
+    const olderMetadataRoot = createVersionFixture("2026.9.5-abc1234");
+    temporaryDirectories.push(olderMetadataRoot);
+    writeFileSync(join(olderMetadataRoot, "VERSION"), "2026.11.1-7736d6e\n", "utf8");
+    const olderState = validateVersionConsistency(olderMetadataRoot, undefined, { allowDivergentMetadata: true });
+    assert.equal(olderState.version, "2026.11.1-7736d6e");
+    assert.equal(olderState.metadataVersion, "2026.9.5-abc1234");
+    assert.equal(olderState.pendingVersionCommit, true);
+  });
+
   runTest("apply-version can migrate a legacy numeric baseline atomically", () => {
     const legacyRoot = createVersionFixture("0.1.0");
     temporaryDirectories.push(legacyRoot);
@@ -808,6 +949,14 @@ try {
     assert.ok(workflow.includes("Refusing to publish a stale monthly release ordinal"));
     assert.ok(workflow.includes("node scripts/release-version.mjs"));
     assert.ok(workflow.includes("--expected-sha"));
+    const prepareStart = workflow.indexOf("Validate branch and release tooling");
+    const prepareEnd = workflow.indexOf("Compute release metadata from exact HEAD");
+    assert.ok(prepareStart >= 0 && prepareEnd > prepareStart);
+    const prepareBlock = workflow.slice(prepareStart, prepareEnd);
+    assert.ok(prepareBlock.includes("node scripts/validate-release.mjs --allow-divergent-metadata"));
+    assert.equal((workflow.match(/--allow-divergent-metadata/g) ?? []).length, 1);
+    assert.ok(!workflow.slice(prepareEnd).includes("--allow-divergent-metadata"));
+    assert.ok(workflow.includes('node scripts/validate-release.mjs --version "$RELEASE_VERSION"'));
     assert.ok(!workflow.includes("rev-list --count"));
     assert.ok(!workflow.includes("commit_count"));
     assert.ok(!workflow.includes("next_version"));

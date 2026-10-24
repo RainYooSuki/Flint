@@ -82,7 +82,7 @@ jobs:
           fi
           echo "Release will use triggering branch '${REF_NAME}'."
           node scripts/test-release-scripts.mjs
-          node scripts/validate-release.mjs
+          node scripts/validate-release.mjs --allow-divergent-metadata
 
       - name: Compute release metadata from exact HEAD
         id: meta
