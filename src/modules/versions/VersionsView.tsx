@@ -1,6 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "../../components/Icon";
+import type { InstanceActionContribution } from "../../core/contributions";
+import { InstanceActionRenderer } from "../../core/InstanceActionRenderer";
 import { InstalledModsPanel } from "./downloads/InstalledModsPanel";
 import { LoaderInstallPanel } from "./downloads/LoaderInstallPanel";
 import { ModDiscoveryPanel } from "./downloads/ModDiscoveryPanel";
@@ -39,12 +41,13 @@ interface VersionsViewProps {
   gameDirLabel: string;
   gameDirPath: string;
   settings: LauncherSettings | null;
+  instanceActions: readonly InstanceActionContribution[];
   onRefreshInstances: () => void;
   onSelectInstance: (id: string) => void;
   onFetchRemote: () => void;
   onInstall: (version: RemoteVersion) => void;
   onOpenPath: (path: string, label: string) => void;
-  onGoLaunch: () => void;
+  onNavigateToPage: (targetPageId: string) => void;
   onGoSettings: () => void;
   onNotify: (kind: NoticeKind, message: string) => void;
 }
@@ -70,12 +73,13 @@ export function VersionsView({
   gameDirLabel,
   gameDirPath,
   settings,
+  instanceActions,
   onRefreshInstances,
   onSelectInstance,
   onFetchRemote,
   onInstall,
   onOpenPath,
-  onGoLaunch,
+  onNavigateToPage,
   onGoSettings,
   onNotify
 }: VersionsViewProps) {
@@ -155,10 +159,15 @@ export function VersionsView({
           <span>{modeContext}</span>
         </div>
         <div className="page-head-actions">
-          {mode === "local" && selectedInstance ? (
-            <button type="button" className="button primary" onClick={onGoLaunch}>
-              <Icon name="play" /> 启动所选版本
-            </button>
+          {mode === "local" ? (
+            <InstanceActionRenderer
+              actions={instanceActions}
+              selectedInstance={selectedInstance}
+              gameDir={gameDirPath}
+              navigateToPage={onNavigateToPage}
+              notify={onNotify}
+              buttonClassName="button primary"
+            />
           ) : null}
         </div>
       </header>

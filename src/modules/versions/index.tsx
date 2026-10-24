@@ -20,12 +20,13 @@ function VersionsPage({ context }: PageComponentProps) {
       gameDirLabel={context.gameDirLabel}
       gameDirPath={context.gameDirPath}
       settings={context.settings}
+      instanceActions={context.instanceActions}
       onRefreshInstances={context.onRefreshInstances}
       onSelectInstance={context.onSelectInstance}
       onFetchRemote={context.onFetchRemote}
       onInstall={context.onInstall}
       onOpenPath={context.onOpenPath}
-      onGoLaunch={() => context.navigateToPage("flint.launch.page.launch")}
+      onNavigateToPage={context.navigateToPage}
       onGoSettings={() => context.navigateToPage("flint.settings.page.settings")}
       onNotify={context.onNotify}
     />

@@ -6,6 +6,7 @@ import { api } from "../api";
 import { Icon } from "../components/Icon";
 import { TitleBar } from "../components/TitleBar";
 import type { AppPageContext } from "../core/app-context";
+import { ContributionBoundary } from "../core/ContributionBoundary";
 import type {
   AccountInfo,
   InstallProgress,
@@ -30,7 +31,6 @@ import {
 } from "../utils";
 import { AppSidebar } from "./AppSidebar";
 import { AccountDialogSurface, frontendRegistry } from "./composition";
-import { ContributionBoundary } from "./ContributionBoundary";
 
 export default function App() {
   const [activePageId, setActivePageId] = useState(() => frontendRegistry.defaultPageId ?? "");
@@ -516,6 +516,8 @@ export default function App() {
 
   const pageContext: AppPageContext = {
     navigateToPage: navigate,
+    settingsSections: frontendRegistry.settingsSections,
+    instanceActions: frontendRegistry.instanceActions,
     info,
     infoLoading,
     infoError,

@@ -1,4 +1,4 @@
-import type { FeatureDescriptor, PageComponentProps } from "../../core/contributions";
+import type { FeatureDescriptor, InstanceActionContext, PageComponentProps } from "../../core/contributions";
 import { LaunchView } from "./LaunchView";
 
 const FEATURE_ID = "flint.launch";
@@ -52,7 +52,20 @@ export const launchFeature: FeatureDescriptor = {
       }
     ],
     settingsSections: [],
-    instanceActions: []
+    instanceActions: [
+      {
+        id: "flint.launch.instance-action.launch",
+        featureId: FEATURE_ID,
+        label: "启动所选版本",
+        icon: "play",
+        order: 10,
+        visible: (context: InstanceActionContext) => context.selectedInstance !== null,
+        handler: (context: InstanceActionContext) => {
+          if (!context.selectedInstance) return;
+          context.navigateToPage(PAGE_ID);
+        }
+      }
+    ]
   }
 };
 

@@ -10,16 +10,19 @@ import type {
   NoticeKind,
   RemoteVersion
 } from "../types";
+import type { InstanceActionContribution, SettingsSectionContribution } from "./contributions";
 
 /**
  * The shell-owned state and actions exposed to page contributions.
  *
- * Phase 3 keeps shared state ownership in App. Feature pages receive this
- * explicit typed contract instead of importing shell internals or another
- * feature module.
+ * Phase 3 keeps shared state ownership in App and exposes the frozen
+ * contribution lists. Feature pages and sections receive this explicit typed
+ * contract instead of importing shell internals or another feature module.
  */
 export interface AppPageContext {
   readonly navigateToPage: (targetPageId: string) => void;
+  readonly settingsSections: readonly SettingsSectionContribution[];
+  readonly instanceActions: readonly InstanceActionContribution[];
 
   readonly info: LauncherInfo | null;
   readonly infoLoading: boolean;
