@@ -1,3 +1,5 @@
+mod providers;
+
 use crate::{
     install, java,
     models::{
@@ -8,6 +10,7 @@ use crate::{
     paths::{component_is_safe, resolve_game_dir, safe_join},
     version::{self, Platform},
 };
+use providers::{LoaderListContext, LoaderProgressSink, LoaderProvider, LoaderProviderContext};
 use regex::Regex;
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
@@ -37,22 +40,40 @@ const OPTIFINE_DOWNLOADS: &str = "https://optifine.net/downloads";
 const MAX_JSON_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_HTML_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_INSTALLER_BYTES: u64 = 128 * 1024 * 1024;
+const LOADER_METADATA_HTTP_TIMEOUT_SECONDS: u64 = 75;
+const LOADER_INSTALLER_HTTP_TIMEOUT_SECONDS: u64 = 600;
 const INSTALLER_TIMEOUT_SECONDS: u64 = 10 * 60;
+
+struct TauriLoaderProgressSink<'a> {
+    app: &'a AppHandle,
+    request: &'a LoaderInstallRequest,
+}
+
+impl LoaderProgressSink for TauriLoaderProgressSink<'_> {
+    fn progress(&self, stage: &str, completed: u64, total: u64, message: &str) {
+        emit_loader_progress_event(self.app, self.request, stage, completed, total, message);
+    }
+}
+
+struct NoopLoaderProgressSink;
+
+impl LoaderProgressSink for NoopLoaderProgressSink {
+    fn progress(&self, _stage: &str, _completed: u64, _total: u64, _message: &str) {}
+}
 
 pub fn list_loader_versions_blocking(
     loader: LoaderKind,
     game_version: &str,
 ) -> Result<Vec<LoaderVersionInfo>, String> {
     validate_game_version(game_version)?;
-    let client = net::http_client(Duration::from_secs(75))?;
-    match loader {
-        LoaderKind::Fabric => list_fabric(&client, game_version),
-        LoaderKind::Quilt => list_quilt(&client, game_version),
-        LoaderKind::Forge => list_forge(&client, game_version),
-        LoaderKind::Neoforge => list_neoforge(&client, game_version),
-        LoaderKind::Liteloader => list_liteloader(&client, game_version),
-        LoaderKind::Optifine => list_optifine(&client, game_version),
-    }
+    let metadata_client =
+        net::http_client(Duration::from_secs(LOADER_METADATA_HTTP_TIMEOUT_SECONDS))?;
+    let registry = providers::build_registry()?;
+    let provider: &dyn LoaderProvider = providers::select_for_loader(&registry, loader)?;
+
+    let progress = NoopLoaderProgressSink;
+    let context = LoaderListContext::new(&metadata_client, game_version, &progress);
+    provider.list_versions(&context)
 }
 
 pub fn install_loader_blocking(
@@ -67,56 +88,37 @@ pub fn install_loader_blocking(
     fs::create_dir_all(&root)
         .map_err(|error| format!("Cannot create game directory ({}): {error}", root.display()))?;
 
-    emit_progress(
-        app,
-        request,
+    let progress = TauriLoaderProgressSink { app, request };
+    progress.progress(
         "prepare",
         0,
         1,
         "Preparing loader installation",
     );
-    ensure_vanilla_base(app, request, &root)?;
-    emit_progress(
-        app,
-        request,
+    ensure_vanilla_base(app, request, &root, &progress)?;
+    progress.progress(
         "prepare",
         1,
         1,
         "Vanilla base version is ready",
     );
 
-    let (installed_version_id, log_path) = match request.loader {
-        LoaderKind::Fabric => (
-            install_meta_profile(
-                app,
-                request,
-                &root,
-                "Fabric",
-                format!(
-                    "{FABRIC_LOADER_LIST}/{}/{}/profile/json",
-                    request.game_version, request.loader_version
-                ),
-            )?,
-            None,
-        ),
-        LoaderKind::Quilt => (
-            install_meta_profile(
-                app,
-                request,
-                &root,
-                "Quilt",
-                format!(
-                    "{QUILT_LOADER_LIST}/{}/{}/profile/json",
-                    request.game_version, request.loader_version
-                ),
-            )?,
-            None,
-        ),
-        LoaderKind::Forge => install_forge(app, request, &root)?,
-        LoaderKind::Neoforge => install_neoforge(app, request, &root)?,
-        LoaderKind::Liteloader => (install_liteloader(app, request, &root)?, None),
-        LoaderKind::Optifine => install_optifine(app, request, &root)?,
-    };
+    let metadata_client =
+        net::http_client(Duration::from_secs(LOADER_METADATA_HTTP_TIMEOUT_SECONDS))?;
+    let installer_client =
+        net::http_client(Duration::from_secs(LOADER_INSTALLER_HTTP_TIMEOUT_SECONDS))?;
+    let registry = providers::build_registry()?;
+    let provider: &dyn LoaderProvider = providers::select_for_loader(&registry, request.loader)?;
+    let context = LoaderProviderContext::new(
+        &metadata_client,
+        &installer_client,
+        &root,
+        request,
+        &progress,
+    );
+    let output = provider.install(&context)?;
+    let installed_version_id = output.installed_version_id;
+    let log_path = output.log_path;
 
     let install_path = version::version_dir(&root, &installed_version_id);
     if !version::version_json_path(&root, &installed_version_id).is_file() {
@@ -124,9 +126,7 @@ pub fn install_loader_blocking(
             "Loader installation did not produce version profile {installed_version_id}."
         ));
     }
-    emit_progress(
-        app,
-        request,
+    progress.progress(
         "complete",
         1,
         1,
@@ -156,15 +156,14 @@ fn ensure_vanilla_base(
     app: &AppHandle,
     request: &LoaderInstallRequest,
     root: &Path,
+    progress: &dyn LoaderProgressSink,
 ) -> Result<(), String> {
     let metadata = version::version_json_path(root, &request.game_version);
     let client_jar = version::client_jar_path(root, &request.game_version);
     if metadata.is_file() && client_jar.is_file() {
         return Ok(());
     }
-    emit_progress(
-        app,
-        request,
+    progress.progress(
         "vanilla",
         0,
         1,
@@ -172,11 +171,13 @@ fn ensure_vanilla_base(
     );
     let game_dir = root.display().to_string();
     install::install_blocking(app, &game_dir, &request.game_version)?;
-    emit_progress(app, request, "vanilla", 1, 1, "Vanilla version installed");
+    progress.progress("vanilla", 1, 1, "Vanilla version installed");
     Ok(())
 }
 
-fn list_fabric(client: &Client, game_version: &str) -> Result<Vec<LoaderVersionInfo>, String> {
+fn list_fabric(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>, String> {
+    let client = context.metadata_client();
+    let game_version = context.game_version();
     let value = fetch_json(
         client,
         &format!("{FABRIC_LOADER_LIST}/{game_version}"),
@@ -213,7 +214,9 @@ fn list_fabric(client: &Client, game_version: &str) -> Result<Vec<LoaderVersionI
     Ok(result)
 }
 
-fn list_quilt(client: &Client, game_version: &str) -> Result<Vec<LoaderVersionInfo>, String> {
+fn list_quilt(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>, String> {
+    let client = context.metadata_client();
+    let game_version = context.game_version();
     let value = fetch_json(
         client,
         &format!("{QUILT_LOADER_LIST}/{game_version}"),
@@ -250,7 +253,9 @@ fn list_quilt(client: &Client, game_version: &str) -> Result<Vec<LoaderVersionIn
     Ok(result)
 }
 
-fn list_forge(client: &Client, game_version: &str) -> Result<Vec<LoaderVersionInfo>, String> {
+fn list_forge(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>, String> {
+    let client = context.metadata_client();
+    let game_version = context.game_version();
     let metadata = fetch_json(
         client,
         FORGE_MAVEN_METADATA,
@@ -295,7 +300,9 @@ fn list_forge(client: &Client, game_version: &str) -> Result<Vec<LoaderVersionIn
     Ok(result)
 }
 
-fn list_neoforge(client: &Client, game_version: &str) -> Result<Vec<LoaderVersionInfo>, String> {
+fn list_neoforge(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>, String> {
+    let client = context.metadata_client();
+    let game_version = context.game_version();
     let legacy = game_version == "1.20.1";
     let url = if legacy {
         NEOFORGE_LEGACY_MAVEN_METADATA
@@ -343,7 +350,9 @@ fn neoforge_game_prefix(game_version: &str) -> String {
     }
 }
 
-fn list_liteloader(client: &Client, game_version: &str) -> Result<Vec<LoaderVersionInfo>, String> {
+fn list_liteloader(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>, String> {
+    let client = context.metadata_client();
+    let game_version = context.game_version();
     let value = fetch_json(client, LITELOADER_METADATA, MAX_JSON_BYTES, "LiteLoader")?;
     let entries = collect_liteloader_entries(&value, game_version);
     let mut result = Vec::new();
@@ -365,7 +374,9 @@ fn list_liteloader(client: &Client, game_version: &str) -> Result<Vec<LoaderVers
     Ok(result)
 }
 
-fn list_optifine(client: &Client, game_version: &str) -> Result<Vec<LoaderVersionInfo>, String> {
+fn list_optifine(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>, String> {
+    let client = context.metadata_client();
+    let game_version = context.game_version();
     let html = fetch_text(
         client,
         OPTIFINE_DOWNLOADS,
@@ -394,23 +405,21 @@ fn list_optifine(client: &Client, game_version: &str) -> Result<Vec<LoaderVersio
 }
 
 fn install_meta_profile(
-    app: &AppHandle,
-    request: &LoaderInstallRequest,
-    root: &Path,
+    context: &LoaderProviderContext<'_>,
     service_name: &str,
     profile_url: String,
 ) -> Result<String, String> {
-    emit_progress(
-        app,
-        request,
+    let request = context.request();
+    let root = context.root();
+    let client = context.metadata_client();
+    context.emit_progress(
         "profile",
         0,
         1,
         &format!("Fetching {service_name} profile"),
     );
-    let client = net::http_client(Duration::from_secs(75))?;
     let profile = fetch_json(
-        &client,
+        client,
         &profile_url,
         MAX_JSON_BYTES,
         &format!("{service_name} Meta"),
@@ -430,9 +439,7 @@ fn install_meta_profile(
             request.game_version
         ));
     }
-    emit_progress(
-        app,
-        request,
+    context.emit_progress(
         "profile",
         1,
         1,
@@ -440,21 +447,19 @@ fn install_meta_profile(
     );
 
     let platform = Platform::current();
-    let context = platform.rule_context();
-    let libraries = version::allowed_libraries(&profile, &context);
+    let rule_context = platform.rule_context();
+    let libraries = version::allowed_libraries(&profile, &rule_context);
     let mut tasks = Vec::new();
     for library in &libraries {
         if let Some(file) = version::library_file(library, None)? {
             tasks.push(file);
         }
-        if let Some((_classifier, file)) = version::library_native_file(library, &context)? {
+        if let Some((_classifier, file)) = version::library_native_file(library, &rule_context)? {
             tasks.push(file);
         }
     }
     let total = tasks.len() as u64;
-    emit_progress(
-        app,
-        request,
+    context.emit_progress(
         "libraries",
         0,
         total,
@@ -474,16 +479,14 @@ fn install_meta_profile(
             return Err(format!("Unsafe library path: {}", file.path));
         };
         net::download_atomic(
-            &client,
+            client,
             url,
             &destination,
             file.sha1.as_deref(),
             MAX_INSTALLER_BYTES,
             &file.path,
         )?;
-        emit_progress(
-            app,
-            request,
+        context.emit_progress(
             "libraries",
             index as u64 + 1,
             total,
@@ -491,26 +494,20 @@ fn install_meta_profile(
         );
     }
 
-    emit_progress(
-        app,
-        request,
+    context.emit_progress(
         "finalize",
         0,
         1,
         "Writing loader version profile",
     );
     write_version_profile(root, installed_id, &profile)?;
-    emit_progress(
-        app,
-        request,
+    context.emit_progress(
         "finalize",
         1,
         1,
         "Loader version profile written",
     );
-    emit_progress(
-        app,
-        request,
+    context.emit_progress(
         "complete",
         1,
         1,
@@ -520,10 +517,10 @@ fn install_meta_profile(
 }
 
 fn install_forge(
-    app: &AppHandle,
-    request: &LoaderInstallRequest,
-    root: &Path,
+    context: &LoaderProviderContext<'_>,
 ) -> Result<(String, Option<String>), String> {
+    let request = context.request();
+    let root = context.root();
     let loader_version = request
         .loader_version
         .strip_prefix(&format!("{}-", request.game_version))
@@ -535,9 +532,7 @@ fn install_forge(
     let file_name = format!("forge-{maven_version}-installer.jar");
     let expected_id = format!("{}-forge-{loader_version}", request.game_version);
     install_java_installer_flow(
-        app,
-        request,
-        root,
+        context,
         &url,
         &file_name,
         &["--installClient", &root.display().to_string()],
@@ -547,10 +542,10 @@ fn install_forge(
 }
 
 fn install_neoforge(
-    app: &AppHandle,
-    request: &LoaderInstallRequest,
-    root: &Path,
+    context: &LoaderProviderContext<'_>,
 ) -> Result<(String, Option<String>), String> {
+    let request = context.request();
+    let root = context.root();
     let legacy = request.game_version == "1.20.1";
     let loader_version = request
         .loader_version
@@ -575,9 +570,7 @@ fn install_neoforge(
         )
     };
     install_java_installer_flow(
-        app,
-        request,
-        root,
+        context,
         &url,
         &file_name,
         &["--installClient", &root.display().to_string()],
@@ -587,13 +580,13 @@ fn install_neoforge(
 }
 
 fn install_optifine(
-    app: &AppHandle,
-    request: &LoaderInstallRequest,
-    root: &Path,
+    context: &LoaderProviderContext<'_>,
 ) -> Result<(String, Option<String>), String> {
-    let client = net::http_client(Duration::from_secs(75))?;
+    let request = context.request();
+    let root = context.root();
+    let client = context.metadata_client();
     let html = fetch_text(
-        &client,
+        client,
         OPTIFINE_DOWNLOADS,
         MAX_HTML_BYTES,
         "OptiFine downloads",
@@ -620,9 +613,7 @@ fn install_optifine(
         request.game_version, request.loader_version
     );
     install_java_installer_flow(
-        app,
-        request,
-        root,
+        context,
         &url,
         &installer_name,
         &["--install"],
@@ -632,9 +623,7 @@ fn install_optifine(
 }
 
 fn install_java_installer_flow(
-    app: &AppHandle,
-    request: &LoaderInstallRequest,
-    root: &Path,
+    context: &LoaderProviderContext<'_>,
     url: &str,
     file_name: &str,
     installer_args: &[&str],
@@ -644,21 +633,21 @@ fn install_java_installer_flow(
     if !component_is_safe(file_name) {
         return Err("The installer file name is unsafe.".to_string());
     }
+    let request = context.request();
+    let root = context.root();
+    let client = context.installer_client();
     net::validate_https_url(url)?;
-    let client = net::http_client(Duration::from_secs(600))?;
     let installer_dir = root.join("loader-installers");
     net::ensure_directory(&installer_dir)?;
     let installer_path = installer_dir.join(file_name);
-    emit_progress(
-        app,
-        request,
+    context.emit_progress(
         "installer",
         0,
         1,
         &format!("Downloading {service_name} installer"),
     );
     net::download_atomic(
-        &client,
+        client,
         url,
         &installer_path,
         None,
@@ -678,9 +667,7 @@ fn install_java_installer_flow(
         &request.game_version,
         &request.loader_version,
     )?;
-    emit_progress(
-        app,
-        request,
+    context.emit_progress(
         "installer",
         1,
         2,
@@ -694,9 +681,7 @@ fn install_java_installer_flow(
         &log_path,
         INSTALLER_TIMEOUT_SECONDS,
     )?;
-    emit_progress(
-        app,
-        request,
+    context.emit_progress(
         "installer",
         2,
         2,
@@ -715,12 +700,12 @@ fn install_java_installer_flow(
 }
 
 fn install_liteloader(
-    app: &AppHandle,
-    request: &LoaderInstallRequest,
-    root: &Path,
+    context: &LoaderProviderContext<'_>,
 ) -> Result<String, String> {
-    let client = net::http_client(Duration::from_secs(75))?;
-    let metadata = fetch_json(&client, LITELOADER_METADATA, MAX_JSON_BYTES, "LiteLoader")?;
+    let request = context.request();
+    let root = context.root();
+    let client = context.metadata_client();
+    let metadata = fetch_json(client, LITELOADER_METADATA, MAX_JSON_BYTES, "LiteLoader")?;
     let entries = collect_liteloader_entries(&metadata, &request.game_version);
     let Some(entry) = entries.into_iter().find(|entry| {
         entry.version.eq_ignore_ascii_case(&request.loader_version)
@@ -743,7 +728,7 @@ fn install_liteloader(
             "LiteLoader metadata has no entry for this Minecraft version.".to_string()
         })?;
     let installer_url =
-        resolve_liteloader_jar_url(&client, game_node, &entry, &request.game_version)?;
+        resolve_liteloader_jar_url(client, game_node, &entry, &request.game_version)?;
     let libraries_dir = root.join("libraries");
     let relative_jar = format!(
         "com/mumfrey/liteloader/{0}/liteloader-{0}.jar",
@@ -752,9 +737,9 @@ fn install_liteloader(
     let Some(jar_path) = safe_join(&libraries_dir, &relative_jar) else {
         return Err("Unsafe LiteLoader artifact path.".to_string());
     };
-    emit_progress(app, request, "libraries", 0, 1, "Downloading LiteLoader");
+    context.emit_progress("libraries", 0, 1, "Downloading LiteLoader");
     net::download_atomic(
-        &client,
+        client,
         &installer_url,
         &jar_path,
         None,
@@ -765,7 +750,7 @@ fn install_liteloader(
         let _ = fs::remove_file(&jar_path);
         return Err("LiteLoader upstream returned a non-JAR file.".to_string());
     }
-    emit_progress(app, request, "libraries", 1, 1, "LiteLoader downloaded");
+    context.emit_progress("libraries", 1, 1, "LiteLoader downloaded");
 
     let mut profile_libraries = Vec::new();
     profile_libraries.push(json!({
@@ -797,7 +782,7 @@ fn install_liteloader(
                 return Err(format!("Unsafe LiteLoader dependency path: {}", file.path));
             };
             net::download_atomic(
-                &client,
+                client,
                 url,
                 &destination,
                 file.sha1.as_deref(),
@@ -806,9 +791,7 @@ fn install_liteloader(
             )?;
         }
         profile_libraries.push(library);
-        emit_progress(
-            app,
-            request,
+        context.emit_progress(
             "libraries",
             index as u64 + 1,
             total,
@@ -842,9 +825,7 @@ fn install_liteloader(
         profile["arguments"] = json!({"game": ["--tweakClass", tweak_class]});
     }
     write_version_profile(root, &installed_id, &profile)?;
-    emit_progress(
-        app,
-        request,
+    context.emit_progress(
         "complete",
         1,
         1,
@@ -1102,7 +1083,7 @@ fn find_installed_profile(
     }
     let game_dir = root.display().to_string();
     let instances = version::list_instances(&game_dir).ok()?;
-    let expected_loader = loader_display_name(loader);
+    let expected_loader = providers::loader_display_name(loader);
     let mut candidates: Vec<(std::time::SystemTime, String)> = instances
         .into_iter()
         .filter(|instance| {
@@ -1119,16 +1100,6 @@ fn find_installed_profile(
     candidates.into_iter().next().map(|(_, id)| id)
 }
 
-fn loader_display_name(loader: LoaderKind) -> &'static str {
-    match loader {
-        LoaderKind::Forge => "Forge",
-        LoaderKind::Neoforge => "NeoForge",
-        LoaderKind::Fabric => "Fabric",
-        LoaderKind::Quilt => "Quilt",
-        LoaderKind::Liteloader => "LiteLoader",
-        LoaderKind::Optifine => "OptiFine",
-    }
-}
 
 fn loader_log_path(
     root: &Path,
@@ -1342,7 +1313,7 @@ fn fetch_bytes(
     Ok(bytes)
 }
 
-fn emit_progress(
+fn emit_loader_progress_event(
     app: &AppHandle,
     request: &LoaderInstallRequest,
     stage: &str,
