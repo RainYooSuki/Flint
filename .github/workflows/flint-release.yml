@@ -29,7 +29,7 @@ jobs:
   prepare:
     name: Prepare release
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     outputs:
       version: ${{ steps.meta.outputs.version }}
       source_version: ${{ steps.meta.outputs.source_version }}
@@ -55,6 +55,17 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then
+            npm ci --no-audit --no-fund
+          else
+            echo "No npm lockfile found; using npm install. Commit a lockfile for reproducible release builds." >&2
+            npm install --no-audit --no-fund
+          fi
 
       - name: Validate branch and release tooling
         shell: bash
@@ -83,6 +94,14 @@ jobs:
           echo "Release will use triggering branch '${REF_NAME}'."
           node scripts/test-release-scripts.mjs
           node scripts/validate-release.mjs --allow-divergent-metadata
+
+      - name: Check architecture checker tests
+        shell: bash
+        run: node --test scripts/test-architecture-checker.mjs
+
+      - name: Check architecture boundaries
+        shell: bash
+        run: node scripts/check-architecture.mjs --phase 2
 
       - name: Compute release metadata from exact HEAD
         id: meta
@@ -198,10 +217,6 @@ jobs:
             echo "No npm lockfile found; using npm install. Commit a lockfile for reproducible release builds." >&2
             npm install --no-audit --no-fund
           fi
-
-      - name: Check architecture boundaries
-        shell: bash
-        run: node scripts/check-architecture.mjs --phase 2
 
       - name: Apply release version
         shell: bash

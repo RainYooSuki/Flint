@@ -11,7 +11,7 @@ This document is the canonical detailed source for architecture boundaries, prov
 | **Planned** | Approved target design that has not been implemented yet. |
 | **Deferred** | Explicitly outside the current design and requires a separate decision. |
 
-Baseline source commit: `9731c19`. The four architecture documents are the only worktree changes; this document owns the canonical phase-status table below.
+Baseline source commit: `9731c19`. This architecture-documentation update is limited to `ARCHITECTURE.md`, `DEVELOPMENT_STANDARDS.md`, `README.md`, and the Architecture Decision Record; the release-workflow consolidation is a separate change. This document owns the canonical phase-status table below.
 
 ### Canonical migration phase status
 
@@ -21,7 +21,7 @@ Baseline source commit: `9731c19`. The four architecture documents are the only 
 | **Phase 1: ModProvider** | **Partial: pilot milestone implemented; full phase pending.** Generic versioned provider contracts/registry and mod provider adapters/leaves are implemented in `provider_api.rs` and `mods/providers.rs`, and shared mod operations select through the registry. Full typed provider network/path/process/settings/logging/cancellation ports and full checker enforcement remain open for Phase 4/5; provider-local helper waivers also remain. |
 | **Phase 2: LoaderProvider** | **Partial: loader registry/leaf milestone implemented; full phase pending.** `loaders/providers.rs` has six independent loader leaves, typed list/install contexts, a progress sink, deterministic selection, and the preserved 75-second metadata/600-second installer timeout split. Full `LoaderProviderContext` port decomposition and full checker enforcement remain open for Phase 4/5. |
 | **Phase 3: Frontend page/navigation registry** | **Implemented milestone; Phase 3 not fully complete.** Typed contracts, validation, the frozen registry, and the explicit static composition root are in `src/core/contributions.ts`, `src/app/composition.ts`, and `src/app/`; page and navigation rendering are registry-driven. `settingsSections` and `instanceActions` contracts/validation exist but are intentionally unpopulated; their UIs remain inside page components and those slots are not rendered/migrated yet. |
-| **Architecture checker and CI** | **Implemented milestone at Phase 2; full port enforcement pending.** `scripts/check-architecture.mjs` and its tests run through the dedicated `architecture.yml` workflow and release workflow at `--phase 2`. The active checker enforces module/provider import and selection boundaries, explicitly forbidden std/process/fs patterns, and exact allowlists, while intentionally allowing reqwest/shared-client and reviewed parent-helper waivers for provider adapters. It does **not** yet enforce full typed network/path/process/settings ports; full port enforcement is an explicit Phase 4/5 gate. Phase 3+ checker gates are not active yet. |
+| **Architecture checker and CI** | **Implemented milestone at Phase 2; full port enforcement pending.** `scripts/check-architecture.mjs` and its tests run in the `flint-release.yml` release workflow `prepare` job after frontend dependency installation: `prepare` runs the checker tests, then runs `node scripts/check-architecture.mjs --phase 2`, and all build-matrix jobs depend on `prepare`. The active checker enforces module/provider import and selection boundaries, explicitly forbidden std/process/fs patterns, and exact allowlists, while intentionally allowing reqwest/shared-client and reviewed parent-helper waivers for provider adapters. It does **not** yet enforce full typed network/path/process/settings ports; full port enforcement is an explicit Phase 4/5 gate. Phase 3+ checker gates are not active yet. |
 | **Phase 4: Workspace/module extraction and Rust feature lifecycle** | **Pending.** No Cargo workspace/extracted crates, Rust `FeatureDescriptor`/feature lifecycle registry/Rust composition root, or host active-feature snapshot/filtering exists. |
 | **Phase 5: Hardening and documentation closeout** | **Pending.** Temporary transitional waivers and remaining migration work continue. |
 | **Public RPC contract** | Existing public commands, DTOs, and events remain unchanged. |
@@ -143,7 +143,7 @@ The frontend is a React 18 and TypeScript application rooted at `src`. Phase 3 p
 - `src/api.ts`, `src/types.ts`, `src/utils.ts`, and the remaining generic components still live at `src` and have not completed the target `core`/`shared` extraction.
 - Some current modules and the shell still use reviewed transitional direct Tauri event/dialog/opener imports. Those are checker waivers expiring in Phase 5, so full typed adapter extraction is not complete.
 - The frontend has no router or host active-feature availability filtering. Phase 3 renders the statically registered compiled feature set; Phase 4 planning will add the Rust lifecycle/availability snapshot and filtering.
-- The implemented Phase 3 checker logic is static; the dedicated CI workflow and release workflow currently invoke the architecture checker at `--phase 2`, so Phase 3+ checks are not the active CI/release gate yet.
+- The implemented Phase 3 checker logic is static. The `flint-release.yml` release workflow `prepare` job currently installs frontend dependencies, runs the architecture checker tests, then runs the checker at `--phase 2`; all build-matrix jobs depend on `prepare`. Phase 3+ checks are not active in that gate yet.
 
 Phase 3 therefore has a completed **page/navigation registry milestone**, not a completed full Phase 3 migration. Settings-section and instance-action contracts/validation are implemented, but population, shell rendering, and migration of existing UI remain pending.
 
@@ -155,15 +155,15 @@ The current build and release automation assumes these paths and identities:
 - The Cargo lockfile is `src-tauri/Cargo.lock`.
 - The Tauri configuration is `src-tauri/tauri.conf.json`.
 - The frontend build output is repository-root `dist`, referenced by `frontendDist: "../dist"` in the Tauri configuration.
-- The default Cargo target directory is `src-tauri/target`; release workflows read executables from `src-tauri/target/<rust-target>/release/flint` or `flint.exe`.
+- The default Cargo target directory is `src-tauri/target`; the `flint-release.yml` release workflow reads executables from `src-tauri/target/<rust-target>/release/flint` or `flint.exe`.
 - Release/version tooling inspects the package versions in `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.lock`, plus the root package metadata. The lockfile validator expects exactly one package named `flint`.
 - `build.rs` performs Tauri code generation and adds the Windows GNU cdylib link argument.
 - The library crate is named `flint_lib` and keeps staticlib, cdylib, and rlib crate types.
 Current architecture-checker and CI facts:
 
 - `scripts/check-architecture.mjs` and `scripts/test-architecture-checker.mjs` are implemented.
-- The dedicated `architecture.yml` workflow installs frontend dependencies, runs `node --test scripts/test-architecture-checker.mjs`, and then runs `node scripts/check-architecture.mjs --phase 2`.
-- The release workflow in `flint-release.yml` runs the same `--phase 2` architecture gate after frontend dependency installation and before applying the release version.
+- The `prepare` job in the `flint-release.yml` release workflow installs frontend dependencies, runs `node --test scripts/test-architecture-checker.mjs`, and then runs `node scripts/check-architecture.mjs --phase 2`.
+- All build-matrix jobs depend on `prepare`, so the checker tests and phase-2 gate must pass before any build starts.
 - The Phase 2 checker performs static Rust source/module checks and TypeScript AST checks without invoking Cargo. Its active Rust scope covers module/provider import and selection boundaries, forbidden std/process/fs patterns, and exact allowlists, while intentionally allowing reqwest/shared-client and reviewed parent-helper waivers. It does not enforce full typed provider ports; full port enforcement is deferred to Phase 4/5, and Phase 4 workspace metadata checks require the not-yet-created Cargo workspace.
 
 Consequences for migration:
@@ -171,7 +171,7 @@ Consequences for migration:
 1. Keep `src-tauri/Cargo.toml` as the workspace root when the workspace is introduced, unless the release tooling and documented paths are changed in the same scoped change.
 2. Keep the host package `flint` and its `src-tauri/src` location. A workspace root can also be a package root; member crates can live under `src-tauri/crates`, `src-tauri/modules`, and `src-tauri/providers`.
 3. Keep one lockfile at `src-tauri/Cargo.lock` and avoid member-local lockfiles.
-4. Keep the default target directory and executable names stable until every workflow and validation script has been deliberately updated.
+4. Keep the default target directory and executable names stable until the release workflow and validation scripts have been deliberately updated.
 5. Keep `main.rs` as the executable entry and `flint_lib::run()` as the library entry unless a release-path migration is explicitly approved.
 6. Do not move or redefine the Tauri configuration or frontend output path during the architecture migration.
 
@@ -259,7 +259,7 @@ Rust:
 7. Tauri types, `AppHandle`, event emission, window APIs, and command macros stay in the host/adapters layer. They must not leak into core, API, feature, or provider crates.
 8. Only the host composition root may instantiate concrete feature and provider implementations and inject them into registries.
 9. A module's public API is the minimum needed by the composition root or an approved contract. Private implementation modules remain private.
-10. Cargo manifests and TypeScript imports define actual edges, but neither Cargo nor TypeScript inherently enforces an arbitrary layer allowlist. The implemented Phase 2 milestone checker (current CI/release gate) enforces module/provider import and selection boundaries, forbidden std/process/fs patterns, and exact allowlists, with reqwest/shared-client and reviewed parent-helper waivers intentional. Full typed-port enforcement is deferred to Phase 4/5, and later-phase checker policies become binding when the gate advances.
+10. Cargo manifests and TypeScript imports define actual edges, but neither Cargo nor TypeScript inherently enforces an arbitrary layer allowlist. The implemented Phase 2 milestone checker (current release workflow `prepare` gate) enforces module/provider import and selection boundaries, forbidden std/process/fs patterns, and exact allowlists, with reqwest/shared-client and reviewed parent-helper waivers intentional. Full typed-port enforcement is deferred to Phase 4/5, and later-phase checker policies become binding when the gate advances.
 
 Frontend:
 
@@ -275,9 +275,9 @@ The checker is implemented at `scripts/check-architecture.mjs`, with automated c
 
 Current integration status:
 
-- The dedicated `architecture.yml` workflow installs frontend dependencies, runs the checker test suite, then runs `node scripts/check-architecture.mjs --phase 2`.
-- The release workflow in `flint-release.yml` runs `node scripts/check-architecture.mjs --phase 2` after frontend dependency installation and before applying the release version.
-- The implemented Phase 1/2 milestone boundaries are the active CI/release gate. The script contains phase-aware policy for later phases, but Phase 3+ checks are not the active gate yet; Phase 4 workspace metadata and full typed-port enforcement must wait for the Cargo workspace/extracted-crate and port work.
+- The release workflow `prepare` job installs frontend dependencies, runs the checker test suite, then runs `node scripts/check-architecture.mjs --phase 2`.
+- All build-matrix jobs depend on `prepare`; the architecture tests and phase-2 checker are the single release-prepare gate.
+- The implemented Phase 1/2 milestone boundaries are checked by the release workflow `prepare` gate. The script contains phase-aware policy for later phases, but Phase 3+ checks are not active in this gate yet; Phase 4 workspace metadata and full typed-port enforcement must wait for the Cargo workspace/extracted-crate and port work.
 
 #### Rust checks
 
@@ -295,12 +295,12 @@ Current integration status:
 - External packages are part of the allowlist. Adding a new package to a feature requires dependency review, not merely an import that happens to compile.
 - Dynamic imports are allowed only with exactly one string-literal, relative, bundler-resolvable specifier inside the importing feature's own subtree or an explicitly allowlisted local chunk. Reject variable/template-computed specifiers, absolute paths, file/HTTP URLs, package specifiers for contribution loading, `eval`, and `new Function`.
 - A contribution loader is a component reference or a locally declared lazy function. It must never be a string path that the registry evaluates at runtime. The checker and bundler can prove a literal import target; the registry cannot runtime-prove an arbitrary filesystem or URL string.
-- The checker contains Phase 3 static manifest/import/registry-shape checks, but the current CI/release gate remains `--phase 2`. Advancing the gate is part of finishing Phase 3/4.
+- The checker contains Phase 3 static manifest/import/registry-shape checks, but the current release `prepare` gate remains `--phase 2`. Advancing the gate is part of finishing Phase 3/4.
 
 #### CI gate
 
 - CI failure blocks completion; there is no warn-only mode.
-- The current phase gate is Phase 2. The implemented checker milestone covers module/provider import and selection boundaries, forbidden std/process/fs patterns, and exact allowlists, while intentionally allowing reqwest/shared-client and reviewed parent-helper waivers. It does not establish full Phase 1/2 typed-port acceptance. Full network/path/process/settings/logging/cancellation port enforcement remains Phase 4/5 work.
+- The current gate is the release workflow `prepare` job at Phase 2. The implemented checker milestone covers module/provider import and selection boundaries, forbidden std/process/fs patterns, and exact allowlists, while intentionally allowing reqwest/shared-client and reviewed parent-helper waivers. It does not establish full Phase 1/2 typed-port acceptance. Full network/path/process/settings/logging/cancellation port enforcement remains Phase 4/5 work.
 - Advancing the gate to Phase 3 requires making the implemented frontend contribution/import checks the active gate, resolving/expiring transitional Tauri import waivers only when appropriate, and meeting full Phase 3 acceptance. Advancing to Phase 4 requires the Cargo workspace and activated metadata gate.
 - Any allowlist change is an architecture change and must be reviewed as such.
 
@@ -717,7 +717,7 @@ The frontend registry accepts typed contributions for at least these slots:
 A contribution declaration must be data plus a locally bundled component/function reference only. It must not perform registration side effects such as I/O, network calls, timers, event listeners, or stores during module evaluation. A contribution loader is never a runtime string path: the registry can validate metadata, but only the TypeScript AST checker and bundler can prove that a literal module specifier resolves to bundled code.
 
 ### Registry rules
-Current Phase 3 implementation validates feature descriptors and all four contribution-slot shapes, enforces globally unique IDs/page targets/ordering/feature requirement cycles, freezes the registry, and renders page/navigation contributions from `frontendRegistry`. The Phase 3 static checker rules are implemented in the checker/test suite but are not yet the active CI/release gate (currently `--phase 2`). The rules below remain the full target contract.
+Current Phase 3 implementation validates feature descriptors and all four contribution-slot shapes, enforces globally unique IDs/page targets/ordering/feature requirement cycles, freezes the registry, and renders page/navigation contributions from `frontendRegistry`. The Phase 3 static checker rules are implemented in the checker/test suite but are not yet active in the release `prepare` gate (currently `--phase 2`). The rules below remain the full target contract.
 
 - Every frontend contribution has a globally unique stable ID across every frontend slot, not merely within its slot, and is prefixed by the owning feature ID (for example `flint.mods.page.discovery`).
 - Any duplicate contribution ID across any slot is rejected before render; last-registration-wins is forbidden. Navigation targets must resolve to exactly one registered page contribution by its canonical page ID.
@@ -761,7 +761,7 @@ Current Phase 3 state: `src/app/App.tsx` owns shared shell state and exposes `Ap
 No feature may import another feature module, its store, or its public entry. Cross-feature actions, state, and navigation pass through typed core contracts or shell services/contexts supplied by the app composition root; contribution slots compose the resulting UI.
 
 ### Static imports and lazy loading
-Current Phase 3 page/navigation contributions use static component references. Local lazy contribution loading remains a target capability. The checker/test suite contains the static import/dynamic-import rules, but the current CI/release gate remains `--phase 2`.
+Current Phase 3 page/navigation contributions use static component references. Local lazy contribution loading remains a target capability. The checker/test suite contains the static import/dynamic-import rules, but the current release `prepare` gate remains `--phase 2`.
 
 - Contributions use static imports or a local `lazy(() => import("./Page"))` whose specifier is a literal bundled path.
 - Lazy loading splits the application's own build output. It does not load arbitrary JavaScript from disk, a URL, a provider, or a plugin package.
@@ -880,7 +880,7 @@ Target acceptance criteria (full phase not yet met):
 
 ### Phase 3: Frontend contribution registry (Partial: page/navigation complete; slots pending)
 
-Status: **Partial.** Page/navigation contributions, validation, the frozen registry, and registry-driven rendering are implemented. `settingsSections` and `instanceActions` contracts/validation are implemented but intentionally unpopulated and not mounted; existing settings sections and quick actions remain page-local. Full Phase 3 also needs the Phase 3 checker gate to become the active CI/release gate and those slots to be populated/migrated.
+Status: **Partial.** Page/navigation contributions, validation, the frozen registry, and registry-driven rendering are implemented. `settingsSections` and `instanceActions` contracts/validation are implemented but intentionally unpopulated and not mounted; existing settings sections and quick actions remain page-local. Full Phase 3 also needs the Phase 3 checker gate to become active in the release workflow `prepare` gate and those slots to be populated/migrated.
 
 Scope:
 
@@ -973,7 +973,7 @@ These are the end-state acceptance gates. The current baseline satisfies the imp
 
 - The current implementation is described as implemented, and every unimplemented target path is labeled planned/target/deferred.
 - Applicable phase rules from the transition matrix in `DEVELOPMENT_STANDARDS.md` are satisfied; at full extraction, dependencies point inward/downward according to the layer table with no core-to-host, module-to-host, provider-to-host, or private-module edge.
-- Cargo manifests and TypeScript imports are covered by the implemented Phase 2 milestone checker at the current `--phase 2` CI/release gate. It enforces module/provider import and selection boundaries, forbidden std/process/fs patterns, and exact allowlists while intentionally allowing reqwest/shared-client and reviewed parent-helper waivers. It does not enforce full typed ports; full typed-port and later-phase checks become normative when their gates advance. Cargo and TypeScript alone are not treated as enforcing arbitrary allowlists.
+- Cargo manifests and TypeScript imports are covered by the implemented Phase 2 milestone checker in the release workflow `prepare` job at `--phase 2`. It enforces module/provider import and selection boundaries, forbidden std/process/fs patterns, and exact allowlists while intentionally allowing reqwest/shared-client and reviewed parent-helper waivers. It does not enforce full typed ports; full typed-port and later-phase checks become normative when their gates advance. Cargo and TypeScript alone are not treated as enforcing arbitrary allowlists.
 - Feature descriptors use `feature_version`, `api_version`, declared dependencies/provider requirements, startup policy, one initialization entry point, and declared backend contributions.
 - Startup/runtime failure propagation includes the failed feature plus all transitive dependents. If the affected set contains any `Required` feature, the host is fatal: `StartupFailed` with feature/provider/core cleanup at startup, or `RuntimeFailed` -> `Stopping` -> `Stopped`/exit at runtime. `Degraded` is valid only when every `Required` feature remains `Ready` and the affected set is optional-only. No `Required` feature may remain `Ready` with a non-ready dependency/provider, and there is no feature-level `Degraded`. Unavailable commands, atomic init cleanup, and reverse shutdown are explicit.
 - Progress events are best-effort and command results/durable state are authoritative; explicitly required protocol events fail the operation result without rolling back committed state.
