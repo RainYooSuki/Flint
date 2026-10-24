@@ -77,13 +77,14 @@ export function AccountDialog({
   }, []);
   useEffect(() => {
     if (!deviceFlow) return;
+    const flow = deviceFlow;
     let cancelled = false;
     let timer: number | undefined;
-    let intervalMs = Math.max(1, deviceFlow.interval) * 1000;
+    let intervalMs = Math.max(1, flow.interval) * 1000;
 
     async function poll() {
       try {
-        const result = await api.pollMicrosoftLogin(deviceFlow.deviceCode);
+        const result = await api.pollMicrosoftLogin(flow.deviceCode);
         if (cancelled) return;
         setLoginStatus(result.message);
         if (result.status === "success") {
