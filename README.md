@@ -156,8 +156,11 @@ For version `<version>`, releases contain the Windows `.exe`, the Linux/macOS ra
 
 The workflow is [`.github/workflows/flint-release.yml`](.github/workflows/flint-release.yml).
 
-- Automatic runs are triggered by pushes to `main` or `dev`; manual runs use `workflow_dispatch` from the selected branch.
-- Pushes containing only `VERSION`, Markdown/docs, workflow files, release scripts, or ignore metadata do not start a release.
+- Every push to `main` or `dev` starts the release workflow, including docs/tooling-only pushes and pushes that change only `VERSION`, Markdown/docs, workflow files, release scripts, or ignore metadata.
+- Manual runs use `workflow_dispatch` from the selected branch.
+- No changed-file exemptions apply. The prepare source guard runs for every automatic push or manual branch-triggered run and rejects an empty commit or a commit whose only changed file is `VERSION`. Docs/tooling/workflow-only commits and `VERSION` plus other-file commits may proceed. A `VERSION`-only push starts the workflow and then fails in prepare.
+- After release verification, if branch `VERSION` already equals the released version, the workflow exits successfully without another commit; otherwise it requires the branch value to equal the source-commit `VERSION`, writes the released value, and refuses any unexpected branch `VERSION` state.
+- The post-release `VERSION`-only bot push does not start another workflow run because it is made with `GITHUB_TOKEN`; a manual `VERSION`-only push does start one and then fails the prepare source guard.
 - The build matrix creates Windows x64, Linux x64, macOS x64, and macOS arm64 assets.
 - Packaging validation checks the raw executables, exact ZIP contents, eight release assets, and `sha.txt` before publishing.
 - The release uses `flint-v<version>` and notes commits since the previous reachable parseable release tag.

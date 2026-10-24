@@ -5,15 +5,6 @@ name: Flint Release
     branches:
       - main
       - dev
-    paths-ignore:
-      - VERSION
-      - "*.md"
-      - "**/*.md"
-      - ".github/**"
-      - "docs/**"
-      - "scripts/**"
-      - ".gitattributes"
-      - ".gitignore"
   workflow_dispatch:
 
 # Least privilege: only the publish job elevates its token to contents: write.
@@ -70,7 +61,6 @@ jobs:
       - name: Validate branch and release tooling
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
         run: |
@@ -79,17 +69,19 @@ jobs:
             echo "Flint releases must run from a branch, not a ${REF_TYPE} ref." >&2
             exit 1
           fi
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            read -r -a commit_line <<< "$(git rev-list --parents -n 1 HEAD)"
-            # Merges are valid source commits; single-parent/root commits must contain a real source change.
-            if (( ${#commit_line[@]} <= 2 )); then
-              changed_paths="$(git diff-tree --root --no-commit-id --name-only --no-renames -r HEAD)"
-              if [[ -z "$changed_paths" || "$changed_paths" == "VERSION" ]]; then
-                echo "Refusing to release an empty commit or a VERSION-only release-record commit." >&2
-                echo "The auto-committed VERSION record is not a release source; re-run the original release workflow instead." >&2
-                exit 1
-              fi
-            fi
+          # Every branch-triggered run must point at a real release source. Merge
+          # commits are compared with their first parent; root and single-parent
+          # commits use git's root-aware commit diff.
+          read -r -a commit_line <<< "$(git rev-list --parents -n 1 HEAD)"
+          if (( ${#commit_line[@]} > 2 )); then
+            changed_paths="$(git diff --name-only --no-renames "${commit_line[1]}" HEAD)"
+          else
+            changed_paths="$(git diff-tree --root --no-commit-id --name-only --no-renames -r HEAD)"
+          fi
+          if [[ -z "$changed_paths" || "$changed_paths" == "VERSION" ]]; then
+            echo "Refusing an empty or VERSION-only release source." >&2
+            echo "VERSION ledger commits are not release sources; push a real source change instead." >&2
+            exit 1
           fi
           echo "Release will use triggering branch '${REF_NAME}'."
           node scripts/test-release-scripts.mjs

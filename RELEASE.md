@@ -34,10 +34,11 @@ The release job fetches tags again and recomputes the version immediately before
 
 The workflow is `.github/workflows/flint-release.yml`.
 
-- Push to `main` or `dev`.
+- Every push to `main` or `dev` starts the release workflow, including pushes that contain only `VERSION`, Markdown/docs, workflow files, release scripts, or ignore metadata.
 - Manual `workflow_dispatch` from a selected branch.
-- Pushes containing only `VERSION`, Markdown/docs, workflow files, scripts, or ignore metadata do not start a release.
-- Manual dispatch uses the exact workflow `GITHUB_SHA`. Empty commits and VERSION-only record commits are rejected as release sources.
+- No changed-file exemptions apply: every push is considered, including docs/tooling-only and `VERSION`-only pushes.
+- The prepare source guard runs for every automatic push or manual branch-triggered run and rejects an empty commit or a commit whose only changed file is `VERSION`. Docs/tooling/workflow-only commits and `VERSION` plus other-file commits may proceed. A `VERSION`-only push starts the workflow and then fails in prepare.
+- Manual dispatch uses the exact workflow `GITHUB_SHA`.
 
 A repository-wide concurrency group ensures one release workflow runs at a time. The workflow uses the repository `GITHUB_TOKEN`; the publish job requests `contents: write`. No personal access token is required.
 
@@ -90,18 +91,19 @@ After release verification, the workflow:
 1. Fetches the latest triggering branch.
 2. Verifies the released source commit is still an ancestor of that branch.
 3. Reads the branch's current `VERSION`.
-4. If it already equals the released version, exits successfully without another commit.
-5. Otherwise, requires it to equal the source-commit `VERSION`, writes the released version, and commits only `VERSION` as `github-actions[bot]`.
-6. Pushes without force.
+4. If branch `VERSION` already equals the released version, exits successfully without another commit.
+5. If it equals the source-commit `VERSION`, writes the released version and commits only `VERSION` as `github-actions[bot]`.
+6. If it is any other value, refuses the unexpected branch `VERSION` state without overwriting it.
+7. Pushes without force.
 
-The VERSION-only push is ignored by the workflow paths filter, and pushes made with `GITHUB_TOKEN` do not start another workflow run. The commit is a release record, not a source commit, so it must not be used as a release source.
+The post-release `VERSION`-only push does not start another workflow run because it is made with `GITHUB_TOKEN`. A manual `VERSION`-only push to `main` or `dev` does start the workflow and then fails the prepare source guard because its source commit is `VERSION`-only. The commit is a release record, not a source commit, so it must not be used as a release source.
 
 ## Reruns and recovery
 
 - A workflow rerun uses the original `GITHUB_SHA`; an existing valid tag at that commit is reused, and an existing release is updated intentionally.
 - A new manual dispatch at a newer source commit computes a new monthly version.
 - A tag at a different commit is refused; tags are never moved automatically.
-- A VERSION-only commit or unexpected branch VERSION state is refused after release rather than overwritten.
+- Prepare rejects an empty or exactly `VERSION`-only release-source commit for every push or manual branch-triggered run. At post-release recording, an already-current branch `VERSION` succeeds without a commit, a branch `VERSION` equal to the source-commit value is updated, and any other `VERSION` state is refused rather than overwritten.
 - If publication succeeds but the VERSION push is blocked, fix the branch permission/state and rerun the same workflow run.
 
 ### Branch protection
