@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>B · 侧边栏 — Flint</title>
+<style>
+  :root {
+    --bg: #121416;
+    --chrome: #1a1d21;
+    --sidebar: #171a1e;
+    --canvas: #14171a;
+    --panel: #191d21;
+    --panel-raised: #1d2227;
+    --line: #2c3238;
+    --line-soft: #242a2f;
+    --text: #e0e4e8;
+    --soft: #a2aab1;
+    --dim: #737c84;
+    --accent: #7d9dbd;
+    --accent-line: #4b647e;
+    --accent-fill: #222d39;
+    --success: #7eb294;
+  }
+  * { box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #0c0e10; }
+  body {
+    display: grid;
+    place-items: center;
+    color: var(--text);
+    font-family: "Microsoft YaHei UI", "Segoe UI", "Noto Sans SC", system-ui, sans-serif;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  button { color: inherit; font: inherit; cursor: pointer; }
+  h1, h2, p, dl, dt, dd { margin: 0; }
+  svg { display: block; }
+  .icon { width: 16px; height: 16px; flex: 0 0 auto; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .frame {
+    display: grid;
+    width: 900px;
+    height: 550px;
+    grid-template-rows: 32px minmax(0, 1fr);
+    overflow: hidden;
+    border: 1px solid #30363c;
+    background: var(--bg);
+  }
+  .utilitybar {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    border-bottom: 1px solid var(--line);
+    background: var(--chrome);
+    user-select: none;
+  }
+  .brand { display: flex; height: 100%; align-items: center; gap: 8px; padding: 0 11px; }
+  .brand-symbol {
+    width: 16px;
+    height: 16px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--accent-line);
+    border-radius: 2px;
+    color: #b9cee2;
+    font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 9px;
+    font-weight: 700;
+  }
+  .brand-name { font-size: 13px; font-weight: 600; }
+  .variant-label { padding-left: 9px; border-left: 1px solid var(--line); color: var(--dim); font-size: 9px; }
+  .utility-context { margin-left: auto; padding: 0 12px; color: var(--dim); font-size: 10px; }
+  .window-controls { display: flex; height: 100%; }
+  .window-button {
+    display: grid;
+    width: 38px;
+    height: 100%;
+    padding: 0;
+    place-items: center;
+    border: 0;
+    border-left: 1px solid var(--line-soft);
+    background: transparent;
+    color: var(--soft);
+  }
+  .window-button:hover { background: #2a3035; color: #fff; }
+  .window-button.close:hover { background: #713739; }
+  .window-button .icon { width: 13px; height: 13px; }
+  .shell { display: grid; min-width: 0; min-height: 0; grid-template-columns: 188px minmax(0, 1fr); overflow: hidden; }
+  .sidebar {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    padding: 10px 8px 8px;
+    border-right: 1px solid var(--line);
+    background: var(--sidebar);
+  }
+  .sidebar-label { padding: 0 8px 7px; color: var(--dim); font-size: 9px; letter-spacing: .05em; }
+  .nav-list { display: flex; flex-direction: column; gap: 2px; }
+  .nav-item {
+    display: flex;
+    min-height: 38px;
+    align-items: center;
+    gap: 9px;
+    padding: 0 9px;
+    border: 1px solid transparent;
+    border-left: 2px solid transparent;
+    border-radius: 2px;
+    background: transparent;
+    color: var(--soft);
+    font-size: 12px;
+    text-align: left;
+  }
+  .nav-item:hover { background: #1d2227; color: var(--text); }
+  .nav-item.active { border-color: #293746; border-left-color: var(--accent); background: var(--accent-fill); color: #d3e3f2; }
+  .nav-item .icon { width: 16px; height: 16px; color: var(--dim); }
+  .nav-item.active .icon { color: var(--accent); }
+  .nav-divider { height: 1px; margin: 10px 4px; background: var(--line-soft); }
+  .sidebar-section-label { padding: 0 8px 6px; color: var(--dim); font-size: 9px; }
+  .sidebar-account {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid var(--line-soft);
+    border-radius: 2px;
+    background: #1b1f23;
+  }
+  .avatar {
+    display: grid;
+    width: 27px;
+    height: 27px;
+    flex: 0 0 27px;
+    place-items: center;
+    border: 1px solid #3c4f61;
+    border-radius: 2px;
+    background: #23303b;
+    color: #d1e2f1;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .account-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+  .account-copy strong { overflow: hidden; font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+  .account-copy small { color: var(--dim); font-size: 9px; }
+  .sidebar-spacer { flex: 1; min-height: 8px; }
+  .sidebar-foot {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
+    border-top: 1px solid var(--line-soft);
+    color: var(--dim);
+    font-size: 9px;
+  }
+  .sidebar-foot div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .sidebar-foot strong { color: var(--soft); font-weight: 400; font-variant-numeric: tabular-nums; }
+  .main { display: grid; min-width: 0; min-height: 0; grid-template-rows: 52px minmax(0, 1fr) 44px; overflow: hidden; background: var(--canvas); }
+  .page-head {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 0 15px;
+    border-bottom: 1px solid var(--line);
+    background: #15181b;
+  }
+  .page-title { display: flex; min-width: 0; align-items: baseline; gap: 10px; }
+  .page-title h1 { font-size: 17px; font-weight: 600; }
+  .page-title span { color: var(--dim); font-size: 10px; }
+  .ready { display: inline-flex; align-items: center; gap: 6px; color: var(--soft); font-size: 10px; white-space: nowrap; }
+  .ready-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+  .launch-content {
+    display: grid;
+    min-width: 0;
+    min-height: 0;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 10px;
+    padding: 12px 14px;
+    overflow: hidden;
+  }
+  .instance-summary { overflow: hidden; border: 1px solid var(--line); border-radius: 2px; background: var(--panel); }
+  .summary-head {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 10px 13px;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--panel-raised);
+  }
+  .version-lockup { display: flex; min-width: 0; align-items: baseline; gap: 9px; }
+  .version-lockup strong { font-size: 21px; font-weight: 600; letter-spacing: -.01em; }
+  .version-lockup span { color: var(--soft); font-size: 10px; }
+  .summary-actions { display: flex; align-items: center; gap: 8px; }
+  .client-ready { color: #93bea6; font-size: 9px; }
+  .link-button { padding: 2px 0; border: 0; background: transparent; color: var(--accent); font-size: 10px; }
+  .link-button:hover { color: #c0d8ee; text-decoration: underline; }
+  .summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summary-grid > div {
+    display: grid;
+    min-height: 39px;
+    grid-template-columns: 78px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px;
+    border-right: 1px solid var(--line-soft);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .summary-grid > div:nth-child(2n) { border-right: 0; }
+  .summary-grid > div:nth-last-child(-n+2) { border-bottom: 0; }
+  .summary-grid dt { color: var(--dim); font-size: 9px; }
+  .summary-grid dd { min-width: 0; overflow: hidden; color: #c8d0d7; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+  .summary-grid dd.path { font-family: "Cascadia Mono", Consolas, monospace; }
+  .lower-grid { display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr) 248px; gap: 10px; overflow: hidden; }
+  .panel { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: 2px; background: var(--panel); }
+  .panel-head {
+    display: flex;
+    min-height: 33px;
+    flex: 0 0 33px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--panel-raised);
+    color: var(--soft);
+    font-size: 10px;
+  }
+  .panel-head span:last-child { color: var(--dim); font-size: 9px; }
+  .runtime-list { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+  .runtime-row {
+    display: grid;
+    min-height: 37px;
+    flex: 1;
+    grid-template-columns: 82px minmax(0, 1fr);
+    align-items: center;
+    gap: 9px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .runtime-row:last-child { border-bottom: 0; }
+  .runtime-row dt { color: var(--dim); font-size: 9px; }
+  .runtime-row dd { min-width: 0; overflow: hidden; color: #c9d1d8; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .quick-list { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+  .quick-button {
+    display: flex;
+    min-height: 36px;
+    flex: 1;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 10px;
+    border: 0;
+    border-bottom: 1px solid var(--line-soft);
+    background: transparent;
+    color: var(--soft);
+    font-size: 10px;
+    text-align: left;
+  }
+  .quick-button:last-child { border-bottom: 0; }
+  .quick-button:hover { background: #1d242a; color: var(--text); }
+  .quick-button span:last-child { color: var(--dim); }
+  .actionbar {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 0 14px;
+    border-top: 1px solid var(--line);
+    background: #171a1e;
+  }
+  .action-copy { min-width: 0; color: var(--dim); font-size: 9px; }
+  .action-copy strong { display: block; overflow: hidden; color: var(--soft); font-size: 10px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+  .action-buttons { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
+  .button {
+    display: inline-flex;
+    height: 29px;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 0 11px;
+    border: 1px solid #3a4148;
+    border-radius: 2px;
+    background: #1d2227;
+    color: #c7d0d7;
+    font-size: 10px;
+    white-space: nowrap;
+  }
+  .button:hover { border-color: #54616b; background: #252c32; color: #fff; }
+  .button.primary { border-color: #526f8b; background: #263746; color: #e3eff9; }
+  .button.primary:hover { border-color: var(--accent); background: #30475a; }
+  .button .icon { width: 13px; height: 13px; }
+</style>
+</head>
+<body>
+<div class="frame">
+  <header class="utilitybar">
+    <div class="brand">
+      <span class="brand-symbol" aria-hidden="true">F</span>
+      <span class="brand-name">Flint</span>
+      <span class="variant-label">B · 侧边栏</span>
+    </div>
+    <div class="utility-context">启动器</div>
+    <div class="window-controls" role="group" aria-label="窗口控制">
+      <button class="window-button" type="button" aria-label="最小化" title="最小化">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M5 12h14"/></svg>
+      </button>
+      <button class="window-button" type="button" aria-label="最大化或还原" title="最大化或还原">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
+      </button>
+      <button class="window-button close" type="button" aria-label="关闭" title="关闭">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="shell">
+    <nav class="sidebar" aria-label="主导航">
+      <div class="sidebar-label">导航</div>
+      <div class="nav-list">
+        <button class="nav-item active" type="button" aria-current="page">
+          <svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+          <span>启动</span>
+        </button>
+        <button class="nav-item" type="button">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>
+          <span>下载</span>
+        </button>
+        <button class="nav-item" type="button">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6"/></svg>
+          <span>设置</span>
+        </button>
+        <button class="nav-item" type="button">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 6h5v5M19 6l-6 6M4 18l5-5"/></svg>
+          <span>工具</span>
+        </button>
+      </div>
+
+      <div class="nav-divider"></div>
+      <div class="sidebar-section-label">当前账户</div>
+      <div class="sidebar-account">
+        <span class="avatar" aria-hidden="true">P</span>
+        <span class="account-copy"><strong>Player</strong><small>离线账户</small></span>
+      </div>
+
+      <div class="sidebar-spacer"></div>
+      <div class="sidebar-foot">
+        <div><span>本地版本</span><strong>1</strong></div>
+        <div><span>Java 环境</span><strong>1</strong></div>
+        <div><span>客户端状态</span><strong>完整</strong></div>
+      </div>
+    </nav>
+
+    <main class="main">
+      <header class="page-head">
+        <div class="page-title"><h1>启动</h1><span>离线模式 · 1.21.4 / Fabric</span></div>
+        <div class="ready"><span class="ready-dot"></span>环境就绪</div>
+      </header>
+
+      <div class="launch-content">
+        <section class="instance-summary" aria-labelledby="sidebar-instance-title">
+          <div class="summary-head">
+            <div class="version-lockup">
+              <strong id="sidebar-instance-title">1.21.4</strong>
+              <span>Fabric 0.16.10</span>
+            </div>
+            <div class="summary-actions">
+              <span class="client-ready">客户端完整</span>
+              <button class="link-button" type="button">选择版本</button>
+            </div>
+          </div>
+          <dl class="summary-grid">
+            <div><dt>版本类型</dt><dd>正式版</dd></div>
+            <div><dt>上次启动</dt><dd>今天 20:14</dd></div>
+            <div><dt>游戏目录</dt><dd class="path" title="C:\Users\Player\.minecraft">C:\Users\Player\.minecraft</dd></div>
+            <div><dt>加载器</dt><dd>Fabric 0.16.10</dd></div>
+          </dl>
+        </section>
+
+        <div class="lower-grid">
+          <section class="panel" aria-labelledby="sidebar-runtime-title">
+            <div class="panel-head"><span id="sidebar-runtime-title">运行环境</span><span>已检测</span></div>
+            <dl class="runtime-list">
+              <div class="runtime-row"><dt>Java</dt><dd>Microsoft OpenJDK 21 · 自动</dd></div>
+              <div class="runtime-row"><dt>内存</dt><dd>4096 MB · G1GC</dd></div>
+              <div class="runtime-row"><dt>窗口</dt><dd>854 × 480 · 默认</dd></div>
+              <div class="runtime-row"><dt>日志</dt><dd>logs\latest.log · 可打开</dd></div>
+            </dl>
+          </section>
+
+          <section class="panel" aria-labelledby="sidebar-quick-title">
+            <div class="panel-head"><span id="sidebar-quick-title">快捷操作</span><span>常用</span></div>
+            <div class="quick-list">
+              <button class="quick-button" type="button"><span>打开游戏目录</span><span>›</span></button>
+              <button class="quick-button" type="button"><span>下载原版版本</span><span>›</span></button>
+              <button class="quick-button" type="button"><span>编辑启动设置</span><span>›</span></button>
+              <button class="quick-button" type="button"><span>查看运行信息</span><span>›</span></button>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <footer class="actionbar">
+        <div class="action-copy">
+          <strong>玩家 Player · 本地账户</strong>
+          启动前检查已通过
+        </div>
+        <div class="action-buttons">
+          <button class="button" type="button">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7h6l2 2h10v9H3z"/></svg>
+            打开目录
+          </button>
+          <button class="button primary" type="button">
+            <svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            启动游戏
+          </button>
+        </div>
+      </footer>
+    </main>
+  </div>
+</div>
+</body>
+</html>

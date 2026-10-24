@@ -1,10 +1,15 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "../components/Icon";
+import { InstalledModsPanel } from "./downloads/InstalledModsPanel";
+import { LoaderInstallPanel } from "./downloads/LoaderInstallPanel";
+import { ModDiscoveryPanel } from "./downloads/ModDiscoveryPanel";
 import type {
   InstallResult,
   InstallRuntime,
   InstanceInfo,
+  LauncherSettings,
+  NoticeKind,
   RemoteVersion
 } from "../types";
 import {
@@ -16,7 +21,7 @@ import {
   versionTypeLabel
 } from "../utils";
 
-type VersionMode = "local" | "remote";
+type VersionMode = "local" | "remote" | "loaders" | "mods" | "installed";
 type LocalTypeFilter = "all" | "release" | "snapshot" | "other";
 type RemoteTypeFilter = "all" | "release" | "snapshot";
 
@@ -32,12 +37,16 @@ interface VersionsViewProps {
   installRuntime: InstallRuntime | null;
   installResult: InstallResult | null;
   gameDirLabel: string;
+  gameDirPath: string;
+  settings: LauncherSettings | null;
   onRefreshInstances: () => void;
   onSelectInstance: (id: string) => void;
   onFetchRemote: () => void;
   onInstall: (version: RemoteVersion) => void;
   onOpenPath: (path: string, label: string) => void;
   onGoLaunch: () => void;
+  onGoSettings: () => void;
+  onNotify: (kind: NoticeKind, message: string) => void;
 }
 
 function localTypeGroup(value: string): Exclude<LocalTypeFilter, "all"> {
@@ -59,14 +68,20 @@ export function VersionsView({
   installRuntime,
   installResult,
   gameDirLabel,
+  gameDirPath,
+  settings,
   onRefreshInstances,
   onSelectInstance,
   onFetchRemote,
   onInstall,
   onOpenPath,
-  onGoLaunch
+  onGoLaunch,
+  onGoSettings,
+  onNotify
 }: VersionsViewProps) {
   const [mode, setMode] = useState<VersionMode>("local");
+  const [featureBusy, setFeatureBusy] = useState(false);
+  const autoFetchAttemptedRef = useRef(false);
   const [localSearch, setLocalSearch] = useState("");
   const [localType, setLocalType] = useState<LocalTypeFilter>("all");
   const [loaderFilter, setLoaderFilter] = useState("all");
@@ -78,7 +93,10 @@ export function VersionsView({
   const remoteSearchId = useId();
 
   useEffect(() => {
-    if (mode === "remote" && !remoteFetched && !remoteLoading) onFetchRemote();
+    if ((mode === "remote" || mode === "loaders") && !remoteFetched && !remoteLoading && !autoFetchAttemptedRef.current) {
+      autoFetchAttemptedRef.current = true;
+      onFetchRemote();
+    }
   }, [mode, remoteFetched, remoteLoading, onFetchRemote]);
 
   const loaderOptions = useMemo(() => {
@@ -119,15 +137,24 @@ export function VersionsView({
   const percent = installRuntime?.progress
     ? progressPercent(installRuntime.progress.completed, installRuntime.progress.total)
     : null;
+  const modeContext = mode === "local"
+    ? `${instances.length} 个本地版本`
+    : mode === "remote"
+      ? remoteFetched ? `${filteredRemoteVersions.length} 个远程版本` : "Mojang 版本清单"
+      : mode === "loaders"
+        ? "安装 Minecraft 模组加载器"
+        : mode === "mods"
+          ? selectedInstance?.name ? `${selectedInstance.name} · 模组发现` : "模组发现"
+          : "管理已安装模组";
 
   return (
     <div className="page-shell">
-      <header className="page-header">
-        <div className="page-title-group">
+      <header className="page-head">
+        <div className="page-title">
           <h1>下载</h1>
-          <p>管理本地版本，或从 Mojang 清单安装原版客户端。</p>
+          <span>{modeContext}</span>
         </div>
-        <div className="page-header-actions">
+        <div className="page-head-actions">
           {mode === "local" && selectedInstance ? (
             <button type="button" className="button primary" onClick={onGoLaunch}>
               <Icon name="play" /> 启动所选版本
@@ -136,13 +163,14 @@ export function VersionsView({
         </div>
       </header>
 
-      <div className="page-content downloads-content">
-        <div className="section-tabs" role="group" aria-label="版本来源">
+      <div className="page-body downloads-content">
+        <div className="section-tabs" role="group" aria-label="下载功能">
           <button
             type="button"
             className={mode === "local" ? "active" : ""}
             aria-pressed={mode === "local"}
             onClick={() => setMode("local")}
+            disabled={featureBusy}
           >
             本地版本 <span className="tab-count">{instances.length}</span>
           </button>
@@ -151,8 +179,36 @@ export function VersionsView({
             className={mode === "remote" ? "active" : ""}
             aria-pressed={mode === "remote"}
             onClick={() => setMode("remote")}
+            disabled={featureBusy}
           >
-            远程下载
+            Mojang 版本
+          </button>
+          <button
+            type="button"
+            className={mode === "loaders" ? "active" : ""}
+            aria-pressed={mode === "loaders"}
+            onClick={() => setMode("loaders")}
+            disabled={featureBusy}
+          >
+            加载器
+          </button>
+          <button
+            type="button"
+            className={mode === "mods" ? "active" : ""}
+            aria-pressed={mode === "mods"}
+            onClick={() => setMode("mods")}
+            disabled={featureBusy}
+          >
+            模组发现
+          </button>
+          <button
+            type="button"
+            className={mode === "installed" ? "active" : ""}
+            aria-pressed={mode === "installed"}
+            onClick={() => setMode("installed")}
+            disabled={featureBusy}
+          >
+            已安装模组
           </button>
           <div className="tab-meta" title={gameDirLabel}>
             <Icon name="folder" />
@@ -161,7 +217,7 @@ export function VersionsView({
         </div>
 
         {mode === "local" ? (
-          <section aria-label="本地版本">
+          <section className="download-tab-panel" aria-label="本地版本">
             <div className="list-toolbar">
               <div className="search-box">
                 <label className="sr-only" htmlFor={localSearchId}>搜索本地版本</label>
@@ -271,8 +327,8 @@ export function VersionsView({
               </div>
             )}
           </section>
-        ) : (
-          <section aria-label="远程版本">
+        ) : mode === "remote" ? (
+          <section className="download-tab-panel" aria-label="远程版本">
             <div className="list-toolbar">
               <div className="search-box">
                 <label className="sr-only" htmlFor={remoteSearchId}>搜索远程版本</label>
@@ -411,6 +467,43 @@ export function VersionsView({
 
             <p className="scope-note">安装内容来自 Mojang 版本清单，写入当前游戏目录。不会自动安装模组或整合包。</p>
           </section>
+        ) : mode === "loaders" ? (
+          <LoaderInstallPanel
+            gameDir={settings?.gameDir ?? ""}
+            gameDirLabel={gameDirLabel}
+            selectedInstance={selectedInstance}
+            settings={settings}
+            remoteVersions={remoteVersions}
+            remoteLoading={remoteLoading}
+            remoteError={remoteError}
+            remoteFetched={remoteFetched}
+            onFetchRemote={onFetchRemote}
+            onRefreshInstances={onRefreshInstances}
+            onGoSettings={onGoSettings}
+            onOpenPath={onOpenPath}
+            onNotify={onNotify}
+            onBusyChange={setFeatureBusy}
+          />
+        ) : mode === "mods" ? (
+          <ModDiscoveryPanel
+            gameDir={settings?.gameDir ?? ""}
+            gameDirLabel={gameDirLabel}
+            selectedInstance={selectedInstance}
+            curseforgeApiKey={settings?.curseforgeApiKey ?? ""}
+            onGoSettings={onGoSettings}
+            onGoLocal={() => setMode("local")}
+            onNotify={onNotify}
+            onBusyChange={setFeatureBusy}
+          />
+        ) : (
+          <InstalledModsPanel
+            gameDir={settings?.gameDir ?? ""}
+            gameDirPath={gameDirPath}
+            gameDirLabel={gameDirLabel}
+            selectedInstance={selectedInstance}
+            onOpenPath={onOpenPath}
+            onNotify={onNotify}
+          />
         )}
       </div>
     </div>

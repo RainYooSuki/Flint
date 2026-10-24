@@ -581,6 +581,11 @@ pub fn list_instances(game_dir: &str) -> Result<Vec<InstanceInfo>, String> {
             .unwrap_or_else(|| id.clone());
         let has_client_jar = client_jar_path(&root, &jar_id).is_file()
             || entry.path().join(format!("{id}.jar")).is_file();
+        let game_version = resolved
+            .as_ref()
+            .and_then(|value| value.chain.last())
+            .cloned()
+            .unwrap_or_else(|| id.clone());
         let name = raw
             .get("name")
             .and_then(Value::as_str)
@@ -605,6 +610,7 @@ pub fn list_instances(game_dir: &str) -> Result<Vec<InstanceInfo>, String> {
             name,
             version_type: metadata_version_type(metadata),
             loader: detect_loader(&id, Some(metadata)),
+            game_version,
             path: entry.path().display().to_string(),
             has_client_jar,
             last_played: last,
@@ -851,7 +857,7 @@ mod tests {
     #[test]
     fn windows_version_is_extracted_from_localized_ver_output() {
         assert_eq!(
-            extract_windows_version("Microsoft Windows [鐗堟湰 10.0.26200.8655]"),
+            extract_windows_version("Windows build [10.0.26200.8655]"),
             Some("10.0.26200.8655".to_string())
         );
         assert_eq!(
@@ -868,5 +874,47 @@ mod tests {
         });
         assert_eq!(asset_index_id(&metadata), Some("17".to_string()));
         assert_eq!(required_java_major(&metadata), Some(21));
+    }
+}
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn instance_discovery_reports_the_inherited_game_version() {
+        let root = std::env::temp_dir().join(format!(
+            "flint-instance-version-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        let base_dir = root.join("versions").join("1.20.1");
+        let child_id = "1.20.1-fabric-loader-0.15.11";
+        let child_dir = root.join("versions").join(child_id);
+        fs::create_dir_all(&base_dir).expect("base dir");
+        fs::create_dir_all(&child_dir).expect("child dir");
+        fs::write(
+            base_dir.join("1.20.1.json"),
+            br#"{"id":"1.20.1","type":"release","mainClass":"net.minecraft.client.main.Main","libraries":[]}"#,
+        )
+        .expect("base metadata");
+        fs::write(
+            child_dir.join(format!("{child_id}.json")),
+            br#"{"id":"1.20.1-fabric-loader-0.15.11","inheritsFrom":"1.20.1","mainClass":"net.fabricmc.loader.impl.launch.knot.KnotClient","libraries":[]}"#,
+        )
+        .expect("child metadata");
+
+        let instances = list_instances(&root.display().to_string()).expect("instances");
+        let child = instances
+            .iter()
+            .find(|instance| instance.id == child_id)
+            .expect("child instance");
+        assert_eq!(child.game_version, "1.20.1");
+        assert_eq!(child.loader, "Fabric");
+        let _ = fs::remove_dir_all(root);
     }
 }

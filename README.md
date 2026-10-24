@@ -1,26 +1,67 @@
 # Flint
 
-Flint is a desktop launcher for Minecraft Java Edition. It combines a Tauri 2 shell, a React interface, and a Rust backend for local instance management, Java discovery, version installation, and offline launch.
+Flint is a desktop launcher for Minecraft Java Edition. It supports Microsoft and offline accounts, vanilla and modded instances, mod discovery and management, and local save management through a Tauri 2 desktop shell.
 
-## Features
+## Feature overview
 
-- Local instance discovery from a Minecraft `versions` directory.
-- Java runtime discovery from `JAVA_HOME`, `PATH`, and common platform locations.
-- Local settings for game directory, Java path, memory, window size, and launch arguments.
-- Mojang version catalog browsing and vanilla version installation with progress events.
-- Offline username launch for installed versions, with output written to a log file.
-- Compact custom window chrome with minimize, maximize, and close controls.
-- Release builds for Windows x64, Linux x64, macOS x64, and macOS arm64.
+- Microsoft device-code accounts and online launch, plus the built-in offline account.
+- Local instance discovery, Java scanning, settings, and vanilla version installation.
+- Forge, NeoForge, Fabric, Quilt, LiteLoader, and OptiFine installation.
+- CurseForge and Modrinth mod search, dependency planning, and installed-mod management.
+- Save listing, backup, export, import, rename, and delete.
+- Cross-platform release builds for Windows x64, Linux x64, macOS x64, and macOS arm64.
 
-## Current limitations
+## Accounts and online launch
 
-- Microsoft/Mojang account sign-in and online authentication are not implemented.
-- Modpacks, resource packs, server browsing, skins, and capes are not implemented.
-- Release binaries are unsigned; macOS builds are not notarized.
+The offline account is always available and uses the username configured in Flint. Microsoft sign-in uses OAuth 2.0 device-code flow and makes the signed-in profile the active account. Launch uses the active account automatically; Microsoft sessions are refreshed when needed.
+
+Microsoft sign-in requires a Microsoft Entra public-client application ID. There is no client secret and no redirect URI in the device-code flow. The account must own Minecraft: Java Edition. Access and refresh tokens are stored only in the local account store and are never inserted into launch output.
+
+See [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) for Azure app registration, key storage, and environment notes.
+
+## Loader installation
+
+Choose a game directory, base Minecraft version, loader version, and Java executable in the Downloads view. If the base version is missing, Flint installs the vanilla metadata, client, libraries, and assets first.
+
+| Loader | Installation path |
+| --- | --- |
+| Forge | Official installer JAR; Java executable required |
+| NeoForge | Official installer JAR; Java executable required |
+| Fabric | Loader profile and libraries from Fabric metadata |
+| Quilt | Loader profile and libraries from Quilt metadata |
+| LiteLoader | LiteLoader metadata/profile extraction |
+| OptiFine | Upstream listing and installer flow when a direct JAR is available |
+
+Every successful install creates a local version that appears in the instance list. Installed files stay inside the selected game directory; when an installer runs, its log also stays there. Java is not bundled with Flint; Forge, NeoForge, and OptiFine installer flows and all loader launches need a working Java runtime.
+
+OptiFine's upstream download is ad-gated and may not provide a direct JAR. Flint refuses to execute an HTML response and reports a clear failure; in that case, install OptiFine manually into the same game directory and refresh local versions.
+
+## Mods
+
+The mod discovery and installed-mod panels use the currently selected instance:
+
+- Search is filtered by that instance's Minecraft version and loader. Mod search currently supports Fabric, Forge, NeoForge, and Quilt contexts.
+- Modrinth works without additional configuration. CurseForge requires an API key in Settings.
+- Version selection can resolve required dependencies recursively. Optional and incompatible dependencies are reported, while required dependencies without a safe download fail the operation.
+- Mods are downloaded atomically into `<gameDir>/mods`, scanned for metadata, and never executed by Flint.
+- Installed mods can be enabled, disabled, or deleted from the selected game directory. Disabled JARs use the `.jar.disabled` suffix.
+
+## Save manager
+
+The save manager uses the selected instance's game directory:
+
+- Lists worlds from `<gameDir>/saves` with level name, last-played time, size, game mode, hardcore flag, version, and icon when available.
+- Creates ZIP backups under `<gameDir>/backups/flint-saves`.
+- Exports a save to a chosen ZIP, imports a ZIP containing one save folder or a top-level `level.dat`, renames the save folder, and deletes saves after confirmation.
+- Rejects unsafe archive paths and save names during import and management.
+
+## Integrations
+
+Microsoft and CurseForge integrations are optional. Configure them in Settings under Integration services. Both values are user-supplied at runtime; no client secret, API key, or account token is embedded in a release build. See [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) for setup, local storage paths, and troubleshooting.
 
 ## Technology
 
-Flint uses Tauri 2 with a Rust backend and a React 18 + TypeScript frontend built by Vite. The frontend/backend interface is documented in [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md).
+Flint uses Tauri 2 with a Rust backend and a React 18 + TypeScript frontend built by Vite. The Rust backend uses `reqwest` with rustls, `serde`, `zip`, `flate2`, `base64`, `sha1`, `regex`, `dirs`, and `tokio` for its network, archive, asset, NBT, and background-task paths. The base command contract is in [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md); account, loader, mod, and save extensions are in [`docs/FEATURE_API_CONTRACT.md`](docs/FEATURE_API_CONTRACT.md).
 
 ## Requirements
 
@@ -30,7 +71,11 @@ Flint uses Tauri 2 with a Rust backend and a React 18 + TypeScript frontend buil
   - Windows: Microsoft WebView2 and Visual Studio C++ build tools.
   - macOS: Xcode Command Line Tools.
   - Linux: WebKitGTK, GTK, and the usual build dependencies. The release workflow installs the required Ubuntu 22.04 packages.
-- See the [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/) for platform details.
+- A Java runtime for launching and for Forge, NeoForge, and OptiFine installation. Flint discovers Java runtimes but does not download one.
+- Network access to Mojang, Microsoft, Modrinth, CurseForge, and the selected loader service.
+- A Microsoft Entra application ID for Microsoft sign-in, and a CurseForge API key for CurseForge search; both are optional until the corresponding feature is used.
+
+See the [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/) for platform details.
 
 ## Development
 
@@ -83,7 +128,7 @@ node scripts/test-release-scripts.mjs
 node scripts/validate-release.mjs --require-exact
 ```
 
-Raw output locations without `--target` are `src-tauri/target/release/flint.exe` on Windows and `src-tauri/target/release/flint` on Linux/macOS. Target-specific builds are placed under `src-tauri/target/<triple>/release/`.
+Raw output locations without `--target` are `src-tauri/target/release/flint.exe` on Windows and `src-tauri/target/release/flint` on Linux/macOS. Target-specific builds are placed under `src-tauri/target/<triple>/release/`. Cargo resolves the backend dependencies from `Cargo.lock` on the first build; no separate Rust dependency installation step is needed.
 
 ## Versioning
 
@@ -103,21 +148,7 @@ The release workflow computes the version before building and applies it to `VER
 
 ## Release artifacts
 
-For version `<version>`, releases contain:
-
-```text
-Flint-windows-x64-<version>.exe
-Flint-windows-x64-<version>.zip
-Flint-linux-x64-<version>
-Flint-linux-x64-<version>.zip
-Flint-macos-x64-<version>
-Flint-macos-x64-<version>.zip
-Flint-macos-arm64-<version>
-Flint-macos-arm64-<version>.zip
-sha.txt
-```
-
-Each ZIP contains the matching raw executable and a `RUNNING.txt`. `sha.txt` contains SHA-256 hashes for the eight raw/ZIP assets, not for itself.
+For version `<version>`, releases contain the Windows `.exe`, the Linux/macOS raw executables, a matching ZIP for every executable, and `sha.txt`. Files follow `Flint-<platform>-<version>` naming, with `.exe` on Windows and `.zip` for archives. Each ZIP contains the matching raw executable and a `RUNNING.txt`; `sha.txt` contains SHA-256 hashes for the eight raw/ZIP assets, not for itself.
 
 ## Release workflow
 
@@ -127,15 +158,23 @@ The workflow is [`.github/workflows/flint-release.yml`](.github/workflows/flint-
 - Pushes containing only `VERSION`, Markdown/docs, workflow files, release scripts, or ignore metadata do not start a release.
 - The build matrix creates Windows x64, Linux x64, macOS x64, and macOS arm64 assets.
 - Packaging validation checks the raw executables, exact ZIP contents, eight release assets, and `sha.txt` before publishing.
-- The release uses `flint-v<version>` and notes commits since the previous parseable release tag reachable from `HEAD`; the current tag is excluded.
+- The release uses `flint-v<version>` and notes commits since the previous reachable parseable release tag.
 - The publish job uses `GITHUB_TOKEN` with `contents: write`; no personal access token is required.
 - GitHub must discover the workflow from the repository-root `.github/workflows/` directory, so `Flint/` should be published as the repository root.
+
+## Current limitations
+
+- Modpacks, resource packs, server browsing, skins, and capes are not implemented.
+- Microsoft sign-in requires a user-supplied Azure public-client ID; CurseForge search requires a CurseForge API key. Offline launch and Modrinth do not require either.
+- Java is not bundled or downloaded automatically.
+- OptiFine may require a manual installer because upstream links can be ad-gated or unavailable.
+- Release binaries are unsigned and macOS builds are not notarized.
 
 ## Project layout
 
 ```text
 .github/workflows/   Release automation
-docs/                API contract and project notes
+docs/                API contracts, integration setup, and project notes
 scripts/             Version, release, and validation tooling
 src/                 React frontend
 src-tauri/           Rust/Tauri backend

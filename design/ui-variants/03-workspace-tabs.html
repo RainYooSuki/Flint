@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>C · 工作区标签 — Flint</title>
+<style>
+  :root {
+    --bg: #12110f;
+    --titlebar: #181613;
+    --tabbar: #1b1815;
+    --explorer: #181613;
+    --editor: #14120f;
+    --inspector: #181613;
+    --panel: #1b1815;
+    --line: #342e26;
+    --line-soft: #28231d;
+    --text: #e4ddd4;
+    --soft: #b0a69a;
+    --dim: #7d7469;
+    --amber: #d0a05f;
+    --amber-strong: #e4ba7c;
+    --amber-fill: #2d251b;
+    --amber-line: #675135;
+    --green: #83b093;
+  }
+  * { box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #0b0a08; }
+  body {
+    display: grid;
+    place-items: center;
+    color: var(--text);
+    font-family: "Microsoft YaHei UI", "Segoe UI", "Noto Sans SC", system-ui, sans-serif;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  button { color: inherit; font: inherit; cursor: pointer; }
+  h1, h2, p, dl, dt, dd, pre { margin: 0; }
+  svg { display: block; }
+  .icon { width: 15px; height: 15px; flex: 0 0 auto; }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+  .frame {
+    display: grid;
+    width: 900px;
+    height: 550px;
+    grid-template-rows: 30px 34px minmax(0, 1fr) 24px;
+    overflow: hidden;
+    border: 1px solid #383127;
+    background: var(--bg);
+  }
+  .titlebar {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    border-bottom: 1px solid var(--line);
+    background: var(--titlebar);
+    user-select: none;
+  }
+  .brand { display: flex; height: 100%; align-items: center; gap: 7px; padding: 0 10px; }
+  .brand-mark {
+    display: grid;
+    width: 16px;
+    height: 16px;
+    place-items: center;
+    border: 1px solid var(--amber-line);
+    border-radius: 2px;
+    color: var(--amber-strong);
+    font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 9px;
+    font-weight: 700;
+  }
+  .brand-name { color: #ded5c9; font-size: 12px; font-weight: 600; }
+  .variant-label { padding-left: 8px; border-left: 1px solid var(--line); color: var(--dim); font-size: 9px; }
+  .document-title {
+    min-width: 0;
+    margin-left: auto;
+    padding: 0 12px;
+    overflow: hidden;
+    color: var(--dim);
+    font-size: 9px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .window-controls { display: flex; height: 100%; }
+  .window-button {
+    display: grid;
+    width: 37px;
+    height: 100%;
+    padding: 0;
+    place-items: center;
+    border: 0;
+    border-left: 1px solid var(--line-soft);
+    background: transparent;
+    color: var(--soft);
+  }
+  .window-button:hover { background: #312a22; color: #fff; }
+  .window-button.close:hover { background: #733a32; }
+  .window-button .icon { width: 12px; height: 12px; }
+  .tabbar {
+    display: flex;
+    min-width: 0;
+    align-items: stretch;
+    border-bottom: 1px solid var(--line);
+    background: var(--tabbar);
+  }
+  .tabs { display: flex; min-width: 0; align-items: stretch; }
+  .tab {
+    position: relative;
+    display: flex;
+    min-width: 72px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 12px;
+    border: 0;
+    border-right: 1px solid var(--line-soft);
+    background: transparent;
+    color: #8f8579;
+    font-size: 11px;
+  }
+  .tab:hover { background: #211d18; color: var(--text); }
+  .tab.active { background: #15120e; color: #e5d8c7; }
+  .tab.active::after {
+    position: absolute;
+    right: 9px;
+    bottom: -1px;
+    left: 9px;
+    height: 2px;
+    background: var(--amber);
+    content: "";
+  }
+  .tab .icon { width: 13px; height: 13px; color: var(--dim); }
+  .tab.active .icon { color: var(--amber); }
+  .tab-context { display: flex; min-width: 0; align-items: center; gap: 7px; margin-left: auto; padding: 0 10px; color: var(--dim); font-size: 9px; }
+  .tab-context strong { overflow: hidden; color: var(--soft); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+  .workbench { display: grid; min-width: 0; min-height: 0; grid-template-columns: 194px minmax(0, 1fr) 224px; overflow: hidden; }
+  .explorer {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+    border-right: 1px solid var(--line);
+    background: var(--explorer);
+  }
+  .pane-title {
+    display: flex;
+    min-height: 30px;
+    flex: 0 0 30px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--line-soft);
+    color: var(--soft);
+    font-size: 9px;
+  }
+  .pane-title span:last-child { color: var(--dim); font-size: 8px; }
+  .instance-list { display: flex; flex-direction: column; padding: 5px 0; }
+  .instance-button {
+    display: flex;
+    min-height: 43px;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    border: 0;
+    border-left: 2px solid transparent;
+    background: transparent;
+    color: var(--soft);
+    text-align: left;
+  }
+  .instance-button:hover { background: #201c17; color: var(--text); }
+  .instance-button.active { border-left-color: var(--amber); background: var(--amber-fill); color: #eadbc8; }
+  .instance-icon {
+    display: grid;
+    width: 24px;
+    height: 24px;
+    flex: 0 0 24px;
+    place-items: center;
+    border: 1px solid #4a3d2d;
+    border-radius: 2px;
+    background: #221c15;
+    color: var(--amber);
+    font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 8px;
+  }
+  .instance-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+  .instance-copy strong { overflow: hidden; font-size: 10px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+  .instance-copy small { overflow: hidden; color: var(--dim); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+  .explorer-add {
+    margin: 4px 9px;
+    min-height: 27px;
+    border: 1px dashed #554631;
+    border-radius: 2px;
+    background: transparent;
+    color: #a18f78;
+    font-size: 9px;
+  }
+  .explorer-add:hover { border-style: solid; color: var(--amber-strong); }
+  .explorer-spacer { flex: 1; min-height: 4px; }
+  .account-mini {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 8px 10px;
+    border-top: 1px solid var(--line-soft);
+    color: var(--dim);
+    font-size: 8px;
+  }
+  .avatar {
+    display: grid;
+    width: 23px;
+    height: 23px;
+    flex: 0 0 23px;
+    place-items: center;
+    border: 1px solid #59492f;
+    border-radius: 2px;
+    background: #2b2319;
+    color: #ebc489;
+    font-size: 9px;
+    font-weight: 600;
+  }
+  .account-mini strong { display: block; color: var(--soft); font-size: 9px; font-weight: 400; }
+  .editor { display: grid; min-width: 0; min-height: 0; grid-template-rows: 32px minmax(0, 1fr) 43px; overflow: hidden; background: var(--editor); }
+  .editor-head {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--line-soft);
+    color: var(--dim);
+    font-size: 9px;
+  }
+  .breadcrumb { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .breadcrumb strong { color: var(--soft); font-weight: 400; }
+  .offline-state { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; color: var(--soft); }
+  .offline-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--amber); }
+  .editor-body { display: flex; min-width: 0; min-height: 0; flex-direction: column; gap: 9px; padding: 11px 12px; overflow: hidden; }
+  .section { overflow: hidden; border: 1px solid var(--line); border-radius: 2px; background: var(--panel); }
+  .section-head {
+    display: flex;
+    min-height: 28px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--line-soft);
+    color: var(--soft);
+    font-size: 9px;
+  }
+  .section-head span:last-child { color: var(--dim); font-size: 8px; }
+  .config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .config-cell {
+    display: grid;
+    min-height: 39px;
+    grid-template-columns: 72px minmax(0, 1fr);
+    align-items: center;
+    gap: 7px;
+    padding: 0 10px;
+    border-right: 1px solid var(--line-soft);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .config-cell:nth-child(2n) { border-right: 0; }
+  .config-cell:nth-last-child(-n+2) { border-bottom: 0; }
+  .config-cell dt { color: var(--dim); font-size: 9px; }
+  .config-cell dd { min-width: 0; overflow: hidden; color: #d4c8b9; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+  .config-cell dd.path { font-family: "Cascadia Mono", Consolas, monospace; font-size: 9px; }
+  .command-panel .command-line {
+    display: flex;
+    min-height: 52px;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: #11100d;
+  }
+  .command-prompt { color: var(--amber); font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; }
+  .command-line code { min-width: 0; overflow: hidden; color: #a99e90; font-family: "Cascadia Mono", Consolas, monospace; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+  .recent-line {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 9px;
+    border: 1px solid var(--line-soft);
+    border-radius: 2px;
+    color: var(--dim);
+    font-size: 8px;
+  }
+  .recent-line strong { color: var(--soft); font-weight: 400; }
+  .recent-line time { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .editor-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    padding: 0 11px;
+    border-top: 1px solid var(--line);
+    background: #171410;
+  }
+  .button {
+    display: inline-flex;
+    height: 28px;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 0 10px;
+    border: 1px solid #4b4032;
+    border-radius: 2px;
+    background: #211c16;
+    color: #c4b6a4;
+    font-size: 9px;
+    white-space: nowrap;
+  }
+  .button:hover { border-color: #6d5941; background: #2b241b; color: #fff4e6; }
+  .button.primary { border-color: var(--amber-line); background: #33281b; color: #f0d2a5; }
+  .button.primary:hover { border-color: var(--amber); background: #433520; }
+  .button .icon { width: 12px; height: 12px; }
+  .inspector { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; border-left: 1px solid var(--line); background: var(--inspector); }
+  .inspector-section { border-bottom: 1px solid var(--line); }
+  .inspector-section:last-child { flex: 1; min-height: 0; border-bottom: 0; }
+  .inspector-head {
+    display: flex;
+    min-height: 29px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 9px;
+    color: var(--soft);
+    font-size: 9px;
+  }
+  .inspector-head span:last-child { color: var(--dim); font-size: 8px; }
+  .mini-rows { display: flex; flex-direction: column; }
+  .mini-row {
+    display: flex;
+    min-height: 30px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 9px;
+    border-top: 1px solid var(--line-soft);
+    color: var(--dim);
+    font-size: 8px;
+  }
+  .mini-row strong { overflow: hidden; color: var(--soft); font-size: 9px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+  .log-lines {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 5px;
+    padding: 7px 9px;
+    overflow: hidden;
+    color: #8d8275;
+    font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 8px;
+    line-height: 1.55;
+  }
+  .log-lines .ok { color: #9fbd9f; }
+  .log-lines .amber { color: var(--amber); }
+  .statusbar {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 12px;
+    padding: 0 9px;
+    border-top: 1px solid var(--line);
+    background: #1b1814;
+    color: var(--dim);
+    font-size: 8px;
+  }
+  .statusbar .status-left, .statusbar .status-right { display: flex; min-width: 0; align-items: center; gap: 10px; }
+  .statusbar .status-right { margin-left: auto; }
+  .status-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .status-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--amber); }
+</style>
+</head>
+<body>
+<div class="frame">
+  <header class="titlebar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">F</span>
+      <span class="brand-name">Flint</span>
+      <span class="variant-label">C · 工作区标签</span>
+    </div>
+    <div class="document-title">启动 — 默认工作区</div>
+    <div class="window-controls" role="group" aria-label="窗口控制">
+      <button class="window-button" type="button" aria-label="最小化" title="最小化">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M5 12h14"/></svg>
+      </button>
+      <button class="window-button" type="button" aria-label="最大化或还原" title="最大化或还原">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
+      </button>
+      <button class="window-button close" type="button" aria-label="关闭" title="关闭">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <nav class="tabbar" aria-label="主导航">
+    <div class="tabs">
+      <button class="tab active" type="button" aria-current="page">
+        <svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+        启动
+      </button>
+      <button class="tab" type="button">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>
+        下载
+      </button>
+      <button class="tab" type="button">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6"/></svg>
+        设置
+      </button>
+      <button class="tab" type="button">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 6h5v5M19 6l-6 6M4 18l5-5"/></svg>
+        工具
+      </button>
+    </div>
+    <div class="tab-context"><span>工作区</span><strong>1.21.4 / Fabric</strong></div>
+  </nav>
+
+  <div class="workbench">
+    <aside class="explorer" aria-label="本地版本">
+      <div class="pane-title"><span>本地版本</span><span>3 项</span></div>
+      <div class="instance-list">
+        <button class="instance-button active" type="button" aria-pressed="true">
+          <span class="instance-icon" aria-hidden="true">1.21</span>
+          <span class="instance-copy"><strong>1.21.4</strong><small>Fabric 0.16.10</small></span>
+        </button>
+        <button class="instance-button" type="button" aria-pressed="false">
+          <span class="instance-icon" aria-hidden="true">1.20</span>
+          <span class="instance-copy"><strong>1.20.6</strong><small>Vanilla</small></span>
+        </button>
+        <button class="instance-button" type="button" aria-pressed="false">
+          <span class="instance-icon" aria-hidden="true">1.20</span>
+          <span class="instance-copy"><strong>1.20.1</strong><small>Forge 47.3.0</small></span>
+        </button>
+        <button class="explorer-add" type="button">＋ 添加本地版本</button>
+      </div>
+      <div class="explorer-spacer"></div>
+      <div class="account-mini">
+        <span class="avatar" aria-hidden="true">P</span>
+        <span><strong>Player</strong>离线账户</span>
+      </div>
+    </aside>
+
+    <main class="editor" aria-labelledby="workspace-config-title">
+      <div class="editor-head">
+        <span class="breadcrumb">启动 / <strong>1.21.4</strong></span>
+        <span class="offline-state"><span class="offline-dot"></span>离线模式</span>
+      </div>
+
+      <div class="editor-body">
+        <section class="section" aria-labelledby="workspace-config-title">
+          <div class="section-head"><span id="workspace-config-title">启动配置</span><span>已就绪</span></div>
+          <dl class="config-grid">
+            <div class="config-cell"><dt>版本</dt><dd>1.21.4</dd></div>
+            <div class="config-cell"><dt>加载器</dt><dd>Fabric 0.16.10</dd></div>
+            <div class="config-cell"><dt>账户</dt><dd>Player（离线）</dd></div>
+            <div class="config-cell"><dt>Java</dt><dd>Microsoft OpenJDK 21</dd></div>
+            <div class="config-cell"><dt>内存</dt><dd>4096 MB</dd></div>
+            <div class="config-cell"><dt>窗口</dt><dd>854 × 480</dd></div>
+            <div class="config-cell"><dt>游戏目录</dt><dd class="path" title="C:\Users\Player\.minecraft">C:\Users\Player\.minecraft</dd></div>
+            <div class="config-cell"><dt>上次启动</dt><dd>今天 20:14</dd></div>
+          </dl>
+        </section>
+
+        <section class="section command-panel" aria-labelledby="workspace-command-title">
+          <div class="section-head"><span id="workspace-command-title">启动命令</span><span>Java 21</span></div>
+          <div class="command-line">
+            <span class="command-prompt" aria-hidden="true">&gt;</span>
+            <code>java -Xmx4096M -Xms1024M -cp fabric-loader.jar net.fabricmc.loader.impl.launch.knot.KnotClient</code>
+          </div>
+        </section>
+
+        <div class="recent-line">
+          <span>最近会话</span><strong>今天 20:14 正常退出</strong>
+          <time>日志 logs\latest.log</time>
+        </div>
+      </div>
+
+      <div class="editor-actions">
+        <button class="button" type="button">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7h6l2 2h10v9H3z"/></svg>
+          打开游戏目录
+        </button>
+        <button class="button primary" type="button">
+          <svg class="icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+          启动游戏
+        </button>
+      </div>
+    </main>
+
+    <aside class="inspector" aria-label="运行信息">
+      <section class="inspector-section">
+        <div class="inspector-head"><span>运行环境</span><span>本机</span></div>
+        <div class="mini-rows">
+          <div class="mini-row"><span>Java</span><strong>OpenJDK 21</strong></div>
+          <div class="mini-row"><span>内存</span><strong>4096 MB</strong></div>
+          <div class="mini-row"><span>窗口</span><strong>854 × 480</strong></div>
+          <div class="mini-row"><span>客户端</span><strong>完整</strong></div>
+        </div>
+      </section>
+      <section class="inspector-section">
+        <div class="inspector-head"><span>账户</span><span>离线</span></div>
+        <div class="mini-rows">
+          <div class="mini-row"><span>玩家</span><strong>Player</strong></div>
+          <div class="mini-row"><span>身份</span><strong>本地账户</strong></div>
+        </div>
+      </section>
+      <section class="inspector-section" aria-label="最近日志">
+        <div class="inspector-head"><span>最近日志</span><span>latest.log</span></div>
+        <div class="log-lines">
+          <span><span class="amber">20:14:02</span> 实例 1.21.4 已载入</span>
+          <span class="ok">20:14:03 Java 21 检测通过</span>
+          <span>20:14:03 账户 Player · 离线模式</span>
+          <span>20:14:04 游戏进程已退出（0）</span>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <footer class="statusbar">
+    <div class="status-left">
+      <span class="status-item"><span class="status-dot"></span>离线模式</span>
+      <span class="status-item">Fabric 0.16.10</span>
+      <span class="status-item">客户端完整</span>
+    </div>
+    <div class="status-right">
+      <span class="status-item">Java 21</span>
+      <span class="status-item">4096 MB</span>
+      <span class="status-item">UTF-8</span>
+    </div>
+  </footer>
+</div>
+</body>
+</html>

@@ -3,13 +3,17 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath as openSystemPath } from "@tauri-apps/plugin-opener";
 import { api } from "./api";
+import { AccountDialog } from "./components/AccountDialog";
+import { AppSidebar } from "./components/AppSidebar";
 import { Icon } from "./components/Icon";
 import { TitleBar } from "./components/TitleBar";
 import { AboutView } from "./views/AboutView";
 import { LaunchView } from "./views/LaunchView";
+import { SaveManagerView } from "./views/SaveManagerView";
 import { SettingsView } from "./views/SettingsView";
 import { VersionsView } from "./views/VersionsView";
 import type {
+  AccountInfo,
   InstallProgress,
   InstallResult,
   InstallRuntime,
@@ -26,6 +30,7 @@ import type {
 } from "./types";
 import {
   formatBytes,
+  platformLabel,
   settingsEqual,
   toErrorMessage,
   validateUsername
@@ -34,6 +39,7 @@ import {
 const pageTitles: Record<SectionId, string> = {
   launch: "启动",
   versions: "下载",
+  saves: "存档",
   settings: "设置",
   about: "工具"
 };
@@ -65,10 +71,15 @@ export default function App() {
   const [launchResult, setLaunchResult] = useState<LaunchResult | null>(null);
   const [launchStartedAt, setLaunchStartedAt] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [accounts, setAccounts] = useState<AccountInfo[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(true);
+  const [accountsError, setAccountsError] = useState<string | null>(null);
+  const [accountDialogOpen, setAccountDialogOpen] = useState(false);
 
   const noticeIdRef = useRef(0);
   const contentRef = useRef<HTMLElement>(null);
   const instancesRequestIdRef = useRef(0);
+  const accountsRequestIdRef = useRef(0);
   const settingsRef = useRef<LauncherSettings | null>(null);
 
   const pushNotice = useCallback((kind: NoticeKind, text: string) => {
@@ -100,6 +111,40 @@ export default function App() {
       if (requestId === instancesRequestIdRef.current) setInstancesLoading(false);
     }
   }, [pushNotice]);
+
+  const refreshAccounts = useCallback(async (announce = false): Promise<void> => {
+    const requestId = accountsRequestIdRef.current + 1;
+    accountsRequestIdRef.current = requestId;
+    setAccountsLoading(true);
+    setAccountsError(null);
+    try {
+      const next = await api.listAccounts();
+      if (requestId !== accountsRequestIdRef.current) return;
+      setAccounts(next);
+      if (announce) {
+        const active = next.find((account) => account.active);
+        pushNotice("success", active ? `账户已刷新：${active.username}。` : "账户列表已刷新。");
+      }
+    } catch (error) {
+      if (requestId !== accountsRequestIdRef.current) return;
+      const message = toErrorMessage(error);
+      setAccountsError(message);
+      if (announce) pushNotice("error", `账户列表读取失败：${message}`);
+    } finally {
+      if (requestId === accountsRequestIdRef.current) setAccountsLoading(false);
+    }
+  }, [pushNotice]);
+
+  const applyAccounts = useCallback((next: AccountInfo[]) => {
+    accountsRequestIdRef.current += 1;
+    setAccounts(next);
+    setAccountsError(null);
+    setAccountsLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void refreshAccounts();
+  }, [refreshAccounts]);
 
   useEffect(() => {
     let cancelled = false;
@@ -221,7 +266,7 @@ export default function App() {
   }, [notice]);
 
   useEffect(() => {
-    document.querySelectorAll<HTMLElement>(".page-content, .settings-scroll, .launch-dock, .stage-body").forEach((element) => { element.scrollTop = 0; });
+    document.querySelectorAll<HTMLElement>(".page-body, .settings-scroll, .launch-content, .runtime-list, .quick-list").forEach((element) => { element.scrollTop = 0; });
   }, [activeSection]);
 
   useEffect(() => {
@@ -238,11 +283,23 @@ export default function App() {
     [settings, settingsDraft]
   );
 
-  const gameDirLabel = settings?.gameDir.trim() || info?.defaultGameDir || "平台默认 .minecraft";
+  const activeAccount = useMemo(
+    () => accounts.find((account) => account.active) ?? null,
+    [accounts]
+  );
+  const accountName = activeAccount?.username || settings?.username || "";
+  const accountTypeLabel = activeAccount?.accountType === "microsoft" ? "Microsoft 账户" : "离线账户";
+  const gameDirPath = settings?.gameDir.trim() || info?.defaultGameDir || "";
+  const gameDirLabel = gameDirPath || "平台默认 .minecraft";
 
   const navigate = useCallback((section: SectionId) => {
     setActiveSection(section);
   }, []);
+
+  const openAccountDialog = useCallback(() => {
+    setAccountDialogOpen(true);
+    void refreshAccounts();
+  }, [refreshAccounts]);
 
   const retryInfo = useCallback(async () => {
     setInfoLoading(true);
@@ -314,6 +371,7 @@ export default function App() {
       settingsRef.current = loaded;
       setSettingsDraft(loaded);
       await refreshInstances(loaded.gameDir);
+      await refreshAccounts();
       pushNotice("success", "已从 Flint 后端重新载入设置。");
     } catch (error) {
       const message = toErrorMessage(error);
@@ -322,7 +380,7 @@ export default function App() {
     } finally {
       setSettingsLoading(false);
     }
-  }, [pushNotice, refreshInstances]);
+  }, [pushNotice, refreshInstances, refreshAccounts]);
 
   const saveSettings = useCallback(async () => {
     if (!settingsDraft) return;
@@ -334,6 +392,7 @@ export default function App() {
       setSettings(saved);
       settingsRef.current = saved;
       setSettingsDraft(saved);
+      void refreshAccounts();
       pushNotice("success", "设置已保存到 Flint 后端。");
       if (gameDirChanged) await refreshInstances(saved.gameDir);
     } catch (error) {
@@ -343,7 +402,7 @@ export default function App() {
     } finally {
       setSavingSettings(false);
     }
-  }, [settingsDraft, settings?.gameDir, pushNotice, refreshInstances]);
+  }, [settingsDraft, settings?.gameDir, pushNotice, refreshInstances, refreshAccounts]);
 
   const resetSettingsDraft = useCallback(() => {
     if (!settings) return;
@@ -409,7 +468,7 @@ export default function App() {
       pushNotice("error", "尚未选择 Java，请先在设置中指定 Java 可执行文件。");
       return;
     }
-    const usernameError = validateUsername(settings.username);
+    const usernameError = activeAccount?.accountType === "microsoft" ? null : validateUsername(settings.username);
     if (usernameError) {
       pushNotice("error", usernameError);
       return;
@@ -449,7 +508,9 @@ export default function App() {
     } finally {
       setLaunching(false);
     }
-  }, [settings, selectedInstance, pushNotice]);
+  }, [settings, selectedInstance, activeAccount, pushNotice]);
+
+  const titlebarContext = infoError ? "核心连接异常" : info ? `v${info.version} · ${platformLabel(info.platform)}` : "正在连接核心";
 
   const openPathSafely = useCallback(async (path: string, label: string) => {
     if (!path.trim()) {
@@ -467,106 +528,147 @@ export default function App() {
     <div className="app-shell">
       <a className="skip-link" href="#main-content">跳到主要内容</a>
       <TitleBar
-        active={activeSection}
-        settingsDirty={settingsDirty}
-        onNavigate={navigate}
+        context={titlebarContext}
         onError={(message) => pushNotice("error", message)}
       />
 
-      <div className="app-body">
-        {infoError ? (
-          <div className="global-error" role="alert">
-            <Icon name="alert" />
-            <span>{infoError}</span>
-            <button type="button" className="text-link" onClick={() => void retryInfo()} disabled={infoLoading}>
-              {infoLoading ? "重试中" : "重试"}
-            </button>
-          </div>
-        ) : null}
+      <div className="shell">
+        <AppSidebar
+          active={activeSection}
+          settingsDirty={settingsDirty}
+          coreReady={Boolean(info) && !infoError}
+          username={accountName}
+          accountTypeLabel={accountTypeLabel}
+          instancesCount={instances.length}
+          javaCount={javas.length}
+          selectedInstance={selectedInstance}
+          onNavigate={navigate}
+          onOpenAccounts={openAccountDialog}
+        />
 
-        <main className="app-main" id="main-content" ref={contentRef} tabIndex={-1}>
-          {activeSection === "launch" ? (
-            <LaunchView
-              info={info}
-              settings={settings}
-              instances={instances}
-              selectedInstance={selectedInstance}
-              selectedId={selectedId}
-              javas={javas}
-              instancesLoading={instancesLoading}
-              instancesError={instancesError}
-              launching={launching}
-              launchResult={launchResult}
-              launchStartedAt={launchStartedAt}
-              onSelectInstance={setSelectedId}
-              onLaunch={() => void launchSelected()}
-              onGoVersions={() => navigate("versions")}
-              onGoSettings={() => navigate("settings")}
-              onRefreshInstances={refreshLocalVersions}
-              onOpenPath={(path, label) => void openPathSafely(path, label)}
-            />
+        <div className="main-column">
+          {infoError ? (
+            <div className="global-error" role="alert">
+              <Icon name="alert" />
+              <span>{infoError}</span>
+              <button type="button" className="text-link" onClick={() => void retryInfo()} disabled={infoLoading}>
+                {infoLoading ? "重试中" : "重试"}
+              </button>
+            </div>
           ) : null}
 
-          {activeSection === "versions" ? (
-            <VersionsView
-              instances={instances}
-              selectedId={selectedId}
-              instancesLoading={instancesLoading}
-              instancesError={instancesError}
-              remoteVersions={remoteVersions}
-              remoteLoading={remoteLoading}
-              remoteError={remoteError}
-              remoteFetched={remoteFetched}
-              installRuntime={installRuntime}
-              installResult={installResult}
-              gameDirLabel={gameDirLabel}
-              onRefreshInstances={refreshLocalVersions}
-              onSelectInstance={setSelectedId}
-              onFetchRemote={() => void fetchRemoteVersions()}
-              onInstall={(version) => void installVersion(version)}
-              onOpenPath={(path, label) => void openPathSafely(path, label)}
-              onGoLaunch={() => navigate("launch")}
-            />
-          ) : null}
+          <main className="app-main" id="main-content" ref={contentRef} tabIndex={-1}>
+            {activeSection === "launch" ? (
+              <LaunchView
+                info={info}
+                settings={settings}
+                selectedInstance={selectedInstance}
+                javas={javas}
+                activeAccount={activeAccount}
+                instancesLoading={instancesLoading}
+                instancesError={instancesError}
+                launching={launching}
+                launchResult={launchResult}
+                launchStartedAt={launchStartedAt}
+                onLaunch={() => void launchSelected()}
+                onGoVersions={() => navigate("versions")}
+                onGoSettings={() => navigate("settings")}
+                onGoTools={() => navigate("about")}
+                onRefreshInstances={refreshLocalVersions}
+                onOpenPath={(path, label) => void openPathSafely(path, label)}
+              />
+            ) : null}
 
-          {activeSection === "settings" ? (
-            <SettingsView
-              draft={settingsDraft}
-              saved={settings}
-              javas={javas}
-              settingsLoading={settingsLoading}
-              javaLoading={javaLoading}
-              settingsError={settingsError}
-              javaError={javaError}
-              saving={savingSettings}
-              dirty={settingsDirty}
-              onChange={(next) => setSettingsDraft(next)}
-              onSave={() => void saveSettings()}
-              onReload={() => void reloadSettings()}
-              onReset={resetSettingsDraft}
-              onPickGameDir={() => void pickGameDir()}
-              onPickJava={() => void pickJava()}
-              onScanJava={() => void scanJava()}
-            />
-          ) : null}
+            {activeSection === "versions" ? (
+              <VersionsView
+                instances={instances}
+                selectedId={selectedId}
+                instancesLoading={instancesLoading}
+                instancesError={instancesError}
+                remoteVersions={remoteVersions}
+                remoteLoading={remoteLoading}
+                remoteError={remoteError}
+                remoteFetched={remoteFetched}
+                installRuntime={installRuntime}
+                installResult={installResult}
+                gameDirLabel={gameDirLabel}
+                gameDirPath={gameDirPath}
+                settings={settings}
+                onRefreshInstances={refreshLocalVersions}
+                onSelectInstance={setSelectedId}
+                onFetchRemote={() => void fetchRemoteVersions()}
+                onInstall={(version) => void installVersion(version)}
+                onOpenPath={(path, label) => void openPathSafely(path, label)}
+                onGoLaunch={() => navigate("launch")}
+                onGoSettings={() => navigate("settings")}
+                onNotify={pushNotice}
+              />
+            ) : null}
 
-          {activeSection === "about" ? (
-            <AboutView
-              info={info}
-              infoLoading={infoLoading}
-              infoError={infoError}
-              settings={settings}
-              instancesCount={instances.length}
-              javaCount={javas.length}
-              settingsDirty={settingsDirty}
-              onOpenPath={(path, label) => void openPathSafely(path, label)}
-              onRetryInfo={() => void retryInfo()}
-              onGoSettings={() => navigate("settings")}
-              onGoVersions={() => navigate("versions")}
-            />
-          ) : null}
-        </main>
+            {activeSection === "saves" ? (
+              <SaveManagerView
+                gameDir={settings?.gameDir ?? ""}
+                gameDirPath={gameDirPath}
+                gameDirLabel={gameDirLabel}
+                selectedInstance={selectedInstance}
+                onOpenPath={(path, label) => void openPathSafely(path, label)}
+                onNotify={pushNotice}
+              />
+            ) : null}
+
+            {activeSection === "settings" ? (
+              <SettingsView
+                draft={settingsDraft}
+                saved={settings}
+                javas={javas}
+                settingsLoading={settingsLoading}
+                javaLoading={javaLoading}
+                settingsError={settingsError}
+                javaError={javaError}
+                saving={savingSettings}
+                dirty={settingsDirty}
+                onChange={(next) => setSettingsDraft(next)}
+                onSave={() => void saveSettings()}
+                onReload={() => void reloadSettings()}
+                onReset={resetSettingsDraft}
+                onPickGameDir={() => void pickGameDir()}
+                onPickJava={() => void pickJava()}
+                onScanJava={() => void scanJava()}
+              />
+            ) : null}
+
+            {activeSection === "about" ? (
+              <AboutView
+                info={info}
+                infoLoading={infoLoading}
+                infoError={infoError}
+                settings={settings}
+                instancesCount={instances.length}
+                javaCount={javas.length}
+                settingsDirty={settingsDirty}
+                onOpenPath={(path, label) => void openPathSafely(path, label)}
+                onRetryInfo={() => void retryInfo()}
+                onGoSettings={() => navigate("settings")}
+                onGoVersions={() => navigate("versions")}
+              />
+            ) : null}
+          </main>
+        </div>
       </div>
+
+      {accountDialogOpen ? (
+        <AccountDialog
+          accounts={accounts}
+          accountsLoading={accountsLoading}
+          accountsError={accountsError}
+          microsoftClientId={settings?.microsoftClientId ?? ""}
+          onClose={() => setAccountDialogOpen(false)}
+          onOpenSettings={() => { setAccountDialogOpen(false); navigate("settings"); }}
+          onAccountsChanged={applyAccounts}
+          onRefreshAccounts={refreshAccounts}
+          onNotify={pushNotice}
+        />
+      ) : null}
 
       {notice ? (
         <div className={`toast toast-${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>

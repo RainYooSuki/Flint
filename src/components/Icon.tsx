@@ -24,6 +24,10 @@ export type IconName =
   | "wifiOff"
   | "info"
   | "layers"
+  | "save"
+  | "copy"
+  | "trash"
+  | "edit"
   | "minus"
   | "square";
 
@@ -51,6 +55,10 @@ const paths: Record<IconName, string> = {
   wifiOff: "m2 2 20 20M8.5 8.5a11 11 0 0 1 11 0M5 5a16 16 0 0 1 14 0M8.5 12.5a6 6 0 0 1 7 0M12 17h.01",
   info: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 10v6M12 7h.01",
   layers: "m12 3-9 5 9 5 9-5-9-5ZM3 12l9 5 9-5M3 16l9 5 9-5",
+  save: "M5 3h11l3 3v15H5V3ZM8 3v6h8V3M8 14h8v7H8v-7Z",
+  copy: "M8 8h11v11H8V8ZM5 16H4V4h12v1",
+  trash: "M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6",
+  edit: "m4 20 4.5-1 9-9-3.5-3.5-9 9L4 20ZM13 7.5l3.5 3.5",
   minus: "M5 12h14",
   square: "M6 6h12v12H6z"
 };
@@ -75,24 +83,6 @@ export function Icon({ name, className, ...props }: IconProps) {
       {...props}
     >
       <path d={paths[name]} />
-    </svg>
-  );
-}
-
-export function FlintMark({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path
-        d="M12 2.4 20 7v10l-8 4.6L4 17V7l8-4.6Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.35"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M9.2 7.2h5.8v1.9h-3.5v2.1h2.9v1.9h-2.9v4H9.2V7.2Z"
-        fill="currentColor"
-      />
     </svg>
   );
 }

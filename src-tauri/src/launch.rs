@@ -1,5 +1,5 @@
 use crate::{
-    java,
+    auth, java,
     models::{LaunchRequest, LaunchResult},
     paths::{is_safe_relative_path, safe_join},
     settings,
@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io,
+    io::{self, Read},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{SystemTime, UNIX_EPOCH},
@@ -28,7 +28,6 @@ struct NativeJarSpec {
 }
 
 pub fn launch_blocking(request: LaunchRequest) -> Result<LaunchResult, String> {
-    settings::validate_username(&request.username)?;
     validate_launch_request(&request)?;
     version::validate_version_id(&request.instance_id)?;
 
@@ -39,6 +38,19 @@ pub fn launch_blocking(request: LaunchRequest) -> Result<LaunchResult, String> {
     let metadata = &resolved.metadata;
     let platform = Platform::current();
     let rule_context = platform.rule_context();
+    let identity = auth::resolve_launch_identity(&request.username)?;
+    let (username, auth_uuid, access_token, user_type) = match identity {
+        auth::LaunchIdentity::Offline { username } => {
+            let uuid = offline_uuid(&username);
+            (username, uuid, "0".to_string(), "legacy".to_string())
+        }
+        auth::LaunchIdentity::Microsoft {
+            username,
+            uuid,
+            access_token,
+        } => (username, uuid, access_token, "msa".to_string()),
+    };
+    settings::validate_username(&username)?;
 
     let main_class = version::metadata_main_class(metadata)
         .ok_or_else(|| "Resolved version metadata has no mainClass.".to_string())?;
@@ -115,11 +127,7 @@ pub fn launch_blocking(request: LaunchRequest) -> Result<LaunchResult, String> {
 
     let mut placeholders = HashMap::new();
     let version_type = version::metadata_version_type(metadata);
-    insert_placeholder(
-        &mut placeholders,
-        "auth_player_name",
-        request.username.clone(),
-    );
+    insert_placeholder(&mut placeholders, "auth_player_name", username.clone());
     insert_placeholder(
         &mut placeholders,
         "version_name",
@@ -146,16 +154,12 @@ pub fn launch_blocking(request: LaunchRequest) -> Result<LaunchResult, String> {
         "assets_index_name",
         assets_index_name.clone(),
     );
-    insert_placeholder(
-        &mut placeholders,
-        "auth_uuid",
-        offline_uuid(&request.username),
-    );
-    insert_placeholder(&mut placeholders, "auth_access_token", "0");
-    insert_placeholder(&mut placeholders, "auth_session", "0");
+    insert_placeholder(&mut placeholders, "auth_uuid", auth_uuid.clone());
+    insert_placeholder(&mut placeholders, "auth_access_token", access_token.clone());
+    insert_placeholder(&mut placeholders, "auth_session", access_token.clone());
     insert_placeholder(&mut placeholders, "clientid", "0");
     insert_placeholder(&mut placeholders, "auth_xuid", "0");
-    insert_placeholder(&mut placeholders, "user_type", "legacy");
+    insert_placeholder(&mut placeholders, "user_type", user_type.clone());
     insert_placeholder(&mut placeholders, "user_properties", "{}");
     insert_placeholder(&mut placeholders, "version_type", version_type.clone());
     insert_placeholder(
@@ -259,11 +263,13 @@ pub fn launch_blocking(request: LaunchRequest) -> Result<LaunchResult, String> {
     } else {
         legacy_game_arguments(
             &request.instance_id,
-            &request.username,
+            &username,
             &root,
             &assets_dir,
             &assets_index_name,
-            &offline_uuid(&request.username),
+            &auth_uuid,
+            &access_token,
+            &user_type,
             &version_type,
             request.width,
             request.height,
@@ -289,7 +295,15 @@ pub fn launch_blocking(request: LaunchRequest) -> Result<LaunchResult, String> {
         .try_clone()
         .map_err(|error| format!("Cannot duplicate launch log handle: {error}"))?;
 
-    let command_string = display_command(&java_path, &all_args);
+    let display_args: Vec<String> = if user_type == "msa" {
+        all_args
+            .iter()
+            .map(|argument| auth::redact_secret(argument, &access_token))
+            .collect()
+    } else {
+        all_args.clone()
+    };
+    let command_string = display_command(&java_path, &display_args);
     let mut command = Command::new(&java_path);
     command
         .current_dir(&root)
@@ -462,10 +476,12 @@ fn extract_native_jar(jar: &NativeJarSpec, destination: &Path) -> Result<(), Str
         let mut output = File::create(&target).map_err(|error| {
             format!("Cannot extract native file ({}): {error}", target.display())
         })?;
-        let written = io::copy(&mut entry, &mut output).map_err(|error| {
-            format!("Cannot extract native file ({}): {error}", target.display())
-        })?;
-        if written != size {
+        let written = io::copy(
+            &mut entry.by_ref().take(MAX_NATIVE_FILE_BYTES + 1),
+            &mut output,
+        )
+        .map_err(|error| format!("Cannot extract native file ({}): {error}", target.display()))?;
+        if written > MAX_NATIVE_FILE_BYTES || written != size {
             return Err(format!(
                 "Native archive entry size mismatch while extracting {}.",
                 entry.name()
@@ -633,6 +649,8 @@ fn legacy_game_arguments(
     assets_dir: &Path,
     assets_index_name: &str,
     uuid: &str,
+    access_token: &str,
+    user_type: &str,
     version_type: &str,
     width: u32,
     height: u32,
@@ -651,9 +669,9 @@ fn legacy_game_arguments(
         "--uuid".to_string(),
         uuid.to_string(),
         "--accessToken".to_string(),
-        "0".to_string(),
+        access_token.to_string(),
         "--userType".to_string(),
-        "legacy".to_string(),
+        user_type.to_string(),
         "--versionType".to_string(),
         version_type.to_string(),
         "--width".to_string(),

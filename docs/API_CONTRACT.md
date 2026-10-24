@@ -1,6 +1,6 @@
 # Flint frontend/backend API contract
 
-Flint is a Tauri v2 launcher. The React frontend communicates with the Rust core only through the commands documented here. All Rust structs exposed to the frontend use `#[serde(rename_all = "camelCase")]`.
+Flint is a Tauri v2 launcher. This file documents the base launcher commands; account, loader, mod, and save extensions are documented in [`FEATURE_API_CONTRACT.md`](FEATURE_API_CONTRACT.md). All Rust structs exposed to the frontend use `#[serde(rename_all = "camelCase")]`.
 
 ## Commands
 

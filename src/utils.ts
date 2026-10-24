@@ -1,4 +1,4 @@
-import type { LauncherSettings } from "./types";
+import type { LauncherSettings, LoaderKind } from "./types";
 
 export const USERNAME_PATTERN = /^[A-Za-z0-9_]{3,16}$/;
 
@@ -90,7 +90,9 @@ export function settingsEqual(left: LauncherSettings | null, right: LauncherSett
     left.jvmArgs === right.jvmArgs &&
     left.gameArgs === right.gameArgs &&
     left.width === right.width &&
-    left.height === right.height
+    left.height === right.height &&
+    left.microsoftClientId === right.microsoftClientId &&
+    left.curseforgeApiKey === right.curseforgeApiKey
   );
 }
 
@@ -168,4 +170,66 @@ export function platformLabel(platform: string): string {
   };
   const family = normalized.split("-")[0];
   return known[family] ?? (platform || "未知平台");
+}
+export const LOADER_KINDS: LoaderKind[] = ["fabric", "forge", "neoforge", "quilt", "liteloader", "optifine"];
+
+export function isLoaderKind(value: string): value is LoaderKind {
+  return (LOADER_KINDS as string[]).includes(value.trim().toLowerCase());
+}
+
+export function loaderKindFromValue(value: string): LoaderKind | null {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || normalized === "vanilla" || normalized === "原版") return null;
+  const exact = LOADER_KINDS.find((kind) => normalized === kind);
+  if (exact) return exact;
+  const ordered = [...LOADER_KINDS].sort((left, right) => right.length - left.length);
+  return ordered.find((kind) => normalized.includes(kind)) ?? null;
+}
+
+export function loaderKindLabel(value: LoaderKind): string {
+  const labels: Record<LoaderKind, string> = {
+    fabric: "Fabric",
+    forge: "Forge",
+    neoforge: "NeoForge",
+    quilt: "Quilt",
+    liteloader: "LiteLoader",
+    optifine: "OptiFine"
+  };
+  return labels[value];
+}
+
+export function formatUnixMilliseconds(value: number | null): string {
+  if (value === null || !Number.isFinite(value) || value <= 0) return "—";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(value);
+}
+
+export function formatUnixSeconds(value: number | null): string {
+  if (value === null || !Number.isFinite(value) || value <= 0) return "—";
+  return formatUnixMilliseconds(value * 1000);
+}
+
+export function gameModeLabel(value: string | null): string {
+  if (!value) return "未知";
+  const normalized = value.trim().toLowerCase();
+  const labels: Record<string, string> = {
+    survival: "生存",
+    creative: "创造",
+    adventure: "冒险",
+    spectator: "旁观",
+    hardcore: "极限"
+  };
+  return labels[normalized] ?? value;
+}
+
+export function joinPath(base: string, child: string): string {
+  const trimmed = base.trim().replace(/[\\/]+$/, "");
+  if (!trimmed) return child;
+  const separator = trimmed.includes("\\") ? "\\" : "/";
+  return `${trimmed}${separator}${child}`;
 }

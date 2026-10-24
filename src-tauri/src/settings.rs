@@ -48,6 +48,11 @@ pub fn load_settings() -> Result<LauncherSettings, String> {
 }
 
 fn load_settings_from_path(path: &Path) -> Result<LauncherSettings, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
     let text = match fs::read_to_string(path) {
         Ok(value) => value,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -97,9 +102,14 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .and_then(|value| value.to_str())
         .unwrap_or("settings.json");
     let temp = path.with_file_name(format!(".{file_name}.{}.{}.tmp", process::id(), nonce()));
-    let mut file = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
+    let mut options = fs::OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
         .open(&temp)
         .map_err(|error| format!("Cannot create temporary settings file: {error}"))?;
     let write_result = (|| -> Result<(), String> {
@@ -113,6 +123,11 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Err(error) = write_result {
         let _ = fs::remove_file(&temp);
         return Err(error);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&temp, fs::Permissions::from_mode(0o600));
     }
 
     replace_file(&temp, path).map_err(|error| {
@@ -179,7 +194,7 @@ mod tests {
         assert!(validate_username("abcdefghijklmnopq").is_err());
         assert!(validate_username("bad-name").is_err());
         assert!(validate_username("bad name").is_err());
-        assert!(validate_username("鐜╁鍚嶅瓧").is_err());
+        assert!(validate_username("bad.name").is_err());
     }
 
     #[test]
@@ -206,6 +221,8 @@ mod tests {
         assert!(value.get("maxMemoryMb").is_some());
         assert!(value.get("jvmArgs").is_some());
         assert!(value.get("gameArgs").is_some());
+        assert!(value.get("microsoftClientId").is_some());
+        assert!(value.get("curseforgeApiKey").is_some());
         assert!(value.get("game_dir").is_none());
     }
 
@@ -216,5 +233,7 @@ mod tests {
         assert_eq!(parsed.username, "Alex");
         assert_eq!(parsed.min_memory_mb, 1024);
         assert_eq!(parsed.max_memory_mb, 4096);
+        assert_eq!(parsed.microsoft_client_id, "");
+        assert_eq!(parsed.curseforge_api_key, "");
     }
 }

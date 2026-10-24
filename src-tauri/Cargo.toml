@@ -20,9 +20,11 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"
-reqwest = { version = "=0.12.12", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "=0.12.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 zip = { version = "=2.2.2", default-features = false, features = ["deflate"] }
 sha1 = "=0.10.6"
 regex = "=1.11.1"
 md5 = "=0.7.0"
+flate2 = "1"
+base64 = "0.22"
 tokio = { version = "1", features = ["rt"] }
