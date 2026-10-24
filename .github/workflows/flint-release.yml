@@ -199,6 +199,10 @@ jobs:
             npm install --no-audit --no-fund
           fi
 
+      - name: Check architecture boundaries
+        shell: bash
+        run: node scripts/check-architecture.mjs --phase 2
+
       - name: Apply release version
         shell: bash
         env:
