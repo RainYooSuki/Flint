@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { Icon } from "../components/Icon";
-import type { JavaInfo, LauncherSettings } from "../types";
-import { settingsEqual, validateSettings, type SettingsErrors } from "../utils";
+import { Icon } from "../../components/Icon";
+import type { JavaInfo, LauncherSettings } from "../../types";
+import { settingsEqual, validateSettings, type SettingsErrors } from "../../utils";
 
 interface SettingsViewProps {
   draft: LauncherSettings | null;

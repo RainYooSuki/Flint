@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../../api";
-import { Icon } from "../../components/Icon";
-import type { InstanceInfo, InstalledModInfo, NoticeKind } from "../../types";
-import { joinPath, loaderLabel, toErrorMessage } from "../../utils";
+import { api } from "../../../api";
+import { Icon } from "../../../components/Icon";
+import type { InstanceInfo, InstalledModInfo, NoticeKind } from "../../../types";
+import { joinPath, loaderLabel, toErrorMessage } from "../../../utils";
 
 type ModFilter = "all" | "enabled" | "disabled";
 

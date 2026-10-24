@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Icon } from "../components/Icon";
+import { Icon } from "../../components/Icon";
 import { InstalledModsPanel } from "./downloads/InstalledModsPanel";
 import { LoaderInstallPanel } from "./downloads/LoaderInstallPanel";
 import { ModDiscoveryPanel } from "./downloads/ModDiscoveryPanel";
@@ -11,7 +11,7 @@ import type {
   LauncherSettings,
   NoticeKind,
   RemoteVersion
-} from "../types";
+} from "../../types";
 import {
   formatBytes,
   formatDate,
@@ -19,7 +19,7 @@ import {
   loaderLabel,
   progressPercent,
   versionTypeLabel
-} from "../utils";
+} from "../../utils";
 
 type VersionMode = "local" | "remote" | "loaders" | "mods" | "installed";
 type LocalTypeFilter = "all" | "release" | "snapshot" | "other";

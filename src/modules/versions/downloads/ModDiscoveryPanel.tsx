@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api } from "../../api";
-import { Icon } from "../../components/Icon";
+import { api } from "../../../api";
+import { Icon } from "../../../components/Icon";
 import type {
   InstanceInfo,
   ModDependencyPlan,
@@ -11,13 +11,13 @@ import type {
   ModSource,
   ModVersionInfo,
   NoticeKind
-} from "../../types";
+} from "../../../types";
 import {
   loaderKindFromValue,
   loaderKindLabel,
   progressPercent,
   toErrorMessage
-} from "../../utils";
+} from "../../../utils";
 
 const PAGE_SIZE = 12;
 

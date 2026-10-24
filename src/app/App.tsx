@@ -2,16 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath as openSystemPath } from "@tauri-apps/plugin-opener";
-import { api } from "./api";
-import { AccountDialog } from "./components/AccountDialog";
-import { AppSidebar } from "./components/AppSidebar";
-import { Icon } from "./components/Icon";
-import { TitleBar } from "./components/TitleBar";
-import { AboutView } from "./views/AboutView";
-import { LaunchView } from "./views/LaunchView";
-import { SaveManagerView } from "./views/SaveManagerView";
-import { SettingsView } from "./views/SettingsView";
-import { VersionsView } from "./views/VersionsView";
+import { api } from "../api";
+import { Icon } from "../components/Icon";
+import { TitleBar } from "../components/TitleBar";
+import type { AppPageContext } from "../core/app-context";
 import type {
   AccountInfo,
   InstallProgress,
@@ -25,26 +19,22 @@ import type {
   LaunchResult,
   Notice,
   NoticeKind,
-  RemoteVersion,
-  SectionId
-} from "./types";
+  RemoteVersion
+} from "../types";
 import {
   formatBytes,
   platformLabel,
   settingsEqual,
   toErrorMessage,
   validateUsername
-} from "./utils";
+} from "../utils";
+import { AppSidebar } from "./AppSidebar";
+import { AccountDialogSurface, frontendRegistry } from "./composition";
+import { ContributionBoundary } from "./ContributionBoundary";
 
-const pageTitles: Record<SectionId, string> = {
-  launch: "启动",
-  versions: "下载",
-  saves: "存档",
-  settings: "设置",
-  about: "工具"
-};
 export default function App() {
-  const [activeSection, setActiveSection] = useState<SectionId>("launch");
+  const [activePageId, setActivePageId] = useState(() => frontendRegistry.defaultPageId ?? "");
+  const activePage = frontendRegistry.pageById[activePageId] ?? null;
   const [info, setInfo] = useState<LauncherInfo | null>(null);
   const [infoLoading, setInfoLoading] = useState(true);
   const [infoError, setInfoError] = useState<string | null>(null);
@@ -267,11 +257,11 @@ export default function App() {
 
   useEffect(() => {
     document.querySelectorAll<HTMLElement>(".page-body, .settings-scroll, .launch-content, .runtime-list, .quick-list").forEach((element) => { element.scrollTop = 0; });
-  }, [activeSection]);
+  }, [activePageId]);
 
   useEffect(() => {
-    document.title = `${pageTitles[activeSection]} - Flint`;
-  }, [activeSection]);
+    document.title = `${activePage?.title ?? "页面不可用"} - Flint`;
+  }, [activePage]);
 
   const selectedInstance = useMemo(
     () => instances.find((instance) => instance.id === selectedId) ?? null,
@@ -292,8 +282,8 @@ export default function App() {
   const gameDirPath = settings?.gameDir.trim() || info?.defaultGameDir || "";
   const gameDirLabel = gameDirPath || "平台默认 .minecraft";
 
-  const navigate = useCallback((section: SectionId) => {
-    setActiveSection(section);
+  const navigate = useCallback((targetPageId: string) => {
+    setActivePageId(targetPageId);
   }, []);
 
   const openAccountDialog = useCallback(() => {
@@ -524,6 +514,61 @@ export default function App() {
     }
   }, [pushNotice]);
 
+  const pageContext: AppPageContext = {
+    navigateToPage: navigate,
+    info,
+    infoLoading,
+    infoError,
+    settings,
+    settingsDraft,
+    settingsLoading,
+    settingsError,
+    savingSettings,
+    settingsDirty,
+    javas,
+    javaLoading,
+    javaError,
+    instances,
+    selectedId,
+    selectedInstance,
+    instancesLoading,
+    instancesError,
+    remoteVersions,
+    remoteLoading,
+    remoteError,
+    remoteFetched,
+    installRuntime,
+    installResult,
+    launching,
+    launchResult,
+    launchStartedAt,
+    activeAccount,
+    gameDirPath,
+    gameDirLabel,
+    accounts,
+    accountsLoading,
+    accountsError,
+    onLaunch: () => { void launchSelected(); },
+    onSelectInstance: (id) => setSelectedId(id),
+    onRefreshInstances: refreshLocalVersions,
+    onFetchRemote: () => { void fetchRemoteVersions(); },
+    onInstall: (version) => { void installVersion(version); },
+    onOpenPath: (path, label) => { void openPathSafely(path, label); },
+    onNotify: pushNotice,
+    onChangeSettings: (next) => setSettingsDraft(next),
+    onSaveSettings: () => { void saveSettings(); },
+    onReloadSettings: () => { void reloadSettings(); },
+    onResetSettings: resetSettingsDraft,
+    onPickGameDir: () => { void pickGameDir(); },
+    onPickJava: () => { void pickJava(); },
+    onScanJava: () => { void scanJava(); },
+    onRetryInfo: () => { void retryInfo(); },
+    onCloseAccountDialog: () => setAccountDialogOpen(false),
+    onAccountsChanged: applyAccounts,
+    onRefreshAccounts: refreshAccounts
+  };
+  const ActivePage = activePage?.component;
+
   return (
     <div className="app-shell">
       <a className="skip-link" href="#main-content">跳到主要内容</a>
@@ -534,7 +579,8 @@ export default function App() {
 
       <div className="shell">
         <AppSidebar
-          active={activeSection}
+          activePageId={activePageId}
+          navigation={frontendRegistry.navigation}
           settingsDirty={settingsDirty}
           coreReady={Boolean(info) && !infoError}
           username={accountName}
@@ -558,116 +604,32 @@ export default function App() {
           ) : null}
 
           <main className="app-main" id="main-content" ref={contentRef} tabIndex={-1}>
-            {activeSection === "launch" ? (
-              <LaunchView
-                info={info}
-                settings={settings}
-                selectedInstance={selectedInstance}
-                javas={javas}
-                activeAccount={activeAccount}
-                instancesLoading={instancesLoading}
-                instancesError={instancesError}
-                launching={launching}
-                launchResult={launchResult}
-                launchStartedAt={launchStartedAt}
-                onLaunch={() => void launchSelected()}
-                onGoVersions={() => navigate("versions")}
-                onGoSettings={() => navigate("settings")}
-                onGoTools={() => navigate("about")}
-                onRefreshInstances={refreshLocalVersions}
-                onOpenPath={(path, label) => void openPathSafely(path, label)}
-              />
-            ) : null}
-
-            {activeSection === "versions" ? (
-              <VersionsView
-                instances={instances}
-                selectedId={selectedId}
-                instancesLoading={instancesLoading}
-                instancesError={instancesError}
-                remoteVersions={remoteVersions}
-                remoteLoading={remoteLoading}
-                remoteError={remoteError}
-                remoteFetched={remoteFetched}
-                installRuntime={installRuntime}
-                installResult={installResult}
-                gameDirLabel={gameDirLabel}
-                gameDirPath={gameDirPath}
-                settings={settings}
-                onRefreshInstances={refreshLocalVersions}
-                onSelectInstance={setSelectedId}
-                onFetchRemote={() => void fetchRemoteVersions()}
-                onInstall={(version) => void installVersion(version)}
-                onOpenPath={(path, label) => void openPathSafely(path, label)}
-                onGoLaunch={() => navigate("launch")}
-                onGoSettings={() => navigate("settings")}
-                onNotify={pushNotice}
-              />
-            ) : null}
-
-            {activeSection === "saves" ? (
-              <SaveManagerView
-                gameDir={settings?.gameDir ?? ""}
-                gameDirPath={gameDirPath}
-                gameDirLabel={gameDirLabel}
-                selectedInstance={selectedInstance}
-                onOpenPath={(path, label) => void openPathSafely(path, label)}
-                onNotify={pushNotice}
-              />
-            ) : null}
-
-            {activeSection === "settings" ? (
-              <SettingsView
-                draft={settingsDraft}
-                saved={settings}
-                javas={javas}
-                settingsLoading={settingsLoading}
-                javaLoading={javaLoading}
-                settingsError={settingsError}
-                javaError={javaError}
-                saving={savingSettings}
-                dirty={settingsDirty}
-                onChange={(next) => setSettingsDraft(next)}
-                onSave={() => void saveSettings()}
-                onReload={() => void reloadSettings()}
-                onReset={resetSettingsDraft}
-                onPickGameDir={() => void pickGameDir()}
-                onPickJava={() => void pickJava()}
-                onScanJava={() => void scanJava()}
-              />
-            ) : null}
-
-            {activeSection === "about" ? (
-              <AboutView
-                info={info}
-                infoLoading={infoLoading}
-                infoError={infoError}
-                settings={settings}
-                instancesCount={instances.length}
-                javaCount={javas.length}
-                settingsDirty={settingsDirty}
-                onOpenPath={(path, label) => void openPathSafely(path, label)}
-                onRetryInfo={() => void retryInfo()}
-                onGoSettings={() => navigate("settings")}
-                onGoVersions={() => navigate("versions")}
-              />
-            ) : null}
+            {ActivePage ? (
+              <ContributionBoundary key={activePage?.id ?? "unknown-page"} contributionId={activePage?.id ?? "unknown-page"}>
+                <ActivePage context={pageContext} />
+              </ContributionBoundary>
+            ) : (
+              <div className="page-shell">
+                <header className="page-head">
+                  <div className="page-title">
+                    <h1>页面不可用</h1>
+                    <span>请求的页面未注册。</span>
+                  </div>
+                </header>
+                <div className="page-body">
+                  <div className="global-error" role="alert">
+                    <Icon name="alert" />
+                    <span>没有找到当前页面贡献。</span>
+                  </div>
+                </div>
+              </div>
+            )}
           </main>
         </div>
       </div>
 
       {accountDialogOpen ? (
-        <AccountDialog
-          accounts={accounts}
-          accountsLoading={accountsLoading}
-          accountsError={accountsError}
-          microsoftClientId={settings?.microsoftClientId ?? ""}
-          onClose={() => setAccountDialogOpen(false)}
-          onOpenSettings={() => { setAccountDialogOpen(false); navigate("settings"); }}
-          onAccountsChanged={applyAccounts}
-          onRefreshAccounts={refreshAccounts}
-          onNotify={pushNotice}
-        />
+        <AccountDialogSurface context={pageContext} />
       ) : null}
 
       {notice ? (

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { api } from "../api";
-import { Icon } from "../components/Icon";
-import type { InstanceInfo, NoticeKind, SaveInfo, SaveTransferResult } from "../types";
-import { formatBytes, formatUnixMilliseconds, gameModeLabel, toErrorMessage } from "../utils";
+import { api } from "../../api";
+import { Icon } from "../../components/Icon";
+import type { InstanceInfo, NoticeKind, SaveInfo, SaveTransferResult } from "../../types";
+import { formatBytes, formatUnixMilliseconds, gameModeLabel, toErrorMessage } from "../../utils";
 
 interface SaveManagerViewProps {
   gameDir: string;

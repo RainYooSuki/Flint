@@ -1,6 +1,6 @@
 import { useMemo } from "react";
-import { Icon } from "../components/Icon";
-import type { AccountInfo, InstanceInfo, JavaInfo, LauncherInfo, LauncherSettings, LaunchResult } from "../types";
+import { Icon } from "../../components/Icon";
+import type { AccountInfo, InstanceInfo, JavaInfo, LauncherInfo, LauncherSettings, LaunchResult } from "../../types";
 import {
   formatDate,
   formatDateTime,
@@ -8,7 +8,7 @@ import {
   platformLabel,
   validateUsername,
   versionTypeLabel
-} from "../utils";
+} from "../../utils";
 
 interface LaunchViewProps {
   info: LauncherInfo | null;

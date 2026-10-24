@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { api } from "../api";
-import { Icon } from "./Icon";
-import type { AccountInfo, MicrosoftDeviceCode, NoticeKind } from "../types";
-import { formatUnixSeconds, toErrorMessage } from "../utils";
+import { api } from "../../api";
+import { Icon } from "../../components/Icon";
+import type { AccountInfo, MicrosoftDeviceCode, NoticeKind } from "../../types";
+import { formatUnixSeconds, toErrorMessage } from "../../utils";
 
 interface AccountDialogProps {
   accounts: AccountInfo[];

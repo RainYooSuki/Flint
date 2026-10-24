@@ -1,6 +1,6 @@
-import { Icon } from "../components/Icon";
-import type { LauncherInfo, LauncherSettings } from "../types";
-import { platformLabel } from "../utils";
+import { Icon } from "../../components/Icon";
+import type { LauncherInfo, LauncherSettings } from "../../types";
+import { platformLabel } from "../../utils";
 
 interface AboutViewProps {
   info: LauncherInfo | null;

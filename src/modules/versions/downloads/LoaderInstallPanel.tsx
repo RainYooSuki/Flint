@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api } from "../../api";
-import { Icon } from "../../components/Icon";
+import { api } from "../../../api";
+import { Icon } from "../../../components/Icon";
 import type {
   InstanceInfo,
   LauncherSettings,
@@ -12,7 +12,7 @@ import type {
   LoaderVersionInfo,
   NoticeKind,
   RemoteVersion
-} from "../../types";
+} from "../../../types";
 import {
   LOADER_KINDS,
   formatDateTime,
@@ -20,7 +20,7 @@ import {
   loaderKindLabel,
   progressPercent,
   toErrorMessage
-} from "../../utils";
+} from "../../../utils";
 
 interface LoaderInstallPanelProps {
   gameDir: string;

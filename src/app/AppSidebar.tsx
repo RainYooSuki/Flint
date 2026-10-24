@@ -1,8 +1,10 @@
-import type { InstanceInfo, SectionId } from "../types";
-import { Icon, type IconName } from "./Icon";
+import type { NavigationContribution, NavigationContext } from "../core/contributions";
+import type { InstanceInfo } from "../types";
+import { Icon } from "../components/Icon";
 
 interface AppSidebarProps {
-  active: SectionId;
+  activePageId: string;
+  navigation: readonly NavigationContribution[];
   settingsDirty: boolean;
   coreReady: boolean;
   username: string;
@@ -10,20 +12,13 @@ interface AppSidebarProps {
   instancesCount: number;
   javaCount: number;
   selectedInstance: InstanceInfo | null;
-  onNavigate: (section: SectionId) => void;
+  onNavigate: (targetPageId: string) => void;
   onOpenAccounts: () => void;
 }
 
-const navItems: Array<{ id: SectionId; label: string; icon: IconName }> = [
-  { id: "launch", label: "启动", icon: "play" },
-  { id: "versions", label: "下载", icon: "download" },
-  { id: "saves", label: "存档", icon: "save" },
-  { id: "settings", label: "设置", icon: "settings" },
-  { id: "about", label: "工具", icon: "wrench" }
-];
-
 export function AppSidebar({
-  active,
+  activePageId,
+  navigation,
   settingsDirty,
   coreReady,
   username,
@@ -42,29 +37,34 @@ export function AppSidebar({
         ? "缺失"
         : "完整";
   const avatarText = username.trim().slice(0, 1).toUpperCase() || "?";
+  const navigationContext: NavigationContext = { settingsDirty, coreReady, selectedInstance };
 
   return (
     <aside className="sidebar">
       <div className="sidebar-label">导航</div>
       <nav className="nav-list" aria-label="主导航">
-        {navItems.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className={`nav-item${active === item.id ? " active" : ""}`}
-            aria-current={active === item.id ? "page" : undefined}
-            onClick={() => onNavigate(item.id)}
-          >
-            <Icon name={item.icon} />
-            <span>{item.label}</span>
-            {item.id === "settings" && settingsDirty ? (
-              <>
-                <span className="nav-dirty" title="设置有未保存更改" aria-hidden="true" />
-                <span className="sr-only">设置有未保存更改</span>
-              </>
-            ) : null}
-          </button>
-        ))}
+        {navigation.map((item) => {
+          if (item.visible && !item.visible(navigationContext)) return null;
+          const indicator = item.indicator?.(navigationContext) ?? null;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              className={`nav-item${activePageId === item.targetPageId ? " active" : ""}`}
+              aria-current={activePageId === item.targetPageId ? "page" : undefined}
+              onClick={() => onNavigate(item.targetPageId)}
+            >
+              <Icon name={item.icon} />
+              <span>{item.label}</span>
+              {indicator ? (
+                <>
+                  <span className={indicator.className} title={indicator.title} aria-hidden="true" />
+                  <span className="sr-only">{indicator.screenReaderLabel}</span>
+                </>
+              ) : null}
+            </button>
+          );
+        })}
       </nav>
 
       <div className="nav-divider" />
