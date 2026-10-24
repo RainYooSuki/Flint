@@ -170,6 +170,33 @@ export function packageRootFromPackageId(packageId) {
     return null;
   }
 }
+function declarationPackageRootForRuntimeRoot(runtimeRoot) {
+  if (!runtimeRoot || runtimeRoot.startsWith("@types/")) return null;
+  if (runtimeRoot.startsWith("@")) {
+    const [scope, packageName] = runtimeRoot.split("/");
+    if (scope.length < 2 || !packageName) return null;
+    return `@types/${scope.slice(1)}__${packageName}`;
+  }
+  return runtimeRoot.includes("/") ? null : `@types/${runtimeRoot}`;
+}
+/**
+ * TypeScript resolves runtime imports through DefinitelyTyped fallbacks, so
+ * the resolved package identity can be `@types/react` for a `react` import.
+ * Translate it only when the specifier's declared root maps to that exact
+ * declaration package. Direct `@types/*` imports keep their declaration
+ * identity, and aliases that do not match remain unchanged, so both fail the
+ * phase-3 allowlist.
+ */
+export function policyPackageRoot(specifier, resolvedPackageRoot) {
+  const runtimeRoot = externalPackageRoot(specifier);
+  if (runtimeRoot === "@types" || runtimeRoot.startsWith("@types/")) return runtimeRoot;
+  if (typeof resolvedPackageRoot !== "string" || !resolvedPackageRoot.startsWith("@types/")) {
+    return resolvedPackageRoot;
+  }
+  return declarationPackageRootForRuntimeRoot(runtimeRoot) === resolvedPackageRoot
+    ? runtimeRoot
+    : resolvedPackageRoot;
+}
 function packageRootFromResolvedFile(resolvedFile) {
   const parts = toPosix(resolvedFile).split("/");
   const marker = parts.lastIndexOf("node_modules");
@@ -533,16 +560,17 @@ export function validateFrontendModuleReference({
     return;
   }
   if (resolution.kind === "external") {
+    const packageRoot = policyPackageRoot(specifier, resolution.packageRoot);
     if (
-      resolution.packageRoot === "@tauri-apps" ||
-      resolution.packageRoot.startsWith("@tauri-apps/")
+      packageRoot === "@tauri-apps" ||
+      packageRoot.startsWith("@tauri-apps/")
     ) {
       if (!specifier.startsWith("@tauri-apps/") && specifier !== "@tauri-apps") {
-        report("FE-TAURI-DIRECT-001", sourceRelative, reference.line, `Tauri package '${resolution.packageRoot}' is reached through alias '${specifier}'; only exact reviewed direct imports are allowed.`);
+        report("FE-TAURI-DIRECT-001", sourceRelative, reference.line, `Tauri package '${packageRoot}' is reached through alias '${specifier}'; only exact reviewed direct imports are allowed.`);
       }
     }
-    if (phase >= 3 && !PHASE3_PACKAGE_ALLOWLIST.has(resolution.packageRoot)) {
-      report("FE-EXTERNAL-PACKAGE-001", sourceRelative, reference.line, `external package '${resolution.packageRoot}' is not in the reviewed phase-3 package allowlist.`);
+    if (phase >= 3 && !PHASE3_PACKAGE_ALLOWLIST.has(packageRoot)) {
+      report("FE-EXTERNAL-PACKAGE-001", sourceRelative, reference.line, `external package '${packageRoot}' is not in the reviewed phase-3 package allowlist.`);
     }
     return;
   }

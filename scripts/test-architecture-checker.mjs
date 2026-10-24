@@ -21,6 +21,7 @@ import {
   packageRootFromPackageId,
   parsePhase,
   parseTypeScriptSource,
+  policyPackageRoot,
   prepareRustProductionSource,
   requiredLoaderFiles,
   resolveFrontendModule,
@@ -128,6 +129,33 @@ test("package roots normalize PackageId objects and safe string/malformed fallba
     assert.doesNotThrow(() => packageRootFromPackageId(malformed));
     assert.equal(packageRootFromPackageId(malformed), null);
   }
+});
+test("policy package roots map matching TypeScript @types resolutions without borrowing aliases", () => {
+  const reactTypesRoot = packageRootFromPackageId({ name: "@types/react", subModuleName: "", version: "18.3.12" });
+  assert.equal(reactTypesRoot, "@types/react");
+  assert.equal(policyPackageRoot("react", reactTypesRoot), "react");
+  assert.equal(policyPackageRoot("react/jsx-runtime", reactTypesRoot), "react");
+  assert.equal(
+    policyPackageRoot("react-dom", packageRootFromPackageId({ name: "@types/react-dom", subModuleName: "", version: "18.3.1" })),
+    "react-dom",
+  );
+  assert.equal(
+    policyPackageRoot("@scope/runtime", packageRootFromPackageId({ name: "@types/scope__runtime", subModuleName: "", version: "1.0.0" })),
+    "@scope/runtime",
+  );
+
+  // Direct declaration imports must never be translated into an allowlisted runtime package.
+  assert.equal(policyPackageRoot("@types/react", reactTypesRoot), "@types/react");
+  assert.equal(policyPackageRoot("@types/react", "react"), "@types/react");
+  assert.notEqual(policyPackageRoot("@types/react", reactTypesRoot), "react");
+
+  // An alias must not borrow a different allowlisted runtime identity from a declaration resolution.
+  assert.equal(policyPackageRoot("react", "@types/react-dom"), "@types/react-dom");
+  assert.equal(policyPackageRoot("react-alias", reactTypesRoot), "@types/react");
+
+  // Non-declaration resolutions keep the package identity reported by the resolver.
+  assert.equal(policyPackageRoot("react", "scheduler"), "scheduler");
+  assert.equal(policyPackageRoot("react", null), null);
 });
 test("frontend boundaries reject cross-feature, app shell, and shared escapes", () => {
   assert.equal(
