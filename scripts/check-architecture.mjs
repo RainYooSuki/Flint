@@ -150,10 +150,25 @@ export function externalPackageRoot(specifier) {
   if (!specifier.startsWith("@")) return specifier.split("/")[0];
   return specifier.split("/").slice(0, 2).join("/");
 }
-function packageRootFromPackageId(packageId) {
-  if (!packageId) return null;
-  const marker = packageId.lastIndexOf('@');
-  return marker > 0 ? packageId.slice(0, marker) : packageId;
+export function packageRootFromPackageId(packageId) {
+  try {
+    let rawName = null;
+    if (typeof packageId === "string") rawName = packageId;
+    else if (packageId && typeof packageId === "object" && !Array.isArray(packageId) && typeof packageId.name === "string") rawName = packageId.name;
+    if (!rawName) return null;
+    const value = rawName.trim();
+    if (!value) return null;
+    if (value.startsWith("@")) {
+      const [scope, packageAndRest] = value.split("/");
+      if (scope.length < 2 || !packageAndRest) return null;
+      const packageSegment = packageAndRest.split("/")[0].split("@")[0];
+      return packageSegment ? `${scope}/${packageSegment}` : null;
+    }
+    const packageSegment = value.split("/")[0].split("@")[0];
+    return packageSegment || null;
+  } catch {
+    return null;
+  }
 }
 function packageRootFromResolvedFile(resolvedFile) {
   const parts = toPosix(resolvedFile).split("/");

@@ -18,6 +18,7 @@ import {
   findModSourceAliasDispatchSites,
   findModSourceDispatchSites,
   getExportedFeatureDescriptors,
+  packageRootFromPackageId,
   parsePhase,
   parseTypeScriptSource,
   prepareRustProductionSource,
@@ -110,6 +111,24 @@ test("TypeScript module resolution follows tsconfig aliases and rejects escapes"
   }
 });
 
+test("package roots normalize PackageId objects and safe string/malformed fallbacks", () => {
+  assert.equal(
+    packageRootFromPackageId({ name: "@tauri-apps/api", subModuleName: "", version: "2.5.0" }),
+    "@tauri-apps/api",
+  );
+  assert.equal(
+    packageRootFromPackageId({ name: "typescript", subModuleName: "lib", version: "5.7.2" }),
+    "typescript",
+  );
+  assert.equal(packageRootFromPackageId("@tauri-apps/api@2.5.0"), "@tauri-apps/api");
+  assert.equal(packageRootFromPackageId("typescript@5.7.2"), "typescript");
+  assert.equal(packageRootFromPackageId("react/jsx-runtime"), "react");
+
+  for (const malformed of [null, undefined, 42, Symbol("package"), {}, [], { name: "" }, { name: 42 }, "", "@scope", "@/missing-package"]) {
+    assert.doesNotThrow(() => packageRootFromPackageId(malformed));
+    assert.equal(packageRootFromPackageId(malformed), null);
+  }
+});
 test("frontend boundaries reject cross-feature, app shell, and shared escapes", () => {
   assert.equal(
     evaluateFrontendBoundary(1, "src/modules/about/index.tsx", "src/modules/saves/index.tsx").rule,
