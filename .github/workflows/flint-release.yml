@@ -1,0 +1,628 @@
+name: Flint Release
+
+"on":
+  push:
+    branches:
+      - main
+      - dev
+    paths-ignore:
+      - VERSION
+      - "*.md"
+      - "**/*.md"
+      - ".github/**"
+      - "docs/**"
+      - "scripts/**"
+      - ".gitattributes"
+      - ".gitignore"
+  workflow_dispatch:
+
+# Least privilege: only the publish job elevates its token to contents: write.
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: flint-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      source_version: ${{ steps.meta.outputs.source_version }}
+      source_sha: ${{ steps.meta.outputs.source_sha }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Fetch global release tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Monthly release ordinals are global across main/dev. Fetch every tag and
+          # branch tip so tags from either branch and their source commits are present.
+          git fetch --force --tags origin
+          git fetch --force origin '+refs/heads/*:refs/remotes/origin/*'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate branch and release tooling
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF_TYPE" != "branch" ]]; then
+            echo "Flint releases must run from a branch, not a ${REF_TYPE} ref." >&2
+            exit 1
+          fi
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            read -r -a commit_line <<< "$(git rev-list --parents -n 1 HEAD)"
+            # Merges are valid source commits; single-parent/root commits must contain a real source change.
+            if (( ${#commit_line[@]} <= 2 )); then
+              changed_paths="$(git diff-tree --root --no-commit-id --name-only --no-renames -r HEAD)"
+              if [[ -z "$changed_paths" || "$changed_paths" == "VERSION" ]]; then
+                echo "Refusing to release an empty commit or a VERSION-only release-record commit." >&2
+                echo "The auto-committed VERSION record is not a release source; re-run the original release workflow instead." >&2
+                exit 1
+              fi
+            fi
+          fi
+          echo "Release will use triggering branch '${REF_NAME}'."
+          node scripts/test-release-scripts.mjs
+          node scripts/validate-release.mjs
+
+      - name: Compute release metadata from exact HEAD
+        id: meta
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          source_version="$(tr -d '[:space:]' < VERSION)"
+          node scripts/release-version.mjs \
+            --root "$GITHUB_WORKSPACE" \
+            --expected-sha "$EXPECTED_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+          {
+            echo "source_version=${source_version}"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+            rust_target: x86_64-pc-windows-msvc
+            binary_name: flint.exe
+            expected_machine: x86_64
+          - os: ubuntu-22.04
+            platform: linux-x64
+            rust_target: x86_64-unknown-linux-gnu
+            binary_name: flint
+            expected_machine: x86-64
+          - os: macos-14
+            platform: macos-x64
+            rust_target: x86_64-apple-darwin
+            binary_name: flint
+            expected_machine: x86_64
+          - os: macos-14
+            platform: macos-arm64
+            rust_target: aarch64-apple-darwin
+            binary_name: flint
+            expected_machine: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve npm cache directory
+        id: npm-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.npm-cache.outputs.dir }}
+          key: ${{ runner.os }}-${{ matrix.rust_target }}-npm-${{ hashFiles('package-lock.json', 'npm-shrinkwrap.json', 'package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.rust_target }}-npm-
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+          cache-on-failure: true
+
+      - name: Install Linux prerequisites
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            pkg-config \
+            wget \
+            zip
+
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then
+            npm ci --no-audit --no-fund
+          else
+            echo "No npm lockfile found; using npm install. Commit a lockfile for reproducible release builds." >&2
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Apply release version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/apply-version.mjs "$RELEASE_VERSION"
+          node scripts/validate-release.mjs --version "$RELEASE_VERSION"
+
+      - name: Build raw executable
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          set -euo pipefail
+          npm run tauri -- build --no-bundle --target "$RUST_TARGET"
+
+      - name: Verify Unix executable architecture
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          BINARY_NAME: ${{ matrix.binary_name }}
+          EXPECTED_MACHINE: ${{ matrix.expected_machine }}
+        run: |
+          set -euo pipefail
+          binary="src-tauri/target/${RUST_TARGET}/release/${BINARY_NAME}"
+          if [[ ! -s "$binary" ]]; then
+            echo "Expected executable was not produced or is empty: $binary" >&2
+            exit 1
+          fi
+          description="$(LC_ALL=C file -b "$binary")"
+          echo "$description"
+          if [[ "$description" != *"$EXPECTED_MACHINE"* ]]; then
+            echo "Executable architecture mismatch: expected ${EXPECTED_MACHINE} in file output." >&2
+            exit 1
+          fi
+
+      - name: Package Windows artifacts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+          RUST_TARGET: ${{ matrix.rust_target }}
+          BINARY_NAME: ${{ matrix.binary_name }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $base = "Flint-$env:PLATFORM-$env:RELEASE_VERSION"
+          $targetDir = Join-Path "src-tauri/target" "$env:RUST_TARGET/release"
+          $binary = Join-Path $targetDir $env:BINARY_NAME
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
+            throw "Expected Windows executable was not produced: $binary"
+          }
+          if ((Get-Item -LiteralPath $binary).Length -le 0) {
+            throw "Expected Windows executable is empty: $binary"
+          }
+
+          $dist = Join-Path (Get-Location) "release-assets"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item -LiteralPath $binary -Destination (Join-Path $dist "$base.exe")
+
+          $runningPath = Join-Path $dist "RUNNING.txt"
+          $runningText = @(
+            "Flint $env:RELEASE_VERSION - $env:PLATFORM",
+            "",
+            "This archive contains $base.exe, the directly runnable Windows x64 build.",
+            "Extract the archive and run the .exe.",
+            "Windows SmartScreen may warn because Flint releases are currently unsigned.",
+            "Verify this archive against the release's sha.txt before running it."
+          ) -join "`r`n"
+          [System.IO.File]::WriteAllText(
+            $runningPath,
+            $runningText + "`r`n",
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+          Push-Location -LiteralPath $dist
+          try {
+            Compress-Archive -LiteralPath @("$base.exe", "RUNNING.txt") -DestinationPath "$base.zip" -Force
+          } finally {
+            Pop-Location
+          }
+          Remove-Item -LiteralPath $runningPath -Force
+          if ((Get-Item -LiteralPath (Join-Path $dist "$base.zip")).Length -le 0) {
+            throw "Windows ZIP was not produced or is empty."
+          }
+          node scripts/validate-release.mjs --assets release-assets --platform $env:PLATFORM
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows release asset validation failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Package Unix artifacts
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+          RUST_TARGET: ${{ matrix.rust_target }}
+          BINARY_NAME: ${{ matrix.binary_name }}
+        run: |
+          set -euo pipefail
+          base="Flint-${PLATFORM}-${RELEASE_VERSION}"
+          binary="src-tauri/target/${RUST_TARGET}/release/${BINARY_NAME}"
+          if [[ ! -f "$binary" || ! -s "$binary" ]]; then
+            echo "Expected executable was not produced or is empty: $binary" >&2
+            exit 1
+          fi
+
+          dist="$PWD/release-assets"
+          mkdir -p "$dist"
+          cp "$binary" "$dist/$base"
+          chmod 755 "$dist/$base"
+
+          cat > "$dist/RUNNING.txt" <<EOF
+          Flint ${RELEASE_VERSION} - ${PLATFORM}
+
+          This archive contains the raw executable ${base} and this RUNNING.txt.
+          If extraction did not preserve the executable bit, run:
+            chmod +x "${base}"
+            ./${base}
+          macOS Gatekeeper may warn because Flint releases are currently unsigned.
+          Verify this archive against the release's sha.txt before running it.
+          EOF
+
+          (
+            cd "$dist"
+            zip -q -X "${base}.zip" "${base}" "RUNNING.txt"
+          )
+          rm -f "$dist/RUNNING.txt"
+          if [[ ! -s "$dist/$base.zip" ]]; then
+            echo "Unix ZIP was not produced or is empty: $dist/$base.zip" >&2
+            exit 1
+          fi
+          node scripts/validate-release.mjs --assets release-assets --platform "$PLATFORM"
+
+      - name: Upload platform release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flint-${{ matrix.platform }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish release and record VERSION
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout source and tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fetch global release tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          git fetch --force origin '+refs/heads/*:refs/remotes/origin/*'
+
+      - name: Revalidate monthly release ordinal before publishing
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          version_output="$(mktemp)"
+          trap 'rm -f "$version_output"' EXIT
+          node scripts/release-version.mjs \
+            --root "$GITHUB_WORKSPACE" \
+            --expected-sha "$EXPECTED_SHA" \
+            --github-output "$version_output"
+          computed_version="$(sed -n 's/^version=//p' "$version_output")"
+          if [[ "$computed_version" != "$RELEASE_VERSION" ]]; then
+            echo "Refusing to publish a stale monthly release ordinal: prepared ${RELEASE_VERSION}, recomputed ${computed_version:-<missing>}." >&2
+            exit 1
+          fi
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: flint-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate and validate sha.txt
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/apply-version.mjs "$RELEASE_VERSION"
+          node scripts/validate-release.mjs --version "$RELEASE_VERSION" --assets release-assets --write-sha
+
+      - name: Generate release notes
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          node scripts/release-notes.mjs \
+            --version "$RELEASE_VERSION" \
+            --tag "$RELEASE_TAG" \
+            --output release-notes.md
+          test -s release-notes.md
+
+      - name: Check tag and release state
+        id: release-state
+        uses: actions/github-script@v7
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        with:
+          script: |
+            const tag = process.env.RELEASE_TAG;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            let release = null;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            let tagSha = null;
+            try {
+              const tagRef = (await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` })).data;
+              let object = tagRef.object;
+              let depth = 0;
+              while (object.type === "tag") {
+                if (depth++ >= 10) {
+                  throw new Error(`Tag ${tag} has too many nested annotated tag objects`);
+                }
+                object = (await github.rest.git.getTag({ owner, repo, tag: object.sha })).data.object;
+              }
+              if (object.type !== "commit") {
+                throw new Error(`Tag ${tag} does not resolve to a commit`);
+              }
+              tagSha = object.sha;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            const headSha = process.env.GITHUB_SHA;
+            core.info(`Tag ${tag}: ${tagSha ?? "absent"}`);
+            core.info(`Existing release: ${release ? release.html_url : "none"}`);
+            if (release && !tagSha) {
+              core.setFailed(
+                `GitHub Release ${tag} exists but Git tag ${tag} is missing. Refusing to continue with inconsistent repository state.`
+              );
+              return;
+            }
+            if (tagSha && tagSha !== headSha) {
+              core.setFailed(
+                `Tag ${tag} already points to ${tagSha}, not this workflow commit ${headSha}. ` +
+                "Refusing to rewrite a released version from a different commit."
+              );
+              return;
+            }
+            core.setOutput("release_exists", release ? "true" : "false");
+
+      - name: Publish or intentionally update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Flint ${{ needs.prepare.outputs.version }}
+          body_path: release-notes.md
+          files: release-assets/*
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          draft: false
+          prerelease: false
+          make_latest: true
+
+      - name: Verify published release before recording VERSION
+        uses: actions/github-script@v7
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        with:
+          script: |
+            const tag = process.env.RELEASE_TAG;
+            const version = process.env.RELEASE_VERSION;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data;
+            } catch (error) {
+              throw new Error(`Release ${tag} was not found after publishing: ${error.message}`);
+            }
+            if (release.draft) {
+              throw new Error(`Release ${tag} is still a draft`);
+            }
+            if (release.prerelease) {
+              throw new Error(`Release ${tag} is still marked as a prerelease`);
+            }
+            if (release.tag_name !== tag) {
+              throw new Error(`Release tag mismatch: expected ${tag}, got ${release.tag_name}`);
+            }
+            if (!release.body || release.body.trim().length === 0) {
+              throw new Error(`Release ${tag} has empty notes`);
+            }
+
+            const platforms = [
+              ["windows-x64", ".exe"],
+              ["linux-x64", ""],
+              ["macos-x64", ""],
+              ["macos-arm64", ""],
+            ];
+            const expected = platforms.flatMap(([platform, extension]) => {
+              const base = `Flint-${platform}-${version}`;
+              return [`${base}${extension}`, `${base}.zip`];
+            });
+            expected.push("sha.txt");
+
+            const actual = release.assets.map((asset) => asset.name).sort();
+            const expectedSorted = [...expected].sort();
+            const missing = expectedSorted.filter((name) => !actual.includes(name));
+            const unexpected = actual.filter((name) => !expectedSorted.includes(name));
+            if (missing.length > 0 || unexpected.length > 0 || actual.length !== expectedSorted.length) {
+              throw new Error(
+                `Release asset set is incomplete or stale. Missing: ${missing.join(", ") || "none"}. ` +
+                `Unexpected: ${unexpected.join(", ") || "none"}.`
+              );
+            }
+            const emptyAssets = release.assets.filter((asset) => asset.size <= 0).map((asset) => asset.name);
+            if (emptyAssets.length > 0) {
+              throw new Error(`Release contains empty assets: ${emptyAssets.join(", ")}`);
+            }
+
+            let tagRef;
+            try {
+              tagRef = (await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` })).data;
+            } catch (error) {
+              throw new Error(`Tag ${tag} was not found after publishing: ${error.message}`);
+            }
+            let object = tagRef.object;
+            let depth = 0;
+            while (object.type === "tag") {
+              if (depth++ >= 10) {
+                throw new Error(`Tag ${tag} has too many nested annotated tag objects`);
+              }
+              object = (await github.rest.git.getTag({ owner, repo, tag: object.sha })).data.object;
+            }
+            if (object.type !== "commit" || object.sha !== process.env.GITHUB_SHA) {
+              throw new Error(`Tag ${tag} does not point at workflow commit ${process.env.GITHUB_SHA}`);
+            }
+
+            core.info(`Verified ${expected.length} non-empty release assets on ${tag}.`);
+
+      - name: Record released VERSION on triggering branch
+        shell: bash
+        env:
+          BRANCH: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SOURCE_VERSION: ${{ needs.prepare.outputs.source_version }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$BRANCH" ]]; then
+            echo "Missing triggering branch name." >&2
+            exit 1
+          fi
+
+          if [[ -z "$SOURCE_SHA" ]]; then
+            echo "Missing release source SHA from prepare." >&2
+            exit 1
+          fi
+
+          remote_ref="refs/remotes/origin/${BRANCH}"
+          git fetch --no-tags origin "+refs/heads/${BRANCH}:${remote_ref}"
+          if ! git merge-base --is-ancestor "$SOURCE_SHA" "$remote_ref"; then
+            echo "Refusing to record ${RELEASE_VERSION}: remote branch ${BRANCH} no longer contains release source ${SOURCE_SHA}." >&2
+            exit 1
+          fi
+
+          version_dir="$(mktemp -d "${RUNNER_TEMP}/flint-version.XXXXXX")"
+          cleanup() {
+            git worktree remove --force "$version_dir" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          git worktree add --detach "$version_dir" "$remote_ref"
+
+          latest_version="$(tr -d '[:space:]' < "${version_dir}/VERSION")"
+          if [[ "$latest_version" == "$RELEASE_VERSION" ]]; then
+            echo "VERSION already records ${RELEASE_VERSION}; no commit is needed."
+            exit 0
+          fi
+          if [[ "$latest_version" != "$SOURCE_VERSION" ]]; then
+            echo "Refusing to overwrite unexpected VERSION: branch is ${latest_version}, source commit had ${SOURCE_VERSION}, released version is ${RELEASE_VERSION}." >&2
+            exit 1
+          fi
+
+          printf '%s\n' "$RELEASE_VERSION" > "${version_dir}/VERSION"
+          git -C "$version_dir" add -- VERSION
+          staged_paths="$(git -C "$version_dir" diff --cached --name-only)"
+          if [[ "$staged_paths" != "VERSION" ]]; then
+            echo "Refusing to commit unexpected staged paths: ${staged_paths}." >&2
+            exit 1
+          fi
+
+          git -C "$version_dir" \
+            -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "chore(release): record VERSION ${RELEASE_VERSION}"
+          git -C "$version_dir" push origin "HEAD:refs/heads/${BRANCH}"
+          echo "Pushed VERSION ${RELEASE_VERSION} to ${BRANCH} as github-actions[bot]."

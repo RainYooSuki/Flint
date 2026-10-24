@@ -1,0 +1,10 @@
+# Keep executable workflow and release tooling on LF across platforms.
+*.yml text eol=lf
+*.yaml text eol=lf
+*.mjs text eol=lf
+*.md text eol=lf
+
+# Binary launcher assets must never be normalized.
+*.png binary
+*.ico binary
+*.icns binary

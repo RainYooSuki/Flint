@@ -1,0 +1,26 @@
+﻿# Frontend dependencies and build output
+node_modules/
+dist/
+.vite/
+
+# Tauri build output and generated schemas
+src-tauri/target/
+src-tauri/gen/
+
+# Temporary release/validation output
+release-assets/
+.review-tmp/
+.validate-tmp/
+*.log
+*.pid
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+
+# OS metadata
+.DS_Store
+Thumbs.db

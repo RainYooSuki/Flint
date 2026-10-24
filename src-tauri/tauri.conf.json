@@ -1,0 +1,49 @@
+{
+  "productName": "Flint",
+  "version": "2026.10.1-d1cce64",
+  "identifier": "dev.flint.launcher",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Flint",
+        "width": 900,
+        "height": 550,
+        "minWidth": 820,
+        "minHeight": 500,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "opener": {
+      "requireLiteralLeadingDot": false
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.icns"
+    ],
+    "category": "Game",
+    "shortDescription": "A lightweight Minecraft launcher",
+    "longDescription": "Flint is a Tauri-based Minecraft launcher focused on fast local startup and clear instance management."
+  }
+}
