@@ -234,14 +234,14 @@ test("Rust use roots accept normal and leading-:: paths", () => {
   assert.equal(firstUseRoot(" r#crate::models"), "crate");
 });
 
-test("Rust crate-root use paths resolve to imported modules rather than graph sentinels", () => {
+test("Rust crate-root use payloads resolve to imported modules rather than graph sentinels", () => {
   const modules = new Set(["crate", "main", "models", "mods", "mods::providers"]);
   assert.deepEqual(
-    [...moduleTargetsFromUse("use crate::models::{ModSource};", "mods::providers", modules)].sort(),
+    [...moduleTargetsFromUse(" crate::models::{ModSource}", "mods::providers", modules)].sort(),
     ["models"],
   );
   assert.deepEqual(
-    [...moduleTargetsFromUse("use super::{helper};", "mods::providers", modules)].sort(),
+    [...moduleTargetsFromUse(" super::{helper}", "mods::providers", modules)].sort(),
     ["mods"],
   );
 });
