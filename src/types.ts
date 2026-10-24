@@ -260,3 +260,20 @@ export interface InstallRuntime {
   versionId: string;
   progress: InstallProgress | null;
 }
+
+export type HostLifecycleState = "starting" | "ready" | "degraded" | "startup_failed" | "runtime_failed" | "stopping" | "stopped";
+
+export type FeatureLifecycleState = "starting" | "ready" | "failed" | "blocked_dependency" | "stopped";
+
+export interface FeatureAvailability {
+  featureId: string;
+  state: FeatureLifecycleState;
+  reason: string | null;
+}
+
+export interface HostAvailabilitySnapshot {
+  revision: number;
+  hostState: HostLifecycleState;
+  lastFailure: string | null;
+  features: FeatureAvailability[];
+}

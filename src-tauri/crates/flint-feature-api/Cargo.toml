@@ -1,0 +1,15 @@
+[package]
+name = "flint-feature-api"
+version = "0.1.0"
+description = "Framework-neutral feature lifecycle contracts and registry for Flint"
+authors = ["Flint Contributors"]
+edition = "2021"
+rust-version = "1.90"
+
+[dependencies]
+flint-core = { path = "../flint-core" }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

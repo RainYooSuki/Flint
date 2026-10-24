@@ -30,6 +30,7 @@ function LaunchPage({ context }: PageComponentProps) {
 export const launchFeature: FeatureDescriptor = {
   id: FEATURE_ID,
   featureVersion: "1.0.0",
+  backendRequires: ["flint.launch"],
   requires: ["flint.accounts", "flint.settings"],
   contributions: {
     pages: [

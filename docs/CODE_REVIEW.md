@@ -1,4 +1,4 @@
-﻿# Flint Quality Summary
+# Flint Quality Summary
 
 ## Review scope
 
@@ -8,7 +8,7 @@ The final independent review covers the tracked application and release boundary
 - vanilla version installation and Forge, NeoForge, Fabric, Quilt, LiteLoader, and OptiFine loader flows;
 - CurseForge and Modrinth search, required dependency planning, downloaded-mod installation, and installed-mod management;
 - save discovery, backup, export, import, rename, and delete handling;
-- the Tauri command surface, frontend API bridge, local settings/account stores, selected-instance context, Design B shell, and release automation.
+- the Tauri command surface, host lifecycle/availability snapshot/gating integration, frontend API bridge,
 
 The detailed command and model contracts live in `docs/API_CONTRACT.md` and `docs/FEATURE_API_CONTRACT.md`.
 
@@ -25,7 +25,7 @@ The detailed command and model contracts live in `docs/API_CONTRACT.md` and `doc
 
 ## Static review notes
 
-- The Rust command registration in `src-tauri/src/lib.rs` matches all 29 wrappers in `src/api.ts` and both contract documents.
+- The Rust command registration in `src-tauri/src/lib.rs` contains 30 compile-time handlers: `launcher_info` and `get_host_availability` are ungated, and the remaining 28 feature commands are gated by their owning backend feature. `src/api.ts` and both contract documents expose the same surface.
 - The frontend and Rust model fields match, including nullable Option fields and the `slowDown` polling flag. `AccountInfo` exposes profile metadata only, never access or refresh tokens.
 - Account storage is local: `accounts.json` contains the Microsoft token store and is written with owner-only permissions on Unix. The account update path uses a temporary replacement file and validates active-account fallback.
 - Microsoft device-code login requires a configured public-client application ID; token values are redacted from `LaunchResult.command`.

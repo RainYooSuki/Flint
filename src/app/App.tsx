@@ -1,14 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath as openSystemPath } from "@tauri-apps/plugin-opener";
-import { api } from "../api";
+import { api, subscribeFeatureUnavailable } from "../api";
 import { Icon } from "../components/Icon";
 import { TitleBar } from "../components/TitleBar";
 import type { AppPageContext } from "../core/app-context";
+import {
+  evaluateAvailability,
+  filterContributionRegistry,
+  isBackendFeatureReady,
+  sanitizeAvailabilityReason,
+  unavailableFeatureDiagnostics
+} from "../core/availability";
+import type { AvailabilityDiagnostic } from "../core/availability";
 import { ContributionBoundary } from "../core/ContributionBoundary";
 import type {
   AccountInfo,
+  HostAvailabilitySnapshot,
   InstallProgress,
   InstallResult,
   InstallRuntime,
@@ -32,9 +42,74 @@ import {
 import { AppSidebar } from "./AppSidebar";
 import { AccountDialogSurface, frontendRegistry } from "./composition";
 
+const STARTING_AVAILABILITY_REFRESH_INTERVAL_MS = 2_000;
+const STARTING_AVAILABILITY_REFRESH_LIMIT = 5;
+
+interface AvailabilitySurfaceProps {
+  title: string;
+  message: string;
+  details?: readonly AvailabilityDiagnostic[];
+  lastFailure?: string | null;
+  loading?: boolean;
+  error?: boolean;
+  onRetry: () => void;
+}
+
+function AvailabilitySurface({
+  title,
+  message,
+  details = [],
+  lastFailure = null,
+  loading = false,
+  error = false,
+  onRetry
+}: AvailabilitySurfaceProps) {
+  const detailText = details
+    .map((detail) => detail.reason ? `${detail.featureId}: ${detail.reason}` : detail.featureId)
+    .join("; ");
+  const parts = [detailText, lastFailure ? `Last failure: ${lastFailure}` : ""].filter(Boolean);
+  const bodyText = parts.length > 0 ? parts.join(" ") : message;
+
+  return (
+    <div className="page-shell">
+      <header className="page-head">
+        <div className="page-title">
+          <h1>{title}</h1>
+          <span>{message}</span>
+        </div>
+      </header>
+      <div className="page-body">
+        <div
+          className={`inline-message ${error ? "error" : "warning"}`}
+          role={error ? "alert" : "status"}
+          aria-live={error ? "assertive" : "polite"}
+        >
+          {loading ? <span className="spinner spinner-small" /> : <Icon name="alert" />}
+          <span>{bodyText}</span>
+          <button type="button" className="text-link" onClick={onRetry} disabled={loading}>
+            Retry
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
-  const [activePageId, setActivePageId] = useState(() => frontendRegistry.defaultPageId ?? "");
-  const activePage = frontendRegistry.pageById[activePageId] ?? null;
+  const [activePageId, setActivePageId] = useState("");
+  const [availabilitySnapshot, setAvailabilitySnapshot] = useState<HostAvailabilitySnapshot | null>(null);
+  const [availabilityLoading, setAvailabilityLoading] = useState(true);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
+  const availability = useMemo(() => evaluateAvailability(availabilitySnapshot), [availabilitySnapshot]);
+  const availableRegistry = useMemo(
+    () => filterContributionRegistry(frontendRegistry, availability),
+    [availability]
+  );
+  const availabilityDiagnostics = useMemo(
+    () => unavailableFeatureDiagnostics(availability, frontendRegistry.features),
+    [availability]
+  );
+  const activePage = availableRegistry.pageById[activePageId] ?? availableRegistry.pages[0] ?? null;
   const [info, setInfo] = useState<LauncherInfo | null>(null);
   const [infoLoading, setInfoLoading] = useState(true);
   const [infoError, setInfoError] = useState<string | null>(null);
@@ -67,6 +142,7 @@ export default function App() {
   const [accountDialogOpen, setAccountDialogOpen] = useState(false);
 
   const noticeIdRef = useRef(0);
+  const availabilityRequestIdRef = useRef(0);
   const contentRef = useRef<HTMLElement>(null);
   const instancesRequestIdRef = useRef(0);
   const accountsRequestIdRef = useRef(0);
@@ -76,6 +152,71 @@ export default function App() {
     noticeIdRef.current += 1;
     setNotice({ id: noticeIdRef.current, kind, text });
   }, []);
+
+  const refreshAvailability = useCallback(async (): Promise<void> => {
+    const requestId = availabilityRequestIdRef.current + 1;
+    availabilityRequestIdRef.current = requestId;
+    setAvailabilityLoading(true);
+    setAvailabilityError(null);
+    try {
+      const snapshot = await api.getHostAvailability();
+      if (requestId !== availabilityRequestIdRef.current) return;
+      setAvailabilitySnapshot(snapshot);
+    } catch (error) {
+      if (requestId !== availabilityRequestIdRef.current) return;
+      setAvailabilitySnapshot(null);
+      setAvailabilityError(sanitizeAvailabilityReason(toErrorMessage(error)));
+    } finally {
+      if (requestId === availabilityRequestIdRef.current) setAvailabilityLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAvailability();
+    const handleFocus = () => {
+      void refreshAvailability();
+    };
+    const unsubscribe = subscribeFeatureUnavailable(() => {
+      void refreshAvailability();
+    });
+    window.addEventListener("focus", handleFocus);
+    return () => {
+      availabilityRequestIdRef.current += 1;
+      window.removeEventListener("focus", handleFocus);
+      unsubscribe();
+    };
+  }, [refreshAvailability]);
+
+  const retryAvailability = useCallback(() => {
+    void refreshAvailability();
+  }, [refreshAvailability]);
+
+  useEffect(() => {
+    if (availability.hostState !== "starting") return;
+    let cancelled = false;
+    let attempts = 0;
+    let timer: number | null = null;
+    const scheduleRefresh = () => {
+      if (cancelled || attempts >= STARTING_AVAILABILITY_REFRESH_LIMIT) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        if (cancelled) return;
+        attempts += 1;
+        void refreshAvailability()
+          .catch((error: unknown) => {
+            console.error("Availability poll refresh failed.", error);
+          })
+          .finally(() => {
+            if (!cancelled) scheduleRefresh();
+          });
+      }, STARTING_AVAILABILITY_REFRESH_INTERVAL_MS);
+    };
+    scheduleRefresh();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [availability.hostState, refreshAvailability]);
 
   const refreshInstances = useCallback(async (gameDir: string, announce = false): Promise<InstanceInfo[] | null> => {
     const requestId = instancesRequestIdRef.current + 1;
@@ -260,6 +401,15 @@ export default function App() {
   }, [activePageId]);
 
   useEffect(() => {
+    if (availabilityLoading) return;
+    setActivePageId((current) => (
+      current && availableRegistry.pageById[current]
+        ? current
+        : availableRegistry.defaultPageId ?? ""
+    ));
+  }, [availabilityLoading, availableRegistry]);
+
+  useEffect(() => {
     document.title = `${activePage?.title ?? "页面不可用"} - Flint`;
   }, [activePage]);
 
@@ -277,19 +427,27 @@ export default function App() {
     () => accounts.find((account) => account.active) ?? null,
     [accounts]
   );
+  const accountsAvailable = isBackendFeatureReady(availability, "flint.accounts");
   const accountName = activeAccount?.username || settings?.username || "";
   const accountTypeLabel = activeAccount?.accountType === "microsoft" ? "Microsoft 账户" : "离线账户";
   const gameDirPath = settings?.gameDir.trim() || info?.defaultGameDir || "";
   const gameDirLabel = gameDirPath || "平台默认 .minecraft";
 
+  useEffect(() => {
+    if (!accountsAvailable) setAccountDialogOpen(false);
+  }, [accountsAvailable]);
+
   const navigate = useCallback((targetPageId: string) => {
-    setActivePageId(targetPageId);
-  }, []);
+    setActivePageId((current) => (
+      availableRegistry.pageById[targetPageId] ? targetPageId : current
+    ));
+  }, [availableRegistry]);
 
   const openAccountDialog = useCallback(() => {
+    if (!accountsAvailable) return;
     setAccountDialogOpen(true);
     void refreshAccounts();
-  }, [refreshAccounts]);
+  }, [accountsAvailable, refreshAccounts]);
 
   const retryInfo = useCallback(async () => {
     setInfoLoading(true);
@@ -516,8 +674,10 @@ export default function App() {
 
   const pageContext: AppPageContext = {
     navigateToPage: navigate,
-    settingsSections: frontendRegistry.settingsSections,
-    instanceActions: frontendRegistry.instanceActions,
+    hostState: availability.hostState,
+    featureStates: availability.featureStates,
+    settingsSections: availableRegistry.settingsSections,
+    instanceActions: availableRegistry.instanceActions,
     info,
     infoLoading,
     infoError,
@@ -570,6 +730,67 @@ export default function App() {
     onRefreshAccounts: refreshAccounts
   };
   const ActivePage = activePage?.component;
+  let mainContent: ReactNode;
+  if (availabilityLoading && !availabilitySnapshot) {
+    mainContent = (
+      <AvailabilitySurface
+        title="Feature availability"
+        message="Loading host availability..."
+        loading
+        onRetry={retryAvailability}
+      />
+    );
+  } else if (availabilityError) {
+    mainContent = (
+      <AvailabilitySurface
+        title="Feature availability error"
+        message={availabilityError}
+        error
+        onRetry={retryAvailability}
+      />
+    );
+  } else if (!availability.valid) {
+    mainContent = (
+      <AvailabilitySurface
+        title="Feature availability error"
+        message="The host availability snapshot is malformed or contains duplicate feature IDs."
+        error
+        onRetry={retryAvailability}
+      />
+    );
+  } else if (!availability.hostOperational) {
+    mainContent = (
+      <AvailabilitySurface
+        title="Features unavailable"
+        message={`Host state is ${availability.hostState ?? "unknown"}.`}
+        details={availabilityDiagnostics}
+        lastFailure={availability.lastFailure}
+        error={availability.hostState !== "starting" && availability.hostState !== "stopping"}
+        onRetry={retryAvailability}
+      />
+    );
+  } else if (ActivePage) {
+    mainContent = (
+      <ContributionBoundary key={activePage?.id ?? "unknown-page"} contributionId={activePage?.id ?? "unknown-page"}>
+        <ActivePage context={pageContext} />
+      </ContributionBoundary>
+    );
+  } else {
+    mainContent = (
+      <AvailabilitySurface
+        title="No available page"
+        message="No registered page is currently available."
+        details={availabilityDiagnostics}
+        lastFailure={availability.lastFailure}
+        onRetry={retryAvailability}
+      />
+    );
+  }
+  const degradedText = availabilityDiagnostics
+    .map((detail) => detail.reason ? `${detail.featureId}: ${detail.reason}` : detail.featureId)
+    .join("; ")
+    || availability.lastFailure
+    || "Some optional features are unavailable.";
 
   return (
     <div className="app-shell">
@@ -581,10 +802,11 @@ export default function App() {
 
       <div className="shell">
         <AppSidebar
-          activePageId={activePageId}
-          navigation={frontendRegistry.navigation}
+          activePageId={activePage?.id ?? activePageId}
+          navigation={availableRegistry.navigation}
           settingsDirty={settingsDirty}
           coreReady={Boolean(info) && !infoError}
+          accountAvailable={accountsAvailable}
           username={accountName}
           accountTypeLabel={accountTypeLabel}
           instancesCount={instances.length}
@@ -595,6 +817,13 @@ export default function App() {
         />
 
         <div className="main-column">
+          {availability.hostState === "degraded" || (availability.hostOperational && availabilityDiagnostics.length > 0) ? (
+            <div className="global-error" role="status" aria-live="polite" title={degradedText}>
+              <Icon name="alert" />
+              <span>{availability.hostState === "degraded" ? "Degraded" : "Feature availability"}: {degradedText}</span>
+            </div>
+          ) : null}
+
           {infoError ? (
             <div className="global-error" role="alert">
               <Icon name="alert" />
@@ -606,31 +835,12 @@ export default function App() {
           ) : null}
 
           <main className="app-main" id="main-content" ref={contentRef} tabIndex={-1}>
-            {ActivePage ? (
-              <ContributionBoundary key={activePage?.id ?? "unknown-page"} contributionId={activePage?.id ?? "unknown-page"}>
-                <ActivePage context={pageContext} />
-              </ContributionBoundary>
-            ) : (
-              <div className="page-shell">
-                <header className="page-head">
-                  <div className="page-title">
-                    <h1>页面不可用</h1>
-                    <span>请求的页面未注册。</span>
-                  </div>
-                </header>
-                <div className="page-body">
-                  <div className="global-error" role="alert">
-                    <Icon name="alert" />
-                    <span>没有找到当前页面贡献。</span>
-                  </div>
-                </div>
-              </div>
-            )}
+            {mainContent}
           </main>
         </div>
       </div>
 
-      {accountDialogOpen ? (
+      {accountDialogOpen && accountsAvailable ? (
         <AccountDialogSurface context={pageContext} />
       ) : null}
 

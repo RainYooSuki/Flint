@@ -20,6 +20,8 @@ function VersionsPage({ context }: PageComponentProps) {
       gameDirLabel={context.gameDirLabel}
       gameDirPath={context.gameDirPath}
       settings={context.settings}
+      loadersAvailable={context.featureStates["flint.loaders"] === "ready"}
+      modsAvailable={context.featureStates["flint.mods"] === "ready"}
       instanceActions={context.instanceActions}
       onRefreshInstances={context.onRefreshInstances}
       onSelectInstance={context.onSelectInstance}
@@ -36,6 +38,7 @@ function VersionsPage({ context }: PageComponentProps) {
 export const versionsFeature: FeatureDescriptor = {
   id: FEATURE_ID,
   featureVersion: "1.0.0",
+  backendRequires: ["flint.vanilla"],
   requires: ["flint.settings"],
   contributions: {
     pages: [

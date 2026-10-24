@@ -85,6 +85,7 @@ export interface FeatureDescriptor {
   readonly id: string;
   readonly featureVersion: string;
   readonly requires: readonly string[];
+  readonly backendRequires: readonly string[];
   readonly contributions: FeatureContributions;
 }
 
@@ -217,6 +218,18 @@ export function validateFeatureDescriptors(features: readonly FeatureDescriptor[
     assertSemanticVersion(feature.featureVersion, `feature ${feature.id} featureVersion`);
     assertFeatureContributionsShape(feature);
 
+    if (!Array.isArray(feature.backendRequires)) {
+      validationError(`feature ${feature.id} backendRequires must be an array.`);
+    }
+    const backendRequirements = new Set<string>();
+    for (const requiredBackendId of feature.backendRequires) {
+      assertStableId(requiredBackendId, `feature ${feature.id} backend requirement`);
+      if (backendRequirements.has(requiredBackendId)) {
+        validationError(`feature ${feature.id} declares duplicate backend requirement ${requiredBackendId}.`);
+      }
+      backendRequirements.add(requiredBackendId);
+    }
+
     if (!Array.isArray(feature.requires)) {
       validationError(`feature ${feature.id} requires must be an array.`);
     }
@@ -342,6 +355,7 @@ function freezeFeature(feature: FeatureDescriptor): FeatureDescriptor {
     id: feature.id,
     featureVersion: feature.featureVersion,
     requires: Object.freeze([...feature.requires]),
+    backendRequires: Object.freeze([...feature.backendRequires]),
     contributions
   });
 }

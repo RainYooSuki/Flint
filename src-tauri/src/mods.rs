@@ -25,6 +25,14 @@ use std::{
 use tauri::{AppHandle, Emitter};
 use zip::ZipArchive;
 
+pub(crate) fn provider_descriptors() -> Vec<flint_provider_api::ProviderDescriptor> {
+    providers::provider_descriptors()
+}
+
+pub(crate) fn provider_requirements() -> Vec<flint_provider_api::ProviderRequirement> {
+    providers::provider_requirements()
+}
+
 const MODRINTH_API: &str = "https://api.modrinth.com/v2";
 const CURSEFORGE_API: &str = "https://api.curseforge.com/v1";
 const MAX_API_BODY: u64 = 16 * 1024 * 1024;

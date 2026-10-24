@@ -7,6 +7,7 @@ interface AppSidebarProps {
   navigation: readonly NavigationContribution[];
   settingsDirty: boolean;
   coreReady: boolean;
+  accountAvailable: boolean;
   username: string;
   accountTypeLabel: string;
   instancesCount: number;
@@ -21,6 +22,7 @@ export function AppSidebar({
   navigation,
   settingsDirty,
   coreReady,
+  accountAvailable,
   username,
   accountTypeLabel,
   instancesCount,
@@ -67,15 +69,19 @@ export function AppSidebar({
         })}
       </nav>
 
-      <div className="nav-divider" />
-      <div className="sidebar-section-label">当前账户</div>
-      <button type="button" className="sidebar-account" onClick={onOpenAccounts} title="账户管理">
-        <span className="avatar" aria-hidden="true">{avatarText}</span>
-        <span className="account-copy">
-          <strong>{username || "未设置用户名"}</strong>
-          <small>{accountTypeLabel}</small>
-        </span>
-      </button>
+      {accountAvailable ? (
+        <>
+          <div className="nav-divider" />
+          <div className="sidebar-section-label">当前账户</div>
+          <button type="button" className="sidebar-account" onClick={onOpenAccounts} title="账户管理">
+            <span className="avatar" aria-hidden="true">{avatarText}</span>
+            <span className="account-copy">
+              <strong>{username || "未设置用户名"}</strong>
+              <small>{accountTypeLabel}</small>
+            </span>
+          </button>
+        </>
+      ) : null}
 
       <div className="sidebar-spacer" />
       <div className="sidebar-foot">

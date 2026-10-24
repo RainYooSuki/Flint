@@ -1,5 +1,7 @@
 import type {
   AccountInfo,
+  FeatureLifecycleState,
+  HostLifecycleState,
   InstallResult,
   InstallRuntime,
   InstanceInfo,
@@ -15,12 +17,14 @@ import type { InstanceActionContribution, SettingsSectionContribution } from "./
 /**
  * The shell-owned state and actions exposed to page contributions.
  *
- * Phase 3 keeps shared state ownership in App and exposes the frozen
- * contribution lists. Feature pages and sections receive this explicit typed
- * contract instead of importing shell internals or another feature module.
+ * The shell owns shared state and exposes only the availability-filtered,
+ * frozen contribution lists. Feature pages and sections receive this explicit
+ * typed contract instead of importing shell internals or another feature module.
  */
 export interface AppPageContext {
   readonly navigateToPage: (targetPageId: string) => void;
+  readonly hostState: HostLifecycleState | null;
+  readonly featureStates: Readonly<Record<string, FeatureLifecycleState | undefined>>;
   readonly settingsSections: readonly SettingsSectionContribution[];
   readonly instanceActions: readonly InstanceActionContribution[];
 

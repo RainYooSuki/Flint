@@ -41,6 +41,8 @@ interface VersionsViewProps {
   gameDirLabel: string;
   gameDirPath: string;
   settings: LauncherSettings | null;
+  loadersAvailable: boolean;
+  modsAvailable: boolean;
   instanceActions: readonly InstanceActionContribution[];
   onRefreshInstances: () => void;
   onSelectInstance: (id: string) => void;
@@ -73,6 +75,8 @@ export function VersionsView({
   gameDirLabel,
   gameDirPath,
   settings,
+  loadersAvailable,
+  modsAvailable,
   instanceActions,
   onRefreshInstances,
   onSelectInstance,
@@ -83,7 +87,13 @@ export function VersionsView({
   onGoSettings,
   onNotify
 }: VersionsViewProps) {
-  const [mode, setMode] = useState<VersionMode>("local");
+  const [requestedMode, setMode] = useState<VersionMode>("local");
+  const mode: VersionMode =
+    requestedMode === "loaders" && !loadersAvailable
+      ? "local"
+      : (requestedMode === "mods" || requestedMode === "installed") && !modsAvailable
+        ? "local"
+        : requestedMode;
   const [featureBusy, setFeatureBusy] = useState(false);
   const autoFetchAttemptedRef = useRef(false);
   const [localSearch, setLocalSearch] = useState("");
@@ -95,6 +105,10 @@ export function VersionsView({
   const localTypeId = useId();
   const loaderFilterId = useId();
   const remoteSearchId = useId();
+
+  useEffect(() => {
+    if (requestedMode !== mode) setMode(mode);
+  }, [mode, requestedMode]);
 
   useEffect(() => {
     if ((mode === "remote" || mode === "loaders") && !remoteFetched && !remoteLoading && !autoFetchAttemptedRef.current) {
@@ -192,33 +206,39 @@ export function VersionsView({
           >
             Mojang 版本
           </button>
-          <button
-            type="button"
-            className={mode === "loaders" ? "active" : ""}
-            aria-pressed={mode === "loaders"}
-            onClick={() => setMode("loaders")}
-            disabled={featureBusy}
-          >
-            加载器
-          </button>
-          <button
-            type="button"
-            className={mode === "mods" ? "active" : ""}
-            aria-pressed={mode === "mods"}
-            onClick={() => setMode("mods")}
-            disabled={featureBusy}
-          >
-            模组发现
-          </button>
-          <button
-            type="button"
-            className={mode === "installed" ? "active" : ""}
-            aria-pressed={mode === "installed"}
-            onClick={() => setMode("installed")}
-            disabled={featureBusy}
-          >
-            已安装模组
-          </button>
+          {loadersAvailable ? (
+            <button
+              type="button"
+              className={mode === "loaders" ? "active" : ""}
+              aria-pressed={mode === "loaders"}
+              onClick={() => setMode("loaders")}
+              disabled={featureBusy}
+            >
+              加载器
+            </button>
+          ) : null}
+          {modsAvailable ? (
+            <button
+              type="button"
+              className={mode === "mods" ? "active" : ""}
+              aria-pressed={mode === "mods"}
+              onClick={() => setMode("mods")}
+              disabled={featureBusy}
+            >
+              模组发现
+            </button>
+          ) : null}
+          {modsAvailable ? (
+            <button
+              type="button"
+              className={mode === "installed" ? "active" : ""}
+              aria-pressed={mode === "installed"}
+              onClick={() => setMode("installed")}
+              disabled={featureBusy}
+            >
+              已安装模组
+            </button>
+          ) : null}
           <div className="tab-meta" title={gameDirLabel}>
             <Icon name="folder" />
             <span>{gameDirLabel}</span>

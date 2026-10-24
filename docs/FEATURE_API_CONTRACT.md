@@ -1,6 +1,8 @@
-﻿# Flint Feature API Contract
+# Flint Feature API Contract
 
 This document extends `docs/API_CONTRACT.md` with account, loader-installation, mod-platform, mod-management and save-management capabilities. All serialized Rust structs use `#[serde(rename_all = "camelCase")]`.
+
+All commands in this document are gated by their owning backend feature. The authoritative availability DTO, lifecycle states, unavailable-error format, and gating semantics are documented in [`API_CONTRACT.md#host-availability-and-command-gating`](API_CONTRACT.md#host-availability-and-command-gating).
 
 ## Existing model changes
 

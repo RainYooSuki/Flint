@@ -25,6 +25,14 @@ use std::{
 };
 use tauri::{AppHandle, Emitter};
 
+pub(crate) fn provider_descriptors() -> Vec<flint_provider_api::ProviderDescriptor> {
+    providers::provider_descriptors()
+}
+
+pub(crate) fn provider_requirements() -> Vec<flint_provider_api::ProviderRequirement> {
+    providers::provider_requirements()
+}
+
 const FABRIC_LOADER_LIST: &str = "https://meta.fabricmc.net/v2/versions/loader";
 const QUILT_LOADER_LIST: &str = "https://meta.quiltmc.org/v3/versions/loader";
 const FORGE_MAVEN_METADATA: &str =

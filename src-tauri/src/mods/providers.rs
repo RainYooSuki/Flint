@@ -112,6 +112,10 @@ impl Provider for ModrinthProvider {
     }
 }
 
+pub(crate) fn provider_descriptors() -> Vec<ProviderDescriptor> {
+    vec![CurseForgeProvider.descriptor(), ModrinthProvider.descriptor()]
+}
+
 impl ModProvider for CurseForgeProvider {
     fn search(
         &self,
@@ -283,6 +287,22 @@ fn require_context_api_key<'a>(
     })
 }
 
+fn mod_provider_requirement(selection_key: &'static str) -> ProviderRequirement {
+    ProviderRequirement {
+        capability: MOD_CATALOG_CAPABILITY_ID,
+        api_version: MOD_CATALOG_API,
+        provider_version_req: MOD_PROVIDER_VERSION_REQUIREMENT,
+        selection_key: Some(selection_key),
+    }
+}
+
+pub(crate) fn provider_requirements() -> Vec<ProviderRequirement> {
+    vec![
+        mod_provider_requirement(CURSEFORGE_SELECTION_KEY),
+        mod_provider_requirement(MODRINTH_SELECTION_KEY),
+    ]
+}
+
 struct SourceBinding {
     requirement: ProviderRequirement,
     api_key: Option<String>,
@@ -294,21 +314,11 @@ struct SourceBinding {
 fn source_binding(source: ModSource) -> Result<SourceBinding, String> {
     match source {
         ModSource::Modrinth => Ok(SourceBinding {
-            requirement: ProviderRequirement {
-                capability: MOD_CATALOG_CAPABILITY_ID,
-                api_version: MOD_CATALOG_API,
-                provider_version_req: MOD_PROVIDER_VERSION_REQUIREMENT,
-                selection_key: Some(MODRINTH_SELECTION_KEY),
-            },
+            requirement: mod_provider_requirement(MODRINTH_SELECTION_KEY),
             api_key: None,
         }),
         ModSource::Curseforge => Ok(SourceBinding {
-            requirement: ProviderRequirement {
-                capability: MOD_CATALOG_CAPABILITY_ID,
-                api_version: MOD_CATALOG_API,
-                provider_version_req: MOD_PROVIDER_VERSION_REQUIREMENT,
-                selection_key: Some(CURSEFORGE_SELECTION_KEY),
-            },
+            requirement: mod_provider_requirement(CURSEFORGE_SELECTION_KEY),
             api_key: Some(super::require_curseforge_key()?),
         }),
     }

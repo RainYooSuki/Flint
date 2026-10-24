@@ -19,7 +19,7 @@ const FRONTEND_ROOT = path.join(REPO_ROOT, "src");
 const RUST_SOURCE_ROOT = path.join(REPO_ROOT, "src-tauri", "src");
 const RUST_MANIFEST = path.join(REPO_ROOT, "src-tauri", "Cargo.toml");
 const PROVIDER_API_SOURCE = "src-tauri/crates/flint-provider-api/src/lib.rs";
-const FOUNDATION_WORKSPACE_MEMBERS = [".", "crates/flint-core", "crates/flint-provider-api"];
+const FOUNDATION_WORKSPACE_MEMBERS = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api"];
 const COMPOSITION_ROOT = "src/app/composition.ts";
 const CONTRIBUTIONS_CONTRACT = "src/core/contributions.ts";
 const toPosix = (value) => value.split(path.sep).join("/");
@@ -991,12 +991,13 @@ function moduleParts(moduleId) {
 function moduleId(parts) {
   return parts.length === 0 ? "crate" : parts.join("::");
 }
-const RUST_MODULE_ALLOWLIST = new Set(["crate", "main", "auth", "error", "install", "java", "launch", "loaders", "models", "mods", "mods::providers", "net", "paths", "saves", "settings", "version", "loader_api", "loader_providers", "loaders::provider_api", "loaders::providers"]);
+const RUST_MODULE_ALLOWLIST = new Set(["crate", "main", "auth", "error", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "mods::providers", "net", "paths", "saves", "settings", "version", "loader_api", "loader_providers", "loaders::provider_api", "loaders::providers"]);
 const RUST_MODULE_EDGE_ALLOWLIST = new Map(Object.entries({
-  crate: ["auth", "error", "install", "java", "launch", "loaders", "models", "mods", "paths", "saves", "settings", "version", "loader_api", "loader_providers"],
+  crate: ["auth", "error", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "paths", "saves", "settings", "version", "loader_api", "loader_providers"],
   main: [],
   auth: ["models", "net", "paths", "settings"],
   error: [],
+  feature_host: ["loaders", "mods"],
   install: ["models", "paths", "version"],
   java: ["models"],
   launch: ["auth", "java", "models", "paths", "settings", "version"],
@@ -1235,10 +1236,192 @@ function buildRustGraph(report) {
   return { records, moduleSet, externalRoots };
 }
 // ---------------------------------------------------------------------------
+// Host lifecycle command gate audit
+// ---------------------------------------------------------------------------
+const FEATURE_COMMAND_GATES = Object.freeze([
+  { command: "load_settings", featureId: "flint.settings", constant: "FEATURE_SETTINGS" },
+  { command: "save_settings", featureId: "flint.settings", constant: "FEATURE_SETTINGS" },
+  { command: "list_accounts", featureId: "flint.accounts", constant: "FEATURE_ACCOUNTS" },
+  { command: "begin_microsoft_login", featureId: "flint.accounts", constant: "FEATURE_ACCOUNTS" },
+  { command: "poll_microsoft_login", featureId: "flint.accounts", constant: "FEATURE_ACCOUNTS" },
+  { command: "select_account", featureId: "flint.accounts", constant: "FEATURE_ACCOUNTS" },
+  { command: "remove_account", featureId: "flint.accounts", constant: "FEATURE_ACCOUNTS" },
+  { command: "refresh_active_account", featureId: "flint.accounts", constant: "FEATURE_ACCOUNTS" },
+  { command: "list_instances", featureId: "flint.vanilla", constant: "FEATURE_VANILLA" },
+  { command: "scan_java", featureId: "flint.vanilla", constant: "FEATURE_VANILLA" },
+  { command: "fetch_remote_versions", featureId: "flint.vanilla", constant: "FEATURE_VANILLA" },
+  { command: "install_version", featureId: "flint.vanilla", constant: "FEATURE_VANILLA" },
+  { command: "launch_instance", featureId: "flint.launch", constant: "FEATURE_LAUNCH" },
+  { command: "list_loader_versions", featureId: "flint.loaders", constant: "FEATURE_LOADERS" },
+  { command: "install_loader", featureId: "flint.loaders", constant: "FEATURE_LOADERS" },
+  { command: "search_mods", featureId: "flint.mods", constant: "FEATURE_MODS" },
+  { command: "list_mod_versions", featureId: "flint.mods", constant: "FEATURE_MODS" },
+  { command: "resolve_mod_dependencies", featureId: "flint.mods", constant: "FEATURE_MODS" },
+  { command: "install_mod", featureId: "flint.mods", constant: "FEATURE_MODS" },
+  { command: "list_installed_mods", featureId: "flint.mods", constant: "FEATURE_MODS" },
+  { command: "set_mod_enabled", featureId: "flint.mods", constant: "FEATURE_MODS" },
+  { command: "delete_mod", featureId: "flint.mods", constant: "FEATURE_MODS" },
+  { command: "list_saves", featureId: "flint.saves", constant: "FEATURE_SAVES" },
+  { command: "backup_save", featureId: "flint.saves", constant: "FEATURE_SAVES" },
+  { command: "export_save", featureId: "flint.saves", constant: "FEATURE_SAVES" },
+  { command: "import_save", featureId: "flint.saves", constant: "FEATURE_SAVES" },
+  { command: "rename_save", featureId: "flint.saves", constant: "FEATURE_SAVES" },
+  { command: "delete_save", featureId: "flint.saves", constant: "FEATURE_SAVES" },
+]);
+const UNGATED_HOST_COMMANDS = Object.freeze(["launcher_info", "get_host_availability"]);
+
+export function reviewedFeatureCommandGates() {
+  return FEATURE_COMMAND_GATES.map(({ command, featureId, constant }) => ({ command, featureId, constant }));
+}
+
+export function auditHostCommandGates(sourceText, featureIdSourceText = sourceText) {
+  const issues = [];
+  const productionText = prepareRustProductionSource(sourceText);
+  const expected = new Map();
+  for (const gate of FEATURE_COMMAND_GATES) expected.set(gate.command, { kind: "gated", ...gate });
+  for (const command of UNGATED_HOST_COMMANDS) expected.set(command, { kind: "ungated", command });
+
+  const featureIdConstants = new Map();
+  const featureIdPattern = /(?:pub(?:\([^)]*\))?\s+)?const\s+(FEATURE_[A-Z_]+)\s*:\s*&str\s*=\s*"([^"]+)";/g;
+  let featureIdMatch;
+  while ((featureIdMatch = featureIdPattern.exec(featureIdSourceText)) !== null) {
+    const constant = featureIdMatch[1];
+    const line = lineOf(featureIdSourceText, featureIdMatch.index);
+    if (featureIdConstants.has(constant)) {
+      issues.push({ line, message: `feature ID constant '${constant}' is declared more than once.` });
+      continue;
+    }
+    featureIdConstants.set(constant, { value: featureIdMatch[2], line });
+  }
+  const checkedFeatureConstants = new Set();
+  for (const gate of FEATURE_COMMAND_GATES) {
+    if (checkedFeatureConstants.has(gate.constant)) continue;
+    checkedFeatureConstants.add(gate.constant);
+    const declared = featureIdConstants.get(gate.constant);
+    if (!declared) {
+      issues.push({ line: 1, message: `missing host feature ID constant '${gate.constant}'.` });
+    } else if (declared.value !== gate.featureId) {
+      issues.push({
+        line: declared.line,
+        message: `host feature ID constant '${gate.constant}' must equal '${gate.featureId}', found '${declared.value}'.`,
+      });
+    }
+  }
+
+  const actual = new Map();
+  const commandPattern = /#\[tauri::command\]\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  let commandMatch;
+  while ((commandMatch = commandPattern.exec(productionText)) !== null) {
+    const command = commandMatch[1];
+    const line = lineOf(productionText, commandMatch.index);
+    if (actual.has(command)) {
+      issues.push({ line, message: `duplicate #[tauri::command] function '${command}'.` });
+      continue;
+    }
+    const bodyOpen = productionText.indexOf("{", commandMatch.index + commandMatch[0].length);
+    if (bodyOpen === -1) {
+      issues.push({ line, message: `command '${command}' has no function body.` });
+      continue;
+    }
+    const bodyClose = findMatchingBrace(productionText, bodyOpen);
+    if (bodyClose === -1) {
+      issues.push({ line, message: `command '${command}' has an unterminated function body.` });
+      continue;
+    }
+    actual.set(command, {
+      line,
+      signature: productionText.slice(commandMatch.index, bodyOpen),
+      body: productionText.slice(bodyOpen, bodyClose + 1),
+    });
+  }
+
+  for (const [command, details] of actual) {
+    const expectation = expected.get(command);
+    if (!expectation) {
+      issues.push({ line: details.line, message: `unreviewed host command '${command}'.` });
+      continue;
+    }
+    const gateCalls = (details.body.match(/\bensure_feature_ready\b/g) ?? []).length;
+    const featureConstants = [...details.body.matchAll(/feature_host::(FEATURE_[A-Z_]+)/g)].map((match) => match[1]);
+    if (expectation.kind === "ungated") {
+      if (gateCalls !== 0 || featureConstants.length !== 0) {
+        issues.push({ line: details.line, message: `ungated command '${command}' must not call a feature gate.` });
+      }
+      continue;
+    }
+    if (gateCalls !== 1) {
+      issues.push({ line: details.line, message: `command '${command}' must contain exactly one feature gate call, found ${gateCalls}.` });
+    }
+    if (featureConstants.length !== 1 || featureConstants[0] !== expectation.constant) {
+      issues.push({
+        line: details.line,
+        message: `command '${command}' must gate '${expectation.featureId}' via feature_host::${expectation.constant}.`,
+      });
+    }
+    if (!/runtime\s*:\s*tauri::State\s*<\s*'_\s*,\s*feature_host::HostRuntime\s*>/m.test(details.signature)) {
+      issues.push({ line: details.line, message: `command '${command}' must receive managed HostRuntime state.` });
+    }
+  }
+
+  for (const [command, expectation] of expected) {
+    if (!actual.has(command)) {
+      const kind = expectation.kind === "ungated" ? "ungated command" : `command gated by '${expectation.featureId}'`;
+      issues.push({ line: 1, message: `missing ${kind} '${command}'.` });
+    }
+  }
+
+  const handlerMatch = /tauri::generate_handler!\s*\[\s*([\s\S]*?)\s*\]/.exec(productionText);
+  if (!handlerMatch) {
+    issues.push({ line: 1, message: "tauri::generate_handler! registration list is missing." });
+    return issues;
+  }
+  const handlerLine = lineOf(productionText, handlerMatch.index);
+  const handlerEntries = handlerMatch[1].split(",").map((entry) => entry.trim()).filter(Boolean);
+  const seenHandlers = new Set();
+  for (const handler of handlerEntries) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(handler)) {
+      issues.push({ line: handlerLine, message: `generate_handler entry '${handler}' is not a compile-time command identifier.` });
+    }
+    if (seenHandlers.has(handler)) {
+      issues.push({ line: handlerLine, message: `generate_handler registers '${handler}' more than once.` });
+    }
+    seenHandlers.add(handler);
+    if (!actual.has(handler)) {
+      issues.push({ line: handlerLine, message: `generate_handler entry '${handler}' does not match a #[tauri::command] function.` });
+    }
+  }
+  for (const command of actual.keys()) {
+    if (!seenHandlers.has(command)) {
+      issues.push({ line: actual.get(command).line, message: `#[tauri::command] function '${command}' is missing from generate_handler!.` });
+    }
+  }
+  if (handlerEntries.length !== actual.size) {
+    issues.push({
+      line: handlerLine,
+      message: `generate_handler! must contain exactly one entry per command (${actual.size} commands, ${handlerEntries.length} entries).`,
+    });
+  }
+  return issues;
+}
+
+function checkHostCommandGates(report) {
+  const hostSource = path.join(RUST_SOURCE_ROOT, "lib.rs");
+  if (!fs.existsSync(hostSource)) {
+    report("RUST-COMMAND-GATE-001", "src-tauri/src/lib.rs", 1, "host command registration source is missing.");
+    return;
+  }
+  const featureHostSource = path.join(RUST_SOURCE_ROOT, "feature_host.rs");
+  const featureIdSource = fs.existsSync(featureHostSource) ? readText(featureHostSource) : "";
+  for (const issue of auditHostCommandGates(readText(hostSource), featureIdSource)) {
+    report("RUST-COMMAND-GATE-001", "src-tauri/src/lib.rs", issue.line, issue.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Phase 1/2 provider boundaries and single ModSource mapping adapter
 // ---------------------------------------------------------------------------
 const HOST_PRIVATE_MODULES = new Set([
-  "auth", "error", "install", "java", "launch", "net", "saves", "settings", "paths", "version",
+  "auth", "error", "feature_host", "install", "java", "launch", "net", "saves", "settings", "paths", "version",
 ]);
 // Exact provider files/import roots. transitional entries are named and expire at phase 5.
 const providerTarget = (file, role, localTargets, transitional = {}, external = ["std", "semver", "flint_core"]) => ({
@@ -1725,6 +1908,7 @@ function printReviewedAllowlists(phase) {
   let edgeCount = 0;
   for (const targets of RUST_MODULE_EDGE_ALLOWLIST.values()) edgeCount += targets.length;
   console.log(`[allowlist] exact reviewed Rust in-crate edges: ${edgeCount}; no directory wildcards.`);
+  console.log(`[allowlist] host command gates: ${FEATURE_COMMAND_GATES.length} feature commands across ${new Set(FEATURE_COMMAND_GATES.map((gate) => gate.featureId)).size} features; ungated=${UNGATED_HOST_COMMANDS.join(",")}.`);
   for (const target of [...MOD_PROVIDER_TARGETS, ...LOADER_PROVIDER_TARGETS]) {
     if (!fs.existsSync(path.join(REPO_ROOT, target.file))) continue;
     const local = [...target.localTargets].sort();
@@ -1749,6 +1933,7 @@ function runRequestedPhase(phase) {
   checkLoaderProviderGate(phase, graph, report);
   checkFrontend(phase, report);
   checkCargoGate(phase, report);
+  if (phase >= 3) checkHostCommandGates(report);
   printReviewedAllowlists(phase);
   if (phase >= 3) console.log("[scope] phase-3 contribution checks are static manifest/import/registry-shape checks; runtime duplicate and navigation-target validation is not executed.");
   if (phase < 5) {

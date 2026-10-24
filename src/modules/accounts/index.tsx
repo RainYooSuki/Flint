@@ -26,6 +26,7 @@ export function AccountDialogSurface({ context }: PageComponentProps) {
 export const accountsFeature: FeatureDescriptor = {
   id: FEATURE_ID,
   featureVersion: "1.0.0",
+  backendRequires: ["flint.accounts"],
   requires: ["flint.settings"],
   contributions: {
     pages: [],

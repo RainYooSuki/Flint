@@ -12,7 +12,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [workspace]
 resolver = "2"
-members = [".", "crates/flint-core", "crates/flint-provider-api"]
+members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -34,4 +34,5 @@ flate2 = "1"
 base64 = "0.22"
 tokio = { version = "1", features = ["rt"] }
 flint-core = { path = "crates/flint-core" }
+flint-feature-api = { path = "crates/flint-feature-api" }
 flint-provider-api = { path = "crates/flint-provider-api" }

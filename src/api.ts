@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AccountInfo,
+  HostAvailabilitySnapshot,
   InstallResult,
   InstanceInfo,
   InstalledModInfo,
@@ -24,70 +25,109 @@ import type {
   SaveInfo,
   SaveTransferResult
 } from "./types";
+import { toErrorMessage } from "./utils";
+
+export type FeatureUnavailableListener = () => void;
+
+const featureUnavailableListeners = new Set<FeatureUnavailableListener>();
+const UNAVAILABLE_FEATURE_PATTERN = /\bfeature\b[^\r\n]*\bunavailable\b|\bunavailable\s+feature\b/i;
+
+export function isUnavailableFeatureError(error: unknown): boolean {
+  return UNAVAILABLE_FEATURE_PATTERN.test(toErrorMessage(error));
+}
+
+/** Shared subscription for refreshing availability after a rejected command. */
+export function subscribeFeatureUnavailable(listener: FeatureUnavailableListener): () => void {
+  featureUnavailableListeners.add(listener);
+  return () => {
+    featureUnavailableListeners.delete(listener);
+  };
+}
+
+async function invokeWithAvailabilityRefresh<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    if (isUnavailableFeatureError(error)) {
+      for (const listener of [...featureUnavailableListeners]) {
+        try {
+          listener();
+        } catch (listenerError) {
+          console.error("Feature availability listener failed.", listenerError);
+        }
+      }
+    }
+    throw error;
+  }
+}
 
 export const api = {
   launcherInfo(): Promise<LauncherInfo> {
-    return invoke<LauncherInfo>("launcher_info");
+    return invokeWithAvailabilityRefresh<LauncherInfo>("launcher_info");
+  },
+
+  getHostAvailability(): Promise<HostAvailabilitySnapshot> {
+    return invoke<HostAvailabilitySnapshot>("get_host_availability");
   },
 
   loadSettings(): Promise<LauncherSettings> {
-    return invoke<LauncherSettings>("load_settings");
+    return invokeWithAvailabilityRefresh<LauncherSettings>("load_settings");
   },
 
   saveSettings(settings: LauncherSettings): Promise<LauncherSettings> {
-    return invoke<LauncherSettings>("save_settings", { settings });
+    return invokeWithAvailabilityRefresh<LauncherSettings>("save_settings", { settings });
   },
 
   listInstances(gameDir: string): Promise<InstanceInfo[]> {
-    return invoke<InstanceInfo[]>("list_instances", { gameDir });
+    return invokeWithAvailabilityRefresh<InstanceInfo[]>("list_instances", { gameDir });
   },
 
   scanJava(): Promise<JavaInfo[]> {
-    return invoke<JavaInfo[]>("scan_java");
+    return invokeWithAvailabilityRefresh<JavaInfo[]>("scan_java");
   },
 
   fetchRemoteVersions(): Promise<RemoteVersion[]> {
-    return invoke<RemoteVersion[]>("fetch_remote_versions");
+    return invokeWithAvailabilityRefresh<RemoteVersion[]>("fetch_remote_versions");
   },
 
   installVersion(gameDir: string, versionId: string): Promise<InstallResult> {
-    return invoke<InstallResult>("install_version", { gameDir, versionId });
+    return invokeWithAvailabilityRefresh<InstallResult>("install_version", { gameDir, versionId });
   },
 
   launchInstance(request: LaunchRequest): Promise<LaunchResult> {
-    return invoke<LaunchResult>("launch_instance", { request });
+    return invokeWithAvailabilityRefresh<LaunchResult>("launch_instance", { request });
   },
 
   listAccounts(): Promise<AccountInfo[]> {
-    return invoke<AccountInfo[]>("list_accounts");
+    return invokeWithAvailabilityRefresh<AccountInfo[]>("list_accounts");
   },
 
   beginMicrosoftLogin(): Promise<MicrosoftDeviceCode> {
-    return invoke<MicrosoftDeviceCode>("begin_microsoft_login");
+    return invokeWithAvailabilityRefresh<MicrosoftDeviceCode>("begin_microsoft_login");
   },
 
   pollMicrosoftLogin(deviceCode: string): Promise<MicrosoftLoginPoll> {
-    return invoke<MicrosoftLoginPoll>("poll_microsoft_login", { deviceCode });
+    return invokeWithAvailabilityRefresh<MicrosoftLoginPoll>("poll_microsoft_login", { deviceCode });
   },
 
   selectAccount(accountId: string): Promise<AccountInfo[]> {
-    return invoke<AccountInfo[]>("select_account", { accountId });
+    return invokeWithAvailabilityRefresh<AccountInfo[]>("select_account", { accountId });
   },
 
   removeAccount(accountId: string): Promise<AccountInfo[]> {
-    return invoke<AccountInfo[]>("remove_account", { accountId });
+    return invokeWithAvailabilityRefresh<AccountInfo[]>("remove_account", { accountId });
   },
 
   refreshActiveAccount(): Promise<AccountInfo> {
-    return invoke<AccountInfo>("refresh_active_account");
+    return invokeWithAvailabilityRefresh<AccountInfo>("refresh_active_account");
   },
 
   listLoaderVersions(loader: LoaderKind, gameVersion: string): Promise<LoaderVersionInfo[]> {
-    return invoke<LoaderVersionInfo[]>("list_loader_versions", { loader, gameVersion });
+    return invokeWithAvailabilityRefresh<LoaderVersionInfo[]>("list_loader_versions", { loader, gameVersion });
   },
 
   installLoader(request: LoaderInstallRequest): Promise<LoaderInstallResult> {
-    return invoke<LoaderInstallResult>("install_loader", { request });
+    return invokeWithAvailabilityRefresh<LoaderInstallResult>("install_loader", { request });
   },
 
   searchMods(
@@ -98,7 +138,7 @@ export const api = {
     offset: number,
     limit: number
   ): Promise<ModSearchPage> {
-    return invoke<ModSearchPage>("search_mods", { source, query, gameVersion, loader, offset, limit });
+    return invokeWithAvailabilityRefresh<ModSearchPage>("search_mods", { source, query, gameVersion, loader, offset, limit });
   },
 
   listModVersions(
@@ -107,7 +147,7 @@ export const api = {
     gameVersion: string,
     loader: string
   ): Promise<ModVersionInfo[]> {
-    return invoke<ModVersionInfo[]>("list_mod_versions", { source, projectId, gameVersion, loader });
+    return invokeWithAvailabilityRefresh<ModVersionInfo[]>("list_mod_versions", { source, projectId, gameVersion, loader });
   },
 
   resolveModDependencies(
@@ -117,7 +157,7 @@ export const api = {
     gameVersion: string,
     loader: string
   ): Promise<ModDependencyPlan> {
-    return invoke<ModDependencyPlan>("resolve_mod_dependencies", { source, projectId, versionId, gameVersion, loader });
+    return invokeWithAvailabilityRefresh<ModDependencyPlan>("resolve_mod_dependencies", { source, projectId, versionId, gameVersion, loader });
   },
 
   installMod(
@@ -129,7 +169,7 @@ export const api = {
     loader: string,
     installDependencies: boolean
   ): Promise<ModInstallResult> {
-    return invoke<ModInstallResult>("install_mod", {
+    return invokeWithAvailabilityRefresh<ModInstallResult>("install_mod", {
       gameDir,
       source,
       projectId,
@@ -141,38 +181,38 @@ export const api = {
   },
 
   listInstalledMods(gameDir: string): Promise<InstalledModInfo[]> {
-    return invoke<InstalledModInfo[]>("list_installed_mods", { gameDir });
+    return invokeWithAvailabilityRefresh<InstalledModInfo[]>("list_installed_mods", { gameDir });
   },
 
   setModEnabled(gameDir: string, fileName: string, enabled: boolean): Promise<InstalledModInfo> {
-    return invoke<InstalledModInfo>("set_mod_enabled", { gameDir, fileName, enabled });
+    return invokeWithAvailabilityRefresh<InstalledModInfo>("set_mod_enabled", { gameDir, fileName, enabled });
   },
 
   deleteMod(gameDir: string, fileName: string): Promise<void> {
-    return invoke<void>("delete_mod", { gameDir, fileName });
+    return invokeWithAvailabilityRefresh<void>("delete_mod", { gameDir, fileName });
   },
 
   listSaves(gameDir: string): Promise<SaveInfo[]> {
-    return invoke<SaveInfo[]>("list_saves", { gameDir });
+    return invokeWithAvailabilityRefresh<SaveInfo[]>("list_saves", { gameDir });
   },
 
   backupSave(gameDir: string, folderName: string): Promise<SaveTransferResult> {
-    return invoke<SaveTransferResult>("backup_save", { gameDir, folderName });
+    return invokeWithAvailabilityRefresh<SaveTransferResult>("backup_save", { gameDir, folderName });
   },
 
   exportSave(gameDir: string, folderName: string, destination: string): Promise<SaveTransferResult> {
-    return invoke<SaveTransferResult>("export_save", { gameDir, folderName, destination });
+    return invokeWithAvailabilityRefresh<SaveTransferResult>("export_save", { gameDir, folderName, destination });
   },
 
   importSave(gameDir: string, archivePath: string): Promise<SaveInfo> {
-    return invoke<SaveInfo>("import_save", { gameDir, archivePath });
+    return invokeWithAvailabilityRefresh<SaveInfo>("import_save", { gameDir, archivePath });
   },
 
   renameSave(gameDir: string, folderName: string, newName: string): Promise<SaveInfo> {
-    return invoke<SaveInfo>("rename_save", { gameDir, folderName, newName });
+    return invokeWithAvailabilityRefresh<SaveInfo>("rename_save", { gameDir, folderName, newName });
   },
 
   deleteSave(gameDir: string, folderName: string): Promise<void> {
-    return invoke<void>("delete_save", { gameDir, folderName });
+    return invokeWithAvailabilityRefresh<void>("delete_save", { gameDir, folderName });
   }
 };

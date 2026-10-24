@@ -280,6 +280,17 @@ impl Provider for QuiltLoaderProvider {
     }
 }
 
+pub(crate) fn provider_descriptors() -> Vec<ProviderDescriptor> {
+    vec![
+        FabricLoaderProvider.descriptor(),
+        ForgeLoaderProvider.descriptor(),
+        LiteLoaderProvider.descriptor(),
+        NeoForgeLoaderProvider.descriptor(),
+        OptiFineProvider.descriptor(),
+        QuiltLoaderProvider.descriptor(),
+    ]
+}
+
 impl LoaderProvider for FabricLoaderProvider {
     fn list_versions(
         &self,
@@ -414,6 +425,17 @@ fn loader_requirement(selection_key: &'static str) -> ProviderRequirement {
         provider_version_req: LOADER_PROVIDER_VERSION_REQUIREMENT,
         selection_key: Some(selection_key),
     }
+}
+
+pub(crate) fn provider_requirements() -> Vec<ProviderRequirement> {
+    vec![
+        loader_requirement(FABRIC_SELECTION_KEY),
+        loader_requirement(FORGE_SELECTION_KEY),
+        loader_requirement(LITELOADER_SELECTION_KEY),
+        loader_requirement(NEOFORGE_SELECTION_KEY),
+        loader_requirement(OPTIFINE_SELECTION_KEY),
+        loader_requirement(QUILT_SELECTION_KEY),
+    ]
 }
 
 /// The sole serialized `LoaderKind` to provider-binding mapping.

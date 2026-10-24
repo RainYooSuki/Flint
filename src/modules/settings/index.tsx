@@ -51,6 +51,7 @@ function SettingsPage({ context }: PageComponentProps) {
 export const settingsFeature: FeatureDescriptor = {
   id: FEATURE_ID,
   featureVersion: "1.0.0",
+  backendRequires: ["flint.settings"],
   requires: [],
   contributions: {
     pages: [

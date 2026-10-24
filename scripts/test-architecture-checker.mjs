@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import {
+  auditHostCommandGates,
   classifyTauriImport,
   collectFrontendModuleReferences,
   collectHtmlInjectionSites,
@@ -28,9 +29,45 @@ import {
   prepareRustProductionSource,
   requiredLoaderFiles,
   resolveFrontendModule,
+  reviewedFeatureCommandGates,
   reviewedHostRustModuleIds,
   reviewedProviderTargets,
 } from "./check-architecture.mjs";
+
+function hostCommandFixture(gates = reviewedFeatureCommandGates()) {
+  const gatedFunctions = gates.map((gate) => [
+    "#[tauri::command]",
+    `fn ${gate.command}(runtime: tauri::State<'_, feature_host::HostRuntime>) -> Result<(), String> {`,
+    `    runtime.ensure_feature_ready(feature_host::${gate.constant})?;`,
+    "    drop(runtime);",
+    "    Ok(())",
+    "}",
+  ].join("\n"));
+  const commands = [
+    "#[tauri::command]\nfn launcher_info() -> () {}",
+    "#[tauri::command]\nfn get_host_availability(runtime: tauri::State<'_, feature_host::HostRuntime>) -> () { runtime.snapshot() }",
+    ...gatedFunctions,
+  ];
+  const handlers = ["launcher_info", "get_host_availability", ...gates.map((gate) => gate.command)];
+  const featureConstants = [...new Map(gates.map((gate) => [gate.constant, gate.featureId])).entries()]
+    .map(([constant, featureId]) => `pub(crate) const ${constant}: &str = "${featureId}";`);
+  return {
+    gates,
+    source: [
+      ...featureConstants,
+      "",
+      ...commands,
+      "",
+      "#[cfg_attr(mobile, tauri::mobile_entry_point)]",
+      "pub fn run() {",
+      "    tauri::Builder::default().invoke_handler(tauri::generate_handler![",
+      `        ${handlers.join(",\n        ")}`,
+      "    ]);",
+      "}",
+      "",
+    ].join("\n"),
+  };
+}
 
 test("phase parsing defaults to 1 and rejects unsupported/unknown input", () => {
   assert.equal(parsePhase([]), 1);
@@ -91,21 +128,104 @@ test("phase-3 workspace foundation parser recognizes the exact reviewed members"
     "",
     "[workspace]",
     'resolver = "2"',
-    'members = [".", "crates/flint-core", "crates/flint-provider-api"]',
+    'members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api"]',
     "",
     "[dependencies]",
     'flint-core = { path = "crates/flint-core" }',
   ].join("\n");
-  assert.deepEqual(parseFoundationWorkspaceManifest(manifest), {
+  const foundation = parseFoundationWorkspaceManifest(manifest);
+  assert.deepEqual(foundation, {
     present: true,
     resolver: "2",
-    members: [".", "crates/flint-core", "crates/flint-provider-api"],
+    members: [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api"],
   });
+  assert.equal(foundation.members.includes("crates/flint-feature-api"), true);
+  assert.equal(foundation.members.some((member) => member.includes("*")), false);
   assert.deepEqual(parseFoundationWorkspaceManifest('[package]\nname = "flint"'), {
     present: false,
     resolver: null,
     members: null,
   });
+});
+
+test("host command gate map covers exactly the 28 feature commands and reviewed module", () => {
+  const gates = reviewedFeatureCommandGates();
+  assert.equal(gates.length, 28);
+  assert.equal(new Set(gates.map((gate) => gate.command)).size, 28);
+  assert.deepEqual(
+    [...new Set(gates.map((gate) => gate.featureId))].sort(),
+    ["flint.accounts", "flint.launch", "flint.loaders", "flint.mods", "flint.saves", "flint.settings", "flint.vanilla"],
+  );
+  const counts = Object.fromEntries(
+    [...new Set(gates.map((gate) => gate.featureId))].map((featureId) => [
+      featureId,
+      gates.filter((gate) => gate.featureId === featureId).length,
+    ]),
+  );
+  assert.deepEqual(counts, {
+    "flint.settings": 2,
+    "flint.accounts": 6,
+    "flint.vanilla": 4,
+    "flint.launch": 1,
+    "flint.loaders": 2,
+    "flint.mods": 7,
+    "flint.saves": 6,
+  });
+  assert.equal(reviewedHostRustModuleIds().includes("feature_host"), true);
+});
+
+test("host command gate audit requires exact feature ownership, managed state, and one handler per command", () => {
+  const { gates, source } = hostCommandFixture();
+  assert.deepEqual(auditHostCommandGates(source), []);
+
+  const wrongGate = source.replace(
+    "runtime.ensure_feature_ready(feature_host::FEATURE_SETTINGS)?;",
+    "runtime.ensure_feature_ready(feature_host::FEATURE_ACCOUNTS)?;",
+  );
+  assert.ok(
+    auditHostCommandGates(wrongGate).some((issue) =>
+      issue.message.includes("command 'load_settings' must gate 'flint.settings'"),
+    ),
+  );
+
+  const wrongFeatureId = source.replace(
+    'pub(crate) const FEATURE_SETTINGS: &str = "flint.settings";',
+    'pub(crate) const FEATURE_SETTINGS: &str = "flint.accounts";',
+  );
+  assert.ok(
+    auditHostCommandGates(wrongFeatureId).some((issue) =>
+      issue.message.includes("host feature ID constant 'FEATURE_SETTINGS' must equal 'flint.settings'"),
+    ),
+  );
+
+  const missingGate = source.replace(
+    "    runtime.ensure_feature_ready(feature_host::FEATURE_SETTINGS)?;\n",
+    "",
+  );
+  assert.ok(
+    auditHostCommandGates(missingGate).some((issue) =>
+      issue.message.includes("must contain exactly one feature gate call, found 0"),
+    ),
+  );
+
+  const missingHandler = source.replace("        load_settings,\n", "");
+  assert.ok(
+    auditHostCommandGates(missingHandler).some((issue) =>
+      issue.message.includes("#[tauri::command] function 'load_settings' is missing from generate_handler!"),
+    ),
+  );
+
+  const duplicateHandler = source.replace(
+    "        get_host_availability,\n",
+    "        get_host_availability,\n        get_host_availability,\n",
+  );
+  assert.ok(
+    auditHostCommandGates(duplicateHandler).some((issue) =>
+      issue.message.includes("generate_handler registers 'get_host_availability' more than once"),
+    ),
+  );
+
+  assert.equal(gates[0].command, "load_settings");
 });
 
 test("Rust use roots accept normal and leading-:: paths", () => {

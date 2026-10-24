@@ -1,5 +1,6 @@
 mod auth;
 mod error;
+mod feature_host;
 mod install;
 mod java;
 mod launch;
@@ -20,6 +21,8 @@ use models::{
     SaveTransferResult,
 };
 
+use tauri::Manager;
+
 #[tauri::command]
 fn launcher_info() -> LauncherInfo {
     let data_dir = paths::data_dir();
@@ -33,33 +36,62 @@ fn launcher_info() -> LauncherInfo {
 }
 
 #[tauri::command]
-fn load_settings() -> Result<LauncherSettings, String> {
+fn get_host_availability(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+) -> flint_feature_api::FeatureAvailabilitySnapshot {
+    runtime.snapshot()
+}
+
+#[tauri::command]
+fn load_settings(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+) -> Result<LauncherSettings, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_SETTINGS)?;
+    drop(runtime);
     settings::load_settings()
 }
 
 #[tauri::command]
-fn save_settings(settings: LauncherSettings) -> Result<LauncherSettings, String> {
+fn save_settings(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+    settings: LauncherSettings,
+) -> Result<LauncherSettings, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_SETTINGS)?;
+    drop(runtime);
     settings::save_settings(settings)
 }
 
 #[tauri::command]
-fn list_instances(game_dir: String) -> Result<Vec<InstanceInfo>, String> {
+fn list_instances(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+    game_dir: String,
+) -> Result<Vec<InstanceInfo>, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_VANILLA)?;
+    drop(runtime);
     version::list_instances(&game_dir)
 }
 
 #[tauri::command]
-async fn scan_java() -> Vec<JavaInfo> {
+async fn scan_java(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+) -> Result<Vec<JavaInfo>, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_VANILLA)?;
+    drop(runtime);
     match tokio::task::spawn_blocking(java::scan_java).await {
-        Ok(result) => result,
+        Ok(result) => Ok(result),
         Err(error) => {
             eprintln!("Java scan task failed: {error}");
-            Vec::new()
+            Ok(Vec::new())
         }
     }
 }
 
 #[tauri::command]
-async fn fetch_remote_versions() -> Result<Vec<RemoteVersion>, String> {
+async fn fetch_remote_versions(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+) -> Result<Vec<RemoteVersion>, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_VANILLA)?;
+    drop(runtime);
     tokio::task::spawn_blocking(install::fetch_remote_versions_blocking)
         .await
         .map_err(error::background_error)?
@@ -67,59 +99,94 @@ async fn fetch_remote_versions() -> Result<Vec<RemoteVersion>, String> {
 
 #[tauri::command]
 async fn install_version(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
     app: tauri::AppHandle,
     game_dir: String,
     version_id: String,
 ) -> Result<InstallResult, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_VANILLA)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || install::install_blocking(&app, &game_dir, &version_id))
         .await
         .map_err(error::background_error)?
 }
 
 #[tauri::command]
-async fn launch_instance(request: LaunchRequest) -> Result<LaunchResult, String> {
+async fn launch_instance(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+    request: LaunchRequest,
+) -> Result<LaunchResult, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_LAUNCH)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || launch::launch_blocking(request))
         .await
         .map_err(error::background_error)?
 }
 
 #[tauri::command]
-async fn list_accounts() -> Result<Vec<AccountInfo>, String> {
+async fn list_accounts(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+) -> Result<Vec<AccountInfo>, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_ACCOUNTS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(auth::list_accounts)
         .await
         .map_err(error::background_error)?
 }
 
 #[tauri::command]
-async fn begin_microsoft_login() -> Result<MicrosoftDeviceCode, String> {
+async fn begin_microsoft_login(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+) -> Result<MicrosoftDeviceCode, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_ACCOUNTS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(auth::begin_microsoft_login)
         .await
         .map_err(error::background_error)?
 }
 
 #[tauri::command]
-async fn poll_microsoft_login(device_code: String) -> Result<MicrosoftLoginPoll, String> {
+async fn poll_microsoft_login(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+    device_code: String,
+) -> Result<MicrosoftLoginPoll, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_ACCOUNTS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || auth::poll_microsoft_login(&device_code))
         .await
         .map_err(error::background_error)?
 }
 
 #[tauri::command]
-async fn select_account(account_id: String) -> Result<Vec<AccountInfo>, String> {
+async fn select_account(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+    account_id: String,
+) -> Result<Vec<AccountInfo>, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_ACCOUNTS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || auth::select_account(&account_id))
         .await
         .map_err(error::background_error)?
 }
 
 #[tauri::command]
-async fn remove_account(account_id: String) -> Result<Vec<AccountInfo>, String> {
+async fn remove_account(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+    account_id: String,
+) -> Result<Vec<AccountInfo>, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_ACCOUNTS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || auth::remove_account(&account_id))
         .await
         .map_err(error::background_error)?
 }
 
 #[tauri::command]
-async fn refresh_active_account() -> Result<AccountInfo, String> {
+async fn refresh_active_account(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+) -> Result<AccountInfo, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_ACCOUNTS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(auth::refresh_active_account)
         .await
         .map_err(error::background_error)?
@@ -127,9 +194,12 @@ async fn refresh_active_account() -> Result<AccountInfo, String> {
 
 #[tauri::command]
 async fn list_loader_versions(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
     loader: LoaderKind,
     game_version: String,
 ) -> Result<Vec<LoaderVersionInfo>, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_LOADERS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || {
         loaders::list_loader_versions_blocking(loader, &game_version)
     })
@@ -139,9 +209,12 @@ async fn list_loader_versions(
 
 #[tauri::command]
 async fn install_loader(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
     app: tauri::AppHandle,
     request: LoaderInstallRequest,
 ) -> Result<LoaderInstallResult, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_LOADERS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || loaders::install_loader_blocking(&app, &request))
         .await
         .map_err(error::background_error)?
@@ -149,6 +222,7 @@ async fn install_loader(
 
 #[tauri::command]
 async fn search_mods(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
     source: ModSource,
     query: String,
     game_version: String,
@@ -156,6 +230,8 @@ async fn search_mods(
     offset: u32,
     limit: u32,
 ) -> Result<ModSearchPage, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_MODS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || {
         mods::search_mods_blocking(source, &query, &game_version, &loader, offset, limit)
     })
@@ -165,11 +241,14 @@ async fn search_mods(
 
 #[tauri::command]
 async fn list_mod_versions(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
     source: ModSource,
     project_id: String,
     game_version: String,
     loader: String,
 ) -> Result<Vec<ModVersionInfo>, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_MODS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || {
         mods::list_mod_versions_blocking(source, &project_id, &game_version, &loader)
     })
@@ -179,12 +258,15 @@ async fn list_mod_versions(
 
 #[tauri::command]
 async fn resolve_mod_dependencies(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
     source: ModSource,
     project_id: String,
     version_id: String,
     game_version: String,
     loader: String,
 ) -> Result<ModDependencyPlan, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_MODS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || {
         mods::resolve_mod_dependencies_blocking(
             source,
@@ -200,6 +282,7 @@ async fn resolve_mod_dependencies(
 
 #[tauri::command]
 async fn install_mod(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
     app: tauri::AppHandle,
     game_dir: String,
     source: ModSource,
@@ -209,6 +292,8 @@ async fn install_mod(
     loader: String,
     install_dependencies: bool,
 ) -> Result<ModInstallResult, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_MODS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || {
         mods::install_mod_blocking(
             &app,
@@ -226,7 +311,12 @@ async fn install_mod(
 }
 
 #[tauri::command]
-async fn list_installed_mods(game_dir: String) -> Result<Vec<InstalledModInfo>, String> {
+async fn list_installed_mods(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+    game_dir: String,
+) -> Result<Vec<InstalledModInfo>, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_MODS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || mods::list_installed_mods_blocking(&game_dir))
         .await
         .map_err(error::background_error)?
@@ -234,10 +324,13 @@ async fn list_installed_mods(game_dir: String) -> Result<Vec<InstalledModInfo>, 
 
 #[tauri::command]
 async fn set_mod_enabled(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
     game_dir: String,
     file_name: String,
     enabled: bool,
 ) -> Result<InstalledModInfo, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_MODS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || {
         mods::set_mod_enabled_blocking(&game_dir, &file_name, enabled)
     })
@@ -246,21 +339,38 @@ async fn set_mod_enabled(
 }
 
 #[tauri::command]
-async fn delete_mod(game_dir: String, file_name: String) -> Result<(), String> {
+async fn delete_mod(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+    game_dir: String,
+    file_name: String,
+) -> Result<(), String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_MODS)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || mods::delete_mod_blocking(&game_dir, &file_name))
         .await
         .map_err(error::background_error)?
 }
 
 #[tauri::command]
-async fn list_saves(game_dir: String) -> Result<Vec<SaveInfo>, String> {
+async fn list_saves(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+    game_dir: String,
+) -> Result<Vec<SaveInfo>, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_SAVES)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || saves::list_saves_blocking(&game_dir))
         .await
         .map_err(error::background_error)?
 }
 
 #[tauri::command]
-async fn backup_save(game_dir: String, folder_name: String) -> Result<SaveTransferResult, String> {
+async fn backup_save(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+    game_dir: String,
+    folder_name: String,
+) -> Result<SaveTransferResult, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_SAVES)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || saves::backup_save_blocking(&game_dir, &folder_name))
         .await
         .map_err(error::background_error)?
@@ -268,10 +378,13 @@ async fn backup_save(game_dir: String, folder_name: String) -> Result<SaveTransf
 
 #[tauri::command]
 async fn export_save(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
     game_dir: String,
     folder_name: String,
     destination: String,
 ) -> Result<SaveTransferResult, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_SAVES)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || {
         saves::export_save_blocking(&game_dir, &folder_name, &destination)
     })
@@ -280,7 +393,13 @@ async fn export_save(
 }
 
 #[tauri::command]
-async fn import_save(game_dir: String, archive_path: String) -> Result<SaveInfo, String> {
+async fn import_save(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+    game_dir: String,
+    archive_path: String,
+) -> Result<SaveInfo, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_SAVES)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || saves::import_save_blocking(&game_dir, &archive_path))
         .await
         .map_err(error::background_error)?
@@ -288,10 +407,13 @@ async fn import_save(game_dir: String, archive_path: String) -> Result<SaveInfo,
 
 #[tauri::command]
 async fn rename_save(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
     game_dir: String,
     folder_name: String,
     new_name: String,
 ) -> Result<SaveInfo, String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_SAVES)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || {
         saves::rename_save_blocking(&game_dir, &folder_name, &new_name)
     })
@@ -300,7 +422,13 @@ async fn rename_save(
 }
 
 #[tauri::command]
-async fn delete_save(game_dir: String, folder_name: String) -> Result<(), String> {
+async fn delete_save(
+    runtime: tauri::State<'_, feature_host::HostRuntime>,
+    game_dir: String,
+    folder_name: String,
+) -> Result<(), String> {
+    runtime.ensure_feature_ready(feature_host::FEATURE_SAVES)?;
+    drop(runtime);
     tokio::task::spawn_blocking(move || saves::delete_save_blocking(&game_dir, &folder_name))
         .await
         .map_err(error::background_error)?
@@ -308,11 +436,18 @@ async fn delete_save(game_dir: String, folder_name: String) -> Result<(), String
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            if !app.manage(feature_host::initialize_host_runtime()) {
+                eprintln!("Host feature runtime state registration failed; commands remain gated.");
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             launcher_info,
+            get_host_availability,
             load_settings,
             save_settings,
             list_instances,
@@ -342,6 +477,17 @@ pub fn run() {
             rename_save,
             delete_save
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Flint");
+        .build(tauri::generate_context!())
+        .expect("error while building Flint");
+
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            match app_handle.try_state::<feature_host::HostRuntime>() {
+                Some(runtime) => runtime.shutdown(),
+                None => eprintln!(
+                    "Host feature runtime state was unavailable during exit shutdown."
+                ),
+            }
+        }
+    });
 }

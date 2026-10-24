@@ -20,6 +20,7 @@ function SavesPage({ context }: PageComponentProps) {
 export const savesFeature: FeatureDescriptor = {
   id: FEATURE_ID,
   featureVersion: "1.0.0",
+  backendRequires: ["flint.saves"],
   requires: ["flint.settings"],
   contributions: {
     pages: [

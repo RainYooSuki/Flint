@@ -25,6 +25,7 @@ function AboutPage({ context }: PageComponentProps) {
 export const aboutFeature: FeatureDescriptor = {
   id: FEATURE_ID,
   featureVersion: "1.0.0",
+  backendRequires: [],
   requires: [],
   contributions: {
     pages: [
