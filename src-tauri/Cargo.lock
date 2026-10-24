@@ -1077,11 +1077,11 @@ dependencies = [
 
 [[package]]
 name = "flint-core"
-version = "0.1.0"
+version = "2026.10.1-d1cce64"
 
 [[package]]
 name = "flint-feature-api"
-version = "0.1.0"
+version = "2026.10.1-d1cce64"
 dependencies = [
  "flint-core",
  "semver",
@@ -1091,7 +1091,7 @@ dependencies = [
 
 [[package]]
 name = "flint-provider-api"
-version = "0.1.0"
+version = "2026.10.1-d1cce64"
 dependencies = [
  "flint-core",
  "semver",

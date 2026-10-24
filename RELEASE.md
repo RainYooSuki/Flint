@@ -18,6 +18,8 @@ YYYY.M.N-<sha7>
 
 Examples: `2026.10.1-abc1234`, `2026.10.2-def5678`, `2026.11.1-987abcd`.
 
+All Cargo workspace packages share this generated release version. `src-tauri/Cargo.toml` keeps the host `[package] version` and the `[workspace.package] version` identical; each non-root member crate declares `version.workspace = true`. Release tooling updates the `Cargo.lock` entry for every workspace-local package. No Cargo workspace package may use an independent `0.x` release version.
+
 ### Monthly ordinal calculation
 
 The prepare job checks out full history, fetches all remote tags and branch tips, and reads the `flint-v*` tag inventory. Tags are resolved through `refs/tags/<tag>^{commit}`, so annotated and lightweight tags both map to the correct source commit.
@@ -28,7 +30,7 @@ If exactly one valid monthly release tag already points at the workflow `HEAD`, 
 
 The release job fetches tags again and recomputes the version immediately before publishing. If the monthly inventory changed after the build and the prepared version is stale, publishing stops.
 
-`VERSION` is a release ledger; generated package/Tauri/Cargo metadata may lag it until the next build applies a computed version. Prepare runs the version-only `validate-release.mjs --allow-divergent-metadata` mode, which requires valid versions and internally consistent generated metadata, accepts a generated year/month/N at or behind the ledger, and does not use SHA prereleases for ordering. Generated metadata ahead of the ledger still fails. The mode cannot be combined with `--version`, `--require-exact`, or asset validation; those checks remain strict after `apply-version`.
+`VERSION` is a release ledger; generated package/Tauri/Cargo workspace metadata may lag it until the next build applies a computed version. Prepare runs the version-only `validate-release.mjs --allow-divergent-metadata` mode, which requires valid versions and internally consistent generated metadata (including `[workspace.package]` and every local `Cargo.lock` package entry), accepts a generated year/month/N at or behind the ledger, and does not use SHA prereleases for ordering. Generated metadata ahead of the ledger still fails. The mode cannot be combined with `--version`, `--require-exact`, or asset validation; those checks remain strict after `apply-version`.
 
 ## Triggers
 
@@ -51,7 +53,7 @@ A repository-wide concurrency group ensures one release workflow runs at a time.
 | `macos-x64` | `macos-14` | `x86_64-apple-darwin` | `flint` |
 | `macos-arm64` | `macos-14` | `aarch64-apple-darwin` | `flint` |
 
-The matrix uses `fail-fast: false`. Each job installs frontend dependencies, applies the computed version to `VERSION`, `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock`, builds with `tauri build --no-bundle --target <triple>`, and verifies the executable architecture on Unix runners.
+The matrix uses `fail-fast: false`. Each job installs frontend dependencies, applies the computed version to the same five release paths (`VERSION`, `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock`), builds with `tauri build --no-bundle --target <triple>`, and verifies the executable architecture on Unix runners. The Cargo manifest update covers both host and workspace-package versions; the single lockfile update covers every local workspace package entry. Non-root member manifests inherit `[workspace.package]` and are not independently rewritten.
 
 ## Artifacts
 

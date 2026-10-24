@@ -1,6 +1,6 @@
 [package]
 name = "flint-core"
-version = "0.1.0"
+version.workspace = true
 description = "Shared contract primitives for Flint"
 authors = ["Flint Contributors"]
 edition = "2021"

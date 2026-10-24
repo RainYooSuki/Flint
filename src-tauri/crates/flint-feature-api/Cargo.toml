@@ -1,6 +1,6 @@
 [package]
 name = "flint-feature-api"
-version = "0.1.0"
+version.workspace = true
 description = "Framework-neutral feature lifecycle contracts and registry for Flint"
 authors = ["Flint Contributors"]
 edition = "2021"
