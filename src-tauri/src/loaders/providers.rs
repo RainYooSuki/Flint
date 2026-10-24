@@ -287,7 +287,7 @@ impl LoaderProvider for FabricLoaderProvider {
         &self,
         context: &LoaderListContext<'_>,
     ) -> Result<Vec<LoaderVersionInfo>, String> {
-        list_fabric(context)
+        list_fabric(context, LoaderKind::Fabric)
     }
 
     fn install(
@@ -309,7 +309,7 @@ impl LoaderProvider for ForgeLoaderProvider {
         &self,
         context: &LoaderListContext<'_>,
     ) -> Result<Vec<LoaderVersionInfo>, String> {
-        list_forge(context)
+        list_forge(context, LoaderKind::Forge)
     }
 
     fn install(
@@ -329,7 +329,7 @@ impl LoaderProvider for LiteLoaderProvider {
         &self,
         context: &LoaderListContext<'_>,
     ) -> Result<Vec<LoaderVersionInfo>, String> {
-        list_liteloader(context)
+        list_liteloader(context, LoaderKind::Liteloader)
     }
 
     fn install(
@@ -346,7 +346,7 @@ impl LoaderProvider for NeoForgeLoaderProvider {
         &self,
         context: &LoaderListContext<'_>,
     ) -> Result<Vec<LoaderVersionInfo>, String> {
-        list_neoforge(context)
+        list_neoforge(context, LoaderKind::Neoforge)
     }
 
     fn install(
@@ -366,7 +366,7 @@ impl LoaderProvider for OptiFineProvider {
         &self,
         context: &LoaderListContext<'_>,
     ) -> Result<Vec<LoaderVersionInfo>, String> {
-        list_optifine(context)
+        list_optifine(context, LoaderKind::Optifine)
     }
 
     fn install(
@@ -386,7 +386,7 @@ impl LoaderProvider for QuiltLoaderProvider {
         &self,
         context: &LoaderListContext<'_>,
     ) -> Result<Vec<LoaderVersionInfo>, String> {
-        list_quilt(context)
+        list_quilt(context, LoaderKind::Quilt)
     }
 
     fn install(

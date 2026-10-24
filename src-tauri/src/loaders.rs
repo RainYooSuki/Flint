@@ -175,7 +175,10 @@ fn ensure_vanilla_base(
     Ok(())
 }
 
-fn list_fabric(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>, String> {
+fn list_fabric(
+    context: &LoaderListContext<'_>,
+    loader_kind: LoaderKind,
+) -> Result<Vec<LoaderVersionInfo>, String> {
     let client = context.metadata_client();
     let game_version = context.game_version();
     let value = fetch_json(
@@ -201,7 +204,7 @@ fn list_fabric(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             result.push(LoaderVersionInfo {
-                loader: LoaderKind::Fabric,
+                loader: loader_kind,
                 version: loader_version.to_string(),
                 label: format!("Fabric Loader {loader_version}"),
                 recommended: stable,
@@ -214,7 +217,10 @@ fn list_fabric(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>
     Ok(result)
 }
 
-fn list_quilt(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>, String> {
+fn list_quilt(
+    context: &LoaderListContext<'_>,
+    loader_kind: LoaderKind,
+) -> Result<Vec<LoaderVersionInfo>, String> {
     let client = context.metadata_client();
     let game_version = context.game_version();
     let value = fetch_json(
@@ -240,7 +246,7 @@ fn list_quilt(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>,
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             result.push(LoaderVersionInfo {
-                loader: LoaderKind::Quilt,
+                loader: loader_kind,
                 version: loader_version.to_string(),
                 label: format!("Quilt Loader {loader_version}"),
                 recommended: stable || index == 0,
@@ -253,7 +259,10 @@ fn list_quilt(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>,
     Ok(result)
 }
 
-fn list_forge(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>, String> {
+fn list_forge(
+    context: &LoaderListContext<'_>,
+    loader_kind: LoaderKind,
+) -> Result<Vec<LoaderVersionInfo>, String> {
     let client = context.metadata_client();
     let game_version = context.game_version();
     let metadata = fetch_json(
@@ -288,7 +297,7 @@ fn list_forge(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>,
             continue;
         }
         result.push(LoaderVersionInfo {
-            loader: LoaderKind::Forge,
+            loader: loader_kind,
             version: loader_version.to_string(),
             label: format!("Forge {loader_version}"),
             recommended: recommended_version.as_deref() == Some(loader_version),
@@ -300,7 +309,10 @@ fn list_forge(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>,
     Ok(result)
 }
 
-fn list_neoforge(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>, String> {
+fn list_neoforge(
+    context: &LoaderListContext<'_>,
+    loader_kind: LoaderKind,
+) -> Result<Vec<LoaderVersionInfo>, String> {
     let client = context.metadata_client();
     let game_version = context.game_version();
     let legacy = game_version == "1.20.1";
@@ -326,7 +338,7 @@ fn list_neoforge(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInf
             continue;
         }
         result.push(LoaderVersionInfo {
-            loader: LoaderKind::Neoforge,
+            loader: loader_kind,
             version: loader_version.to_string(),
             label: format!("NeoForge {loader_version}"),
             recommended: false,
@@ -350,7 +362,10 @@ fn neoforge_game_prefix(game_version: &str) -> String {
     }
 }
 
-fn list_liteloader(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>, String> {
+fn list_liteloader(
+    context: &LoaderListContext<'_>,
+    loader_kind: LoaderKind,
+) -> Result<Vec<LoaderVersionInfo>, String> {
     let client = context.metadata_client();
     let game_version = context.game_version();
     let value = fetch_json(client, LITELOADER_METADATA, MAX_JSON_BYTES, "LiteLoader")?;
@@ -361,7 +376,7 @@ fn list_liteloader(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionI
             continue;
         }
         result.push(LoaderVersionInfo {
-            loader: LoaderKind::Liteloader,
+            loader: loader_kind,
             version: entry.version.clone(),
             label: format!("LiteLoader {}", entry.version),
             recommended: entry.latest,
@@ -374,7 +389,10 @@ fn list_liteloader(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionI
     Ok(result)
 }
 
-fn list_optifine(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInfo>, String> {
+fn list_optifine(
+    context: &LoaderListContext<'_>,
+    loader_kind: LoaderKind,
+) -> Result<Vec<LoaderVersionInfo>, String> {
     let client = context.metadata_client();
     let game_version = context.game_version();
     let html = fetch_text(
@@ -393,7 +411,7 @@ fn list_optifine(context: &LoaderListContext<'_>) -> Result<Vec<LoaderVersionInf
             continue;
         }
         result.push(LoaderVersionInfo {
-            loader: LoaderKind::Optifine,
+            loader: loader_kind,
             version: loader_version.clone(),
             label: format!("OptiFine {loader_version}"),
             recommended: index == 0,
