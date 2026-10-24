@@ -1,3 +1,7 @@
+mod providers;
+
+use providers::{ModProvider, ModProviderContext};
+
 use crate::{
     models::{
         InstalledModInfo, ModDependencyPlan, ModDependencyRef, ModDependencyType,
@@ -43,28 +47,16 @@ pub fn search_mods_blocking(
     validate_search_inputs(query, game_version, offset, limit)?;
     let loader = normalize_loader(loader);
     let client = net::http_client(Duration::from_secs(45))?;
-    match source {
-        ModSource::Modrinth => modrinth_search(
-            &client,
-            query.trim(),
-            game_version.trim(),
-            &loader,
-            offset,
-            limit,
-        ),
-        ModSource::Curseforge => {
-            let api_key = require_curseforge_key()?;
-            curseforge_search(
-                &client,
-                &api_key,
-                query.trim(),
-                game_version.trim(),
-                &loader,
-                offset,
-                limit,
-            )
-        }
-    }
+    let registry = providers::build_registry()?;
+    let selected = providers::select_for_source(&registry, source, &client)?;
+    selected.provider.search(
+        &selected.context,
+        query.trim(),
+        game_version.trim(),
+        &loader,
+        offset,
+        limit,
+    )
 }
 
 pub fn list_mod_versions_blocking(
@@ -77,15 +69,14 @@ pub fn list_mod_versions_blocking(
     validate_filter_text(game_version, "game version")?;
     let loader = normalize_loader(loader);
     let client = net::http_client(Duration::from_secs(45))?;
-    match source {
-        ModSource::Modrinth => {
-            modrinth_list_versions(&client, project_id, game_version.trim(), &loader)
-        }
-        ModSource::Curseforge => {
-            let api_key = require_curseforge_key()?;
-            curseforge_list_versions(&client, &api_key, project_id, game_version.trim(), &loader)
-        }
-    }
+    let registry = providers::build_registry()?;
+    let selected = providers::select_for_source(&registry, source, &client)?;
+    selected.provider.list_versions(
+        &selected.context,
+        project_id,
+        game_version.trim(),
+        &loader,
+    )
 }
 
 pub fn resolve_mod_dependencies_blocking(
@@ -102,24 +93,19 @@ pub fn resolve_mod_dependencies_blocking(
     validate_filter_text(game_version, "game version")?;
     let loader = normalize_loader(loader);
     let client = net::http_client(Duration::from_secs(60))?;
-    let api_key = if source == ModSource::Curseforge {
-        Some(require_curseforge_key()?)
-    } else {
-        None
-    };
+    let registry = providers::build_registry()?;
+    let selected = providers::select_for_source(&registry, source, &client)?;
     let root = load_root_version(
-        &client,
-        source,
-        api_key.as_deref(),
+        selected.provider,
+        &selected.context,
         project_id,
         version_id,
         game_version.trim(),
         &loader,
     )?;
     build_dependency_plan(
-        &client,
-        source,
-        api_key.as_deref(),
+        selected.provider,
+        &selected.context,
         root,
         game_version.trim(),
         &loader,
@@ -146,15 +132,11 @@ pub fn install_mod_blocking(
     let mods_dir = game_root.join("mods");
     net::ensure_directory(&mods_dir)?;
     let client = net::http_client(Duration::from_secs(600))?;
-    let api_key = if source == ModSource::Curseforge {
-        Some(require_curseforge_key()?)
-    } else {
-        None
-    };
+    let registry = providers::build_registry()?;
+    let selected = providers::select_for_source(&registry, source, &client)?;
     let root_version = load_root_version(
-        &client,
-        source,
-        api_key.as_deref(),
+        selected.provider,
+        &selected.context,
         project_id,
         version_id,
         game_version.trim(),
@@ -164,9 +146,8 @@ pub fn install_mod_blocking(
     let mut plan_required = Vec::new();
     if install_dependencies {
         let plan = build_dependency_plan(
-            &client,
-            source,
-            api_key.as_deref(),
+            selected.provider,
+            &selected.context,
             root_version.clone(),
             game_version.trim(),
             &loader,
@@ -949,37 +930,18 @@ fn curseforge_release_type(value: u64) -> String {
 }
 
 fn load_root_version(
-    client: &Client,
-    source: ModSource,
-    api_key: Option<&str>,
+    provider: &dyn ModProvider,
+    context: &ModProviderContext<'_>,
     project_id: &str,
     version_id: &str,
     game_version: &str,
     loader: &str,
 ) -> Result<ModVersionInfo, String> {
     let version_id = version_id.trim();
-    let versions = match source {
-        ModSource::Modrinth => {
-            if version_id.is_empty() {
-                modrinth_list_versions(client, project_id, game_version, loader)?
-            } else {
-                vec![modrinth_version_by_id(client, version_id)?]
-            }
-        }
-        ModSource::Curseforge => {
-            let api_key = api_key
-                .ok_or_else(|| "CurseForge API key is required for this operation.".to_string())?;
-            let versions =
-                curseforge_list_versions(client, api_key, project_id, game_version, loader)?;
-            if version_id.is_empty() {
-                versions
-            } else {
-                versions
-                    .into_iter()
-                    .filter(|version| version.id.eq_ignore_ascii_case(version_id))
-                    .collect()
-            }
-        }
+    let versions = if version_id.is_empty() {
+        provider.list_versions(context, project_id, game_version, loader)?
+    } else {
+        vec![provider.version_by_id(context, project_id, version_id, game_version, loader)?]
     };
     versions
         .into_iter()
@@ -1010,9 +972,8 @@ fn load_root_version(
 }
 
 fn build_dependency_plan(
-    client: &Client,
-    source: ModSource,
-    api_key: Option<&str>,
+    provider: &dyn ModProvider,
+    context: &ModProviderContext<'_>,
     root: ModVersionInfo,
     game_version: &str,
     loader: &str,
@@ -1020,41 +981,9 @@ fn build_dependency_plan(
     if root.download_url.is_none() {
         return Err("The selected mod version has no safe HTTPS download URL.".to_string());
     }
-    match source {
-        ModSource::Modrinth => {
-            let fetch = |dependency: &ModDependencyRef| -> Result<Option<ModVersionInfo>, String> {
-                if let Some(version_id) = dependency.version_id.as_deref() {
-                    return modrinth_version_by_id(client, version_id).map(Some);
-                }
-                if dependency.project_id.is_empty() {
-                    return Ok(None);
-                }
-                let versions =
-                    modrinth_list_versions(client, &dependency.project_id, game_version, loader)?;
-                Ok(versions.into_iter().next())
-            };
-            resolve_dependency_plan_with(root, |dependency| fetch(dependency))
-        }
-        ModSource::Curseforge => {
-            let api_key = api_key.ok_or_else(|| {
-                "CurseForge API key is required for dependency resolution.".to_string()
-            })?;
-            let fetch = |dependency: &ModDependencyRef| -> Result<Option<ModVersionInfo>, String> {
-                if dependency.project_id.is_empty() {
-                    return Ok(None);
-                }
-                let versions = curseforge_list_versions(
-                    client,
-                    api_key,
-                    &dependency.project_id,
-                    game_version,
-                    loader,
-                )?;
-                Ok(versions.into_iter().next())
-            };
-            resolve_dependency_plan_with(root, |dependency| fetch(dependency))
-        }
-    }
+    resolve_dependency_plan_with(root, |dependency| {
+        provider.dependency_version(context, dependency, game_version, loader)
+    })
 }
 
 fn resolve_dependency_plan_with<F>(
