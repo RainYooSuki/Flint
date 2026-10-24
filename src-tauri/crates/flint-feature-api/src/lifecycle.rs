@@ -5,9 +5,8 @@ use std::{
 };
 
 use crate::{
-    ApiVersion, FeatureAvailability, FeatureAvailabilitySnapshot, FeatureDescriptor,
-    FeatureHealth, FeatureId, FeatureInitContext, FeatureRegistry, FeatureState, HostState,
-    ProviderRequirement,
+    FeatureAvailability, FeatureAvailabilitySnapshot, FeatureDescriptor, FeatureHealth, FeatureId,
+    FeatureInitContext, FeatureRegistry, FeatureState, HostState, ProviderRequirement,
 };
 
 /// Provider selection state supplied by the host before or during feature startup.
@@ -359,7 +358,7 @@ impl LifecycleCoordinator {
             return Ok(StartupOutcome::StartupFailed);
         }
 
-        if let Some(required_unready) = self
+        let required_unready = self
             .registry
             .descriptors()
             .find(|descriptor| {
@@ -367,8 +366,9 @@ impl LifecycleCoordinator {
                     && self.feature_states.get(&descriptor.id).copied()
                         != Some(FeatureState::Ready)
             })
-            .map(|descriptor| descriptor.id.clone())
-        {
+            .map(|descriptor| descriptor.id.clone());
+
+        if let Some(required_unready) = required_unready {
             let reason = "a required feature is not ready";
             self.apply_failure_roots(
                 std::slice::from_ref(&required_unready),

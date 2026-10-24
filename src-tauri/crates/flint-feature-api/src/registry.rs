@@ -5,10 +5,7 @@ use std::{
 
 use semver::{Version, VersionReq};
 
-use crate::{
-    ApiVersion, FeatureDescriptor, FeatureId, FeatureInitializer, ProviderRequirement,
-    StartupPolicy,
-};
+use crate::{ApiVersion, FeatureDescriptor, FeatureId, FeatureInitializer};
 use crate::id::validate_namespaced_id;
 
 /// A validated feature descriptor paired with its single registration-time initializer.
@@ -565,6 +562,7 @@ mod tests {
     use semver::{Version, VersionReq};
 
     use super::*;
+    use crate::{ProviderRequirement, StartupPolicy};
     use crate::{
         ContributionDescriptor, ContributionId, ContributionKind, FeatureHealth,
         FeatureInitError, FeatureRequirement, FeatureRuntime,
