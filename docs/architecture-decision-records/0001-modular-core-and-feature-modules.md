@@ -1,4 +1,4 @@
-# ADR 0001: Modular Core and Feature Modules
+# Architecture Decision Record 0001: Modular Core and Feature Modules
 
 ## Status
 
@@ -43,7 +43,7 @@ Canonical ownership:
 
 - [`ARCHITECTURE.md`](../ARCHITECTURE.md) is the canonical detailed source for boundaries, provider/registry semantics, lifecycle, frontend contributions, and migration phases.
 - [`DEVELOPMENT_STANDARDS.md`](../DEVELOPMENT_STANDARDS.md) owns process, checklists, and concise mandatory summaries.
-- This ADR records rationale, the decision summary, consequences, and rejected alternatives.
+- This Architecture Decision Record documents rationale, the decision summary, consequences, and rejected alternatives.
 - [`README.md`](../README.md) remains the index and source-of-truth map.
 
 ## Consequences
@@ -87,7 +87,7 @@ Relying on Cargo dependencies or TypeScript imports alone to enforce every layer
 
 ### Immediate arbitrary native runtime plugins
 
-Loading arbitrary native libraries at runtime was rejected for the initial architecture. A workable design needs a stable ABI, compatibility negotiation, trusted installation, provenance/signature policy, capability grants, isolation, resource limits, crash containment, update/removal semantics, and a plan for plugin-provided UI. Those requirements are not satisfied by adding a registry key or a dynamic library loader. Runtime plugins remain deferred pending a separate accepted ADR and threat model.
+Loading arbitrary native libraries at runtime was rejected for the initial architecture. A workable design needs a stable ABI, compatibility negotiation, trusted installation, provenance/signature policy, capability grants, isolation, resource limits, crash containment, update/removal semantics, and a plan for plugin-provided UI. Those requirements are not satisfied by adding a registry key or a dynamic library loader. Runtime plugins remain deferred pending a separate accepted Architecture Decision Record and threat model.
 
 ### Provider-to-provider dependency graphs
 
@@ -109,7 +109,7 @@ Splitting every current Rust file into a crate before the provider and frontend 
 4. **Pending Phase 4:** extract the Cargo workspace/module crates and implement the canonical Rust feature lifecycle, affected-set propagation, `StartupFailed`/`RuntimeFailed` fatal paths, every-Required-Ready degraded invariant, unavailable commands, active-feature snapshot/filtering, reverse shutdown, and Tauri `RunEvent::Exit` integration.
 5. **Partial:** `scripts/check-architecture.mjs` and its tests are implemented and gated at `--phase 2` in dedicated and release CI. That gate covers import/selection boundaries, forbidden std/process/fs patterns, and exact allowlists while allowing reqwest/shared-client and reviewed parent-helper waivers; it does not enforce full typed ports. Advance Phase 3+, full typed-port, and Cargo/TypeScript full graph gates with their phases.
 6. **Pending Phase 5:** remove temporary dispatch paths and checker waivers, complete settings/instance-action migration, and update implementation status in [`ARCHITECTURE.md`](../ARCHITECTURE.md) and the index in [`README.md`](../README.md).
-7. Require a new accepted ADR before runtime plugin loading, remote UI, dynamic command registration, provider-to-provider dependencies, or any weakening of the dependency/security/allowlist rules.
+7. Require a new accepted Architecture Decision Record before runtime plugin loading, remote UI, dynamic command registration, provider-to-provider dependencies, or any weakening of the dependency/security/allowlist rules.
 
 ## Links
 

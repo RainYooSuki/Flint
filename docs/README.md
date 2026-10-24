@@ -16,7 +16,7 @@ The application currently ships as a **partially modularized monolith**:
 
 The full typed provider ports, target Cargo workspace, extracted crates, Rust feature lifecycle/composition root, complete four-slot frontend migration, and active-feature filtering remain planned. See the canonical phase-status table in [`ARCHITECTURE.md`](ARCHITECTURE.md#canonical-migration-phase-status), and [`DEVELOPMENT_STANDARDS.md`](DEVELOPMENT_STANDARDS.md) for the phase applicability matrix and concise current-phase cross-reference.
 
-Canonical ownership: [`ARCHITECTURE.md`](ARCHITECTURE.md) is the detailed source for boundaries, provider/registry semantics, lifecycle, frontend contributions, and phases; [`DEVELOPMENT_STANDARDS.md`](DEVELOPMENT_STANDARDS.md) owns process/checklists/concise summaries; the [`ADR`](adr/0001-modular-core-and-feature-modules.md) records rationale/consequences; this README is the index/source-of-truth map.
+Canonical ownership: [`ARCHITECTURE.md`](ARCHITECTURE.md) is the detailed source for boundaries, provider/registry semantics, lifecycle, frontend contributions, and phases; [`DEVELOPMENT_STANDARDS.md`](DEVELOPMENT_STANDARDS.md) owns process/checklists/concise summaries; the [Architecture Decision Record](architecture-decision-records/0001-modular-core-and-feature-modules.md) documents rationale/consequences; this README is the index/source-of-truth map.
 
 ## Documentation index
 
@@ -25,7 +25,7 @@ Canonical ownership: [`ARCHITECTURE.md`](ARCHITECTURE.md) is the detailed source
 | [`README.md`](README.md) | Documentation index, reading order, and source-of-truth map. | Current |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Canonical current baseline, phase-status table, target design, provider/registry/lifecycle/event rules, frontend contributions, and migration phases. | Current design; Phase 1/2 milestones implemented but both phases partial; Phase 3 partial |
 | [`DEVELOPMENT_STANDARDS.md`](DEVELOPMENT_STANDARDS.md) | Phase applicability/transition matrix, concise cross-reference to the canonical phase-status table, and mandatory before-work, module-admission, provider, security, documentation, review, and delivery standards. | Current policy |
-| [`adr/0001-modular-core-and-feature-modules.md`](adr/0001-modular-core-and-feature-modules.md) | Accepted architecture decision, consequences, rejected alternatives, and status-tracked follow-ups. | Accepted; implementation in progress |
+| [`architecture-decision-records/0001-modular-core-and-feature-modules.md`](architecture-decision-records/0001-modular-core-and-feature-modules.md) | Accepted architecture decision, consequences, rejected alternatives, and status-tracked follow-ups. | Accepted; implementation in progress |
 | [`API_CONTRACT.md`](API_CONTRACT.md) | Base frontend/backend commands, DTOs, events, and behavioral rules. | Current RPC source of truth |
 | [`FEATURE_API_CONTRACT.md`](FEATURE_API_CONTRACT.md) | Extended account, loader, mod, and save commands, DTOs, events, and UI expectations. | Current RPC source of truth |
 | [`INTEGRATIONS.md`](INTEGRATIONS.md) | External account/mod-catalog setup, local storage, privacy, and current-instance behavior. | Current operational guidance |
@@ -45,7 +45,7 @@ Canonical ownership: [`ARCHITECTURE.md`](ARCHITECTURE.md) is the detailed source
 | How are dependency boundaries enforced? | [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`DEVELOPMENT_STANDARDS.md`](DEVELOPMENT_STANDARDS.md) | The implemented checker/tests run at `--phase 2` in dedicated and release CI, enforcing module/provider import and selection boundaries, forbidden std/process/fs patterns, and exact allowlists while allowing reqwest/shared-client and reviewed parent-helper waivers. It does not enforce full typed ports. Phase 3+ TypeScript gates, full typed-port enforcement, and Phase 4 Cargo workspace metadata gates are not active yet. |
 | How is review and completion handled? | [`DEVELOPMENT_STANDARDS.md`](DEVELOPMENT_STANDARDS.md) | Independent logic review, no reviewer-run local build/test, CI authority, active `--phase 2` milestone checker gate (not full typed-port acceptance), local commit only unless push is requested. |
 | How is an external account or mod-catalog integration configured, and where is local data stored? | [`INTEGRATIONS.md`](INTEGRATIONS.md) | Do not move secrets or storage paths based on this index alone. |
-| Why was the modular architecture chosen, and what alternatives were rejected? | [`adr/0001-modular-core-and-feature-modules.md`](adr/0001-modular-core-and-feature-modules.md) | The ADR records rationale; it does not replace current contracts. |
+| Why was the modular architecture chosen, and what alternatives were rejected? | [`architecture-decision-records/0001-modular-core-and-feature-modules.md`](architecture-decision-records/0001-modular-core-and-feature-modules.md) | The Architecture Decision Record documents rationale; it does not replace current contracts. |
 | What was the last recorded quality/readiness snapshot? | [`CODE_REVIEW.md`](CODE_REVIEW.md) | Do not treat it as evidence for a later or different commit. |
 
 The repository source remains the evidence of what is implemented. A mismatch between current source and a current contract is a defect to resolve; a planned architecture document does not make an unimplemented path real.
@@ -54,7 +54,7 @@ The repository source remains the evidence of what is implemented. A mismatch be
 
 1. [`ARCHITECTURE.md`](ARCHITECTURE.md): read the canonical phase-status table first, then the current baseline, target rules, provider/lifecycle/event semantics, phase-2 milestone checker scope, and remaining migration sequence.
 2. [`DEVELOPMENT_STANDARDS.md`](DEVELOPMENT_STANDARDS.md): start with the partial-Phase 1/2 plus partial-Phase 3 cross-reference and transition path, then use the phase matrix and apply the implementation, security, checklist, review, and delivery rules.
-3. [`adr/0001-modular-core-and-feature-modules.md`](adr/0001-modular-core-and-feature-modules.md): understand why the architecture was accepted and which alternatives were rejected.
+3. [`architecture-decision-records/0001-modular-core-and-feature-modules.md`](architecture-decision-records/0001-modular-core-and-feature-modules.md): understand why the architecture was accepted and which alternatives were rejected.
 4. Read [`API_CONTRACT.md`](API_CONTRACT.md) and [`FEATURE_API_CONTRACT.md`](FEATURE_API_CONTRACT.md) for the area being changed.
 5. Read [`INTEGRATIONS.md`](INTEGRATIONS.md) for setup, local storage, privacy, and selected-instance behavior.
 6. Use [`CODE_REVIEW.md`](CODE_REVIEW.md) only as a historical readiness snapshot, not as current CI evidence.
@@ -63,7 +63,7 @@ The repository source remains the evidence of what is implemented. A mismatch be
 
 - Label behavior as **Implemented**, **Partially implemented**, **Planned**, or **Deferred**, and identify the migration phase/milestone. Never present full typed provider ports, target-only extracted crates, the Rust feature lifecycle/composition root, active-feature filtering, mounted settings/instance-action slots, or later-phase checker gates as implemented/active before they are.
 - Use only relative Markdown links that resolve inside `docs/`. Do not link to another checkout, an external site, or a repository file outside the documentation tree.
-- Update the affected authoritative contract for every public behavior change. Update both RPC contract files only when a shared model, command, or event surface is affected. Update architecture, ADR, standards, and this index when a boundary, phase, or migration status changes.
+- Update the affected authoritative contract for every public behavior change. Update both RPC contract files only when a shared model, command, or event surface is affected. Update architecture, Architecture Decision Record, standards, and this index when a boundary, phase, or migration status changes.
 - Keep headings concrete and maintainable. Avoid marketing language and unrelated comparisons.
 - Do not introduce names, branding, identifiers, copied text, or copied code from other projects. References may inform expected behavior only; implementation and documentation must be original.
 - Do not mention unrelated products anywhere in this documentation set.

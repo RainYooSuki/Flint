@@ -15,7 +15,7 @@ The canonical phase-status table is [`ARCHITECTURE.md`](ARCHITECTURE.md#canonica
 Current summary: Phase 1 and Phase 2 provider **registry/selection milestones** are implemented, but both phases remain **partial** because full typed provider contexts/ports and full checker port enforcement are deferred to Phase 4/5. Phase 3 page/navigation contributions are implemented, while `settingsSections`/`instanceActions` remain unpopulated and unmounted. The active checker is a `--phase 2` milestone gate, not full-phase acceptance. Phase 4/5 remain pending.
 
 Future work follows this partial-Phase 1/2 plus partial-Phase 3 boundary: use the implemented provider registries for mod/loader changes, use page/navigation contributions for page/nav work, do not claim or populate an unmounted settingsSection/instanceAction slot, and do not treat Phase 3+ or full-port checker behavior as active until that gate is explicitly advanced.
-Canonical ownership: [ARCHITECTURE.md](ARCHITECTURE.md) is the detailed source for boundaries, provider/registry semantics, lifecycle, frontend contributions, and phases. This document owns process, checklists, and concise mandatory summaries; it links to the architecture instead of duplicating detailed mechanics. The ADR records rationale/consequences, and [README.md](README.md) is the index/source-of-truth map.
+Canonical ownership: [ARCHITECTURE.md](ARCHITECTURE.md) is the detailed source for boundaries, provider/registry semantics, lifecycle, frontend contributions, and phases. This document owns process, checklists, and concise mandatory summaries; it links to the architecture instead of duplicating detailed mechanics. The Architecture Decision Record documents rationale/consequences, and [README.md](README.md) is the index/source-of-truth map.
 
 ## Sources of truth and precedence
 
@@ -23,7 +23,7 @@ Canonical ownership: [ARCHITECTURE.md](ARCHITECTURE.md) is the detailed source f
 2. The applicable sections of [`API_CONTRACT.md`](API_CONTRACT.md) and [`FEATURE_API_CONTRACT.md`](FEATURE_API_CONTRACT.md) govern externally visible frontend/backend commands, arguments, DTO fields, enum strings, events, and behavioral rules. Update both only when a shared model, command, or event surface is affected.
 3. [`ARCHITECTURE.md`](ARCHITECTURE.md) is the canonical detailed source for internal boundaries, dependency direction, provider/registry semantics, lifecycle, frontend contributions, target layout, and migration sequencing. This document provides process, checklists, and concise summaries with links to that detail.
 4. This document governs implementation process, quality bars, review, and delivery.
-5. [`adr/0001-modular-core-and-feature-modules.md`](adr/0001-modular-core-and-feature-modules.md) records why the architecture decision was made. It does not override the contracts or detailed architecture.
+5. [`architecture-decision-records/0001-modular-core-and-feature-modules.md`](architecture-decision-records/0001-modular-core-and-feature-modules.md) records why the architecture decision was made. It does not override the contracts or detailed architecture.
 6. [`INTEGRATIONS.md`](INTEGRATIONS.md) records current integration setup and local-storage guidance.
 7. [`CODE_REVIEW.md`](CODE_REVIEW.md) is a point-in-time quality and readiness snapshot, not standing proof that a later change has passed anything.
 

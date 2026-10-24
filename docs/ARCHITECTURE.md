@@ -40,7 +40,7 @@ Architecture, module boundaries, and internal registries must not rewrite those 
 Related documents:
 
 - [`DEVELOPMENT_STANDARDS.md`](DEVELOPMENT_STANDARDS.md) contains mandatory implementation and review rules.
-- [`adr/0001-modular-core-and-feature-modules.md`](adr/0001-modular-core-and-feature-modules.md) records the accepted decision.
+- [`architecture-decision-records/0001-modular-core-and-feature-modules.md`](architecture-decision-records/0001-modular-core-and-feature-modules.md) records the accepted decision.
 - [`README.md`](README.md) is the documentation index.
 
 ## Purpose
@@ -940,7 +940,7 @@ Scope:
 
 - Remove temporary compatibility shims, unused exports, and in-place pilot structures that duplicate extracted contracts.
 - Tighten tests for failure/shutdown paths, provider registry edge cases, stale UI requests, path traversal, archive limits, and redaction.
-- Update architecture status, ADR implementation state, standards, and the documentation index.
+- Update architecture status, Architecture Decision Record implementation state, standards, and the documentation index.
 
 Acceptance criteria:
 
@@ -965,7 +965,7 @@ A future proposal must first define:
 - a prohibition on arbitrary remote UI and an explicit rule for how any plugin-provided UI is reviewed and bundled;
 - migration and uninstall behavior for persisted plugin data.
 
-Until a separate accepted ADR exists, all registrations are compile-time and the application must remain a modular monolith.
+Until a separate accepted Architecture Decision Record exists, all registrations are compile-time and the application must remain a modular monolith.
 
 ## Architecture acceptance gates
 
