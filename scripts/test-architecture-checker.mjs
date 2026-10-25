@@ -227,7 +227,7 @@ test("phase-3 workspace foundation parser recognizes the exact reviewed members"
     "",
     "[workspace]",
     'resolver = "2"',
-    'members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-accounts", "modules/flint-feature-vanilla", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"]',
+    'members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-accounts", "modules/flint-feature-launch", "modules/flint-feature-vanilla", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"]',
     "",
     "[dependencies]",
     'flint-core = { path = "crates/flint-core" }',
@@ -236,7 +236,7 @@ test("phase-3 workspace foundation parser recognizes the exact reviewed members"
   assert.deepEqual(foundation, {
     present: true,
     resolver: "2",
-    members: [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-accounts", "modules/flint-feature-vanilla", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"],
+    members: [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-accounts", "modules/flint-feature-launch", "modules/flint-feature-vanilla", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"],
   });
   assert.equal(foundation.members.includes("crates/flint-feature-api"), true);
   assert.equal(foundation.members.some((member) => member.includes("*")), false);
@@ -338,10 +338,10 @@ test("loader provider lock entries share the host workspace version", () => {
 
 test("extracted feature waves use exact manifests, edges, directories, and locks", () => {
   const specs = reviewedFeatureCrateSpecs();
-  assert.equal(specs.length, 4);
+  assert.equal(specs.length, 5);
   assert.deepEqual(
     specs.map((spec) => spec.crateName),
-    ["flint-feature-settings", "flint-feature-saves", "flint-feature-accounts", "flint-feature-vanilla"],
+    ["flint-feature-settings", "flint-feature-saves", "flint-feature-accounts", "flint-feature-vanilla", "flint-feature-launch"],
   );
   assert.deepEqual(
     specs.find((spec) => spec.crateName === "flint-feature-settings").dependencies,
@@ -358,6 +358,10 @@ test("extracted feature waves use exact manifests, edges, directories, and locks
   assert.deepEqual(
     specs.find((spec) => spec.crateName === "flint-feature-vanilla").dependencies,
     ["flint-core", "flint-feature-api", "regex", "reqwest", "serde", "serde_json", "sha1"],
+  );
+  assert.deepEqual(
+    specs.find((spec) => spec.crateName === "flint-feature-launch").dependencies,
+    ["flint-core", "flint-feature-accounts", "flint-feature-api", "flint-feature-settings", "flint-feature-vanilla", "serde", "serde_json", "zip"],
   );
   for (const spec of specs) {
     const manifest = [
@@ -434,7 +438,7 @@ test("extracted feature waves use exact manifests, edges, directories, and locks
     1,
   );
   const targets = reviewedFeatureTargets();
-  assert.equal(targets.length, 4);
+  assert.equal(targets.length, 5);
   for (const target of targets) {
     assert.equal(target.role, "feature-leaf");
     assert.equal(target.externalRoots.includes("tauri"), false);
@@ -462,6 +466,14 @@ test("extracted feature waves use exact manifests, edges, directories, and locks
   assert.deepEqual(
     targets.find((target) => target.file.includes("flint-feature-vanilla")).localTargets,
     ["install", "java", "version"],
+  );
+  assert.deepEqual(
+    targets.find((target) => target.file.includes("flint-feature-launch")).externalRoots,
+    ["flint_core", "flint_feature_accounts", "flint_feature_api", "flint_feature_settings", "flint_feature_vanilla", "serde", "serde_json", "std", "zip"],
+  );
+  assert.deepEqual(
+    targets.find((target) => target.file.includes("flint-feature-launch")).localTargets,
+    [],
   );
 });
 
@@ -609,6 +621,7 @@ test("host command gate map covers exactly the 28 feature commands and reviewed 
   assert.equal(reviewedHostRustModuleIds().includes("auth"), false);
   assert.equal(reviewedHostRustModuleIds().includes("java"), false);
   assert.equal(reviewedHostRustModuleIds().includes("version"), false);
+  assert.equal(reviewedHostRustModuleIds().includes("launch"), false);
 });
 
 test("host command gate audit requires exact feature ownership, managed state, and one handler per command", () => {

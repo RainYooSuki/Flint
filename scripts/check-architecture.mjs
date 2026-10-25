@@ -19,7 +19,7 @@ const FRONTEND_ROOT = path.join(REPO_ROOT, "src");
 const RUST_SOURCE_ROOT = path.join(REPO_ROOT, "src-tauri", "src");
 const RUST_MANIFEST = path.join(REPO_ROOT, "src-tauri", "Cargo.toml");
 const PROVIDER_API_SOURCE = "src-tauri/crates/flint-provider-api/src/lib.rs";
-const FOUNDATION_WORKSPACE_MEMBERS = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-accounts", "modules/flint-feature-vanilla", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"];
+const FOUNDATION_WORKSPACE_MEMBERS = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-accounts", "modules/flint-feature-launch", "modules/flint-feature-vanilla", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"];
 const COMPOSITION_ROOT = "src/app/composition.ts";
 const CONTRIBUTIONS_CONTRACT = "src/core/contributions.ts";
 const toPosix = (value) => value.split(path.sep).join("/");
@@ -991,13 +991,12 @@ function moduleParts(moduleId) {
 function moduleId(parts) {
   return parts.length === 0 ? "crate" : parts.join("::");
 }
-const RUST_MODULE_ALLOWLIST = new Set(["crate", "main", "feature_host", "install", "launch", "loaders", "models", "mods", "provider_composition"]);
+const RUST_MODULE_ALLOWLIST = new Set(["crate", "main", "feature_host", "install", "loaders", "models", "mods", "provider_composition"]);
 const RUST_MODULE_EDGE_ALLOWLIST = new Map(Object.entries({
-  crate: ["feature_host", "install", "launch", "loaders", "models", "mods", "provider_composition"],
+  crate: ["feature_host", "install", "loaders", "models", "mods", "provider_composition"],
   main: [],
   feature_host: ["provider_composition"],
   install: ["models"],
-  launch: ["models"],
   loaders: ["install", "models"],
   models: [],
   mods: ["models"],
@@ -1448,6 +1447,7 @@ const FEATURE_PRIVATE_MODULE_NAMES = new Set([
   "auth",
   "java",
   "version",
+  "launch",
 ]);
 // Exact provider files/import roots. transitional entries are named and expire at phase 5.
 const providerTarget = (file, role, localTargets, transitional = {}, external = ["std", "semver", "flint_core"]) => ({
@@ -1571,6 +1571,13 @@ const FEATURE_CRATE_SPECS = [
     source: "src-tauri/modules/flint-feature-vanilla/src/lib.rs",
     dependencies: ["flint-core", "flint-feature-api", "regex", "reqwest", "serde", "serde_json", "sha1"],
     localModules: ["install", "java", "version"],
+  },
+  {
+    crateName: "flint-feature-launch",
+    manifest: "src-tauri/modules/flint-feature-launch/Cargo.toml",
+    source: "src-tauri/modules/flint-feature-launch/src/lib.rs",
+    dependencies: ["flint-core", "flint-feature-accounts", "flint-feature-api", "flint-feature-settings", "flint-feature-vanilla", "serde", "serde_json", "zip"],
+    localModules: [],
   },
 ];
 export function reviewedFeatureCrateSpecs() {
@@ -2302,9 +2309,10 @@ function checkFeatureCrateGate(phase, graph, report) {
     "src-tauri/src/auth.rs",
     "src-tauri/src/java.rs",
     "src-tauri/src/version.rs",
+    "src-tauri/src/launch.rs",
   ]) {
     if (fs.existsSync(path.join(REPO_ROOT, legacy))) {
-      report("RUST-FEATURE-LEGACY-001", legacy, 1, "settings/saves/accounts/vanilla implementations must live only in their extracted feature crates.");
+      report("RUST-FEATURE-LEGACY-001", legacy, 1, "settings/saves/accounts/vanilla/launch implementations must live only in their extracted feature crates.");
     }
   }
 }
@@ -2383,6 +2391,7 @@ const EXTRACTED_FEATURE_DEPENDENCIES = new Map([
   ["flint-feature-settings", ["flint-core", "flint-feature-api"]],
   ["flint-feature-saves", ["flint-core", "flint-feature-api"]],
   ["flint-feature-accounts", ["flint-core", "flint-feature-api", "flint-feature-settings"]],
+  ["flint-feature-launch", ["flint-core", "flint-feature-api", "flint-feature-accounts", "flint-feature-vanilla", "flint-feature-settings"]],
   ["flint-feature-vanilla", ["flint-core", "flint-feature-api"]],
 ]);
 const CARGO_RULES = new Map([

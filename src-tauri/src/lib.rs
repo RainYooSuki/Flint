@@ -1,6 +1,5 @@
 mod feature_host;
 mod install;
-mod launch;
 mod loaders;
 mod models;
 mod mods;
@@ -8,6 +7,7 @@ mod provider_composition;
 
 pub(crate) use flint_core::{error, net, paths};
 pub(crate) use flint_feature_accounts as auth;
+pub(crate) use flint_feature_launch as launch;
 pub(crate) use flint_feature_saves as saves;
 pub(crate) use flint_feature_settings as settings;
 pub(crate) use flint_feature_vanilla as vanilla;

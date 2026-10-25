@@ -1,11 +1,10 @@
-use crate::{
-    auth, java,
-    models::{LaunchRequest, LaunchResult},
-    paths::{is_safe_relative_path, safe_join},
-    settings,
-    version::{self, Platform, RuleContext},
+use flint_core::paths::{
+    component_is_safe, is_safe_relative_path, resolve_game_dir, safe_join,
 };
-
+use flint_feature_accounts as auth;
+use flint_feature_settings as settings;
+use flint_feature_vanilla::{java, version::{self, Platform, RuleContext}};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -16,6 +15,29 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use zip::ZipArchive;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchRequest {
+    pub game_dir: String,
+    pub instance_id: String,
+    pub java_path: String,
+    pub username: String,
+    pub min_memory_mb: u32,
+    pub max_memory_mb: u32,
+    pub jvm_args: String,
+    pub game_args: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchResult {
+    pub pid: u32,
+    pub command: String,
+    pub log_path: String,
+}
 
 const MAX_NATIVE_ENTRIES: usize = 10_000;
 const MAX_NATIVE_FILE_BYTES: u64 = 128 * 1024 * 1024;
@@ -31,7 +53,7 @@ pub fn launch_blocking(request: LaunchRequest) -> Result<LaunchResult, String> {
     validate_launch_request(&request)?;
     version::validate_version_id(&request.instance_id)?;
 
-    let root = crate::paths::resolve_game_dir(&request.game_dir);
+    let root = resolve_game_dir(&request.game_dir);
     fs::create_dir_all(&root)
         .map_err(|error| format!("Cannot create game directory ({}): {error}", root.display()))?;
     let resolved = version::resolve_version(&root, &request.instance_id)?;
@@ -121,7 +143,7 @@ pub fn launch_blocking(request: LaunchRequest) -> Result<LaunchResult, String> {
         .and_then(|value| value.get("file"))
         .and_then(|value| value.get("id"))
         .and_then(Value::as_str)
-        .filter(|id| crate::paths::component_is_safe(id))
+        .filter(|id| component_is_safe(id))
         .map(|id| assets_dir.join("log_configs").join(id))
         .filter(|path| path.is_file());
 

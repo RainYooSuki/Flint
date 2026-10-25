@@ -1060,6 +1060,7 @@ dependencies = [
  "flint-core",
  "flint-feature-accounts",
  "flint-feature-api",
+ "flint-feature-launch",
  "flint-feature-saves",
  "flint-feature-settings",
  "flint-feature-vanilla",
@@ -1153,6 +1154,20 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
+]
+
+[[package]]
+name = "flint-feature-launch"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "flint-core",
+ "flint-feature-accounts",
+ "flint-feature-api",
+ "flint-feature-settings",
+ "flint-feature-vanilla",
+ "serde",
+ "serde_json",
+ "zip",
 ]
 
 [[package]]

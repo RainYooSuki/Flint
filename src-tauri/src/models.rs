@@ -20,29 +20,7 @@ pub use flint_feature_vanilla::{
     InstallProgress, InstallResult, InstanceInfo, JavaInfo, RemoteVersion,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct LaunchRequest {
-    pub game_dir: String,
-    pub instance_id: String,
-    pub java_path: String,
-    pub username: String,
-    pub min_memory_mb: u32,
-    pub max_memory_mb: u32,
-    pub jvm_args: String,
-    pub game_args: String,
-    pub width: u32,
-    pub height: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct LaunchResult {
-    pub pid: u32,
-    pub command: String,
-    pub log_path: String,
-}
-
+pub use flint_feature_launch::{LaunchRequest, LaunchResult};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]

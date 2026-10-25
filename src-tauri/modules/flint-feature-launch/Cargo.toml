@@ -1,0 +1,18 @@
+[package]
+name = "flint-feature-launch"
+version.workspace = true
+description = "Minecraft instance launch feature for Flint"
+authors = ["Flint Contributors"]
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+[dependencies]
+flint-core = { path = "../../crates/flint-core" }
+flint-feature-api = { path = "../../crates/flint-feature-api" }
+flint-feature-accounts = { path = "../flint-feature-accounts" }
+flint-feature-settings = { path = "../flint-feature-settings" }
+flint-feature-vanilla = { path = "../flint-feature-vanilla" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zip = { version = "=2.2.2", default-features = false, features = ["deflate"] }
