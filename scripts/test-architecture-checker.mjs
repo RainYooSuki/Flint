@@ -968,17 +968,17 @@ test("loader provider composition requires six leaf descriptors, keys, construct
   ].join("\n");
   assert.deepEqual(evaluateLoaderProviderComposition(source), []);
   assert.equal(
-    evaluateLoaderProviderComposition(source.replace("QUILT_SELECTION_KEY", "OTHER_KEY"))
+    evaluateLoaderProviderComposition(source.replaceAll("QUILT_SELECTION_KEY", "OTHER_KEY"))
       .some((issue) => issue.message.includes("QUILT_SELECTION_KEY")),
     true,
   );
   assert.equal(
-    evaluateLoaderProviderComposition(source.replace("OPTIFINE_LOADER_DESCRIPTOR", "OTHER_DESCRIPTOR"))
+    evaluateLoaderProviderComposition(source.replaceAll("OPTIFINE_LOADER_DESCRIPTOR", "OTHER_DESCRIPTOR"))
       .some((issue) => issue.message.includes("OPTIFINE_LOADER_DESCRIPTOR")),
     true,
   );
   assert.equal(
-    evaluateLoaderProviderComposition(source.replace("QuiltLoaderProvider::new", "OtherProvider::new"))
+    evaluateLoaderProviderComposition(source.replaceAll("QuiltLoaderProvider::new", "OtherProvider::new"))
       .some((issue) => issue.message.includes("QuiltLoaderProvider::new")),
     true,
   );
