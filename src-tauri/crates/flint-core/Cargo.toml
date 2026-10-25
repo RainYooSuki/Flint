@@ -1,9 +1,13 @@
 [package]
 name = "flint-core"
 version.workspace = true
-description = "Shared contract primitives for Flint"
+description = "Shared policy, typed ports, and contract primitives for Flint"
 authors = ["Flint Contributors"]
 edition = "2021"
 rust-version = "1.90"
 
 [dependencies]
+dirs = "5"
+reqwest = { version = "=0.12.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+serde_json = "1"
+sha1 = "=0.10.6"

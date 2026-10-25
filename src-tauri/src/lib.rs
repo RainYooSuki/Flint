@@ -1,5 +1,4 @@
 mod auth;
-mod error;
 mod feature_host;
 mod install;
 mod java;
@@ -7,11 +6,11 @@ mod launch;
 mod loaders;
 mod models;
 mod mods;
-mod net;
-mod paths;
 mod saves;
 mod settings;
 mod version;
+
+pub(crate) use flint_core::{error, net, paths};
 
 use models::{
     AccountInfo, InstallResult, InstalledModInfo, InstanceInfo, JavaInfo, LaunchRequest,

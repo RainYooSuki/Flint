@@ -105,13 +105,13 @@ test("provider API policy targets the extracted crate and drops the host-local m
   const modAdapter = targets.find((target) => target.role === "mod-provider-adapter");
   assert.ok(modAdapter);
   assert.deepEqual(modAdapter.localTargets, ["models"]);
-  assert.deepEqual(modAdapter.externalRoots, ["flint_provider_api", "reqwest", "std"]);
+  assert.deepEqual(modAdapter.externalRoots, ["flint_core", "flint_provider_api", "reqwest", "std"]);
   const loaderAdapterTarget = targets.find(
     (target) => target.role === "loader-provider-adapter" && target.file === loaderAdapter,
   );
   assert.ok(loaderAdapterTarget);
   assert.deepEqual(loaderAdapterTarget.localTargets, ["loader_api", "models"]);
-  assert.deepEqual(loaderAdapterTarget.externalRoots, ["flint_provider_api", "reqwest", "std"]);
+  assert.deepEqual(loaderAdapterTarget.externalRoots, ["flint_core", "flint_provider_api", "reqwest", "std"]);
 
   const violations = [];
   const report = (rule, file, line, message) => violations.push({ rule, file, line, message });
@@ -172,6 +172,9 @@ test("host command gate map covers exactly the 28 feature commands and reviewed 
     "flint.saves": 6,
   });
   assert.equal(reviewedHostRustModuleIds().includes("feature_host"), true);
+  assert.equal(reviewedHostRustModuleIds().includes("error"), false);
+  assert.equal(reviewedHostRustModuleIds().includes("net"), false);
+  assert.equal(reviewedHostRustModuleIds().includes("paths"), false);
 });
 
 test("host command gate audit requires exact feature ownership, managed state, and one handler per command", () => {

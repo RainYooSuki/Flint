@@ -1078,6 +1078,12 @@ dependencies = [
 [[package]]
 name = "flint-core"
 version = "2026.10.1-d1cce64"
+dependencies = [
+ "dirs 5.0.1",
+ "reqwest 0.12.12",
+ "serde_json",
+ "sha1",
+]
 
 [[package]]
 name = "flint-feature-api"

@@ -67,11 +67,11 @@ pub fn download_atomic(
 ) -> Result<u64, String> {
     validate_https_url(url)?;
     if let Some(expected) = expected_sha1 {
-        if !super::paths::is_sha1_hex(expected) {
+        if !crate::paths::is_sha1_hex(expected) {
             return Err(format!("Invalid SHA-1 supplied for {label}."));
         }
         if destination.is_file()
-            && super::paths::sha1_file(destination)
+            && crate::paths::sha1_file(destination)
                 .map(|actual| actual.eq_ignore_ascii_case(expected))
                 .unwrap_or(false)
         {

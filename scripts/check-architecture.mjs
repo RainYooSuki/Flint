@@ -991,25 +991,22 @@ function moduleParts(moduleId) {
 function moduleId(parts) {
   return parts.length === 0 ? "crate" : parts.join("::");
 }
-const RUST_MODULE_ALLOWLIST = new Set(["crate", "main", "auth", "error", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "mods::providers", "net", "paths", "saves", "settings", "version", "loader_api", "loader_providers", "loaders::provider_api", "loaders::providers"]);
+const RUST_MODULE_ALLOWLIST = new Set(["crate", "main", "auth", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "mods::providers", "saves", "settings", "version", "loader_api", "loader_providers", "loaders::provider_api", "loaders::providers"]);
 const RUST_MODULE_EDGE_ALLOWLIST = new Map(Object.entries({
-  crate: ["auth", "error", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "paths", "saves", "settings", "version", "loader_api", "loader_providers"],
+  crate: ["auth", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "saves", "settings", "version", "loader_api", "loader_providers"],
   main: [],
-  auth: ["models", "net", "paths", "settings"],
-  error: [],
+  auth: ["models", "settings"],
   feature_host: ["loaders", "mods"],
-  install: ["models", "paths", "version"],
+  install: ["models", "version"],
   java: ["models"],
-  launch: ["auth", "java", "models", "paths", "settings", "version"],
-  loaders: ["install", "java", "models", "net", "paths", "version", "loaders::provider_api", "loaders::providers"],
-  models: ["paths"],
-  mods: ["models", "net", "paths", "mods::providers", "settings"],
+  launch: ["auth", "java", "models", "settings", "version"],
+  loaders: ["install", "java", "models", "version", "loaders::provider_api", "loaders::providers"],
+  models: [],
+  mods: ["models", "mods::providers", "settings"],
   "mods::providers": ["models", "mods"],
-  net: ["paths"],
-  paths: [],
-  saves: ["models", "net", "paths"],
-  settings: ["models", "paths"],
-  version: ["models", "paths"],
+  saves: ["models"],
+  settings: ["models"],
+  version: ["models"],
   loader_api: ["models"],
   loader_providers: ["loader_api", "loaders", "models"],
   "loaders::provider_api": ["models"],
@@ -1421,7 +1418,7 @@ function checkHostCommandGates(report) {
 // Phase 1/2 provider boundaries and single ModSource mapping adapter
 // ---------------------------------------------------------------------------
 const HOST_PRIVATE_MODULES = new Set([
-  "auth", "error", "feature_host", "install", "java", "launch", "net", "saves", "settings", "paths", "version",
+  "auth", "feature_host", "install", "java", "launch", "saves", "settings", "version",
 ]);
 // Exact provider files/import roots. transitional entries are named and expire at phase 5.
 const providerTarget = (file, role, localTargets, transitional = {}, external = ["std", "semver", "flint_core"]) => ({
@@ -1431,7 +1428,7 @@ const MOD_PROVIDER_TARGETS = [
   providerTarget(PROVIDER_API_SOURCE, "mod-provider-api", []),
   providerTarget("src-tauri/src/mods/providers.rs", "mod-provider-adapter", ["models"], {
     mods: { owner: "mod-provider-pilot", removeByPhase: 5, removal: "Extract shared helper leaves behind typed provider API/core ports." },
-  }, ["std", "reqwest", "flint_provider_api"]),
+  }, ["std", "reqwest", "flint_provider_api", "flint_core"]),
 ];
 const LOADER_API_FILES = [PROVIDER_API_SOURCE, "src-tauri/src/loader_api.rs", "src-tauri/src/loaders/provider_api.rs"];
 const LOADER_ADAPTER_FILES = ["src-tauri/src/loader_providers.rs", "src-tauri/src/loaders/providers.rs"];
@@ -1439,7 +1436,7 @@ const LOADER_PROVIDER_TARGETS = [
   ...LOADER_API_FILES.map((file) => providerTarget(file, "loader-provider-api", file === PROVIDER_API_SOURCE ? [] : ["models", "provider_api"])),
   ...LOADER_ADAPTER_FILES.map((file) => providerTarget(file, "loader-provider-adapter", ["loader_api", "models"], {
     loaders: { owner: "loader-provider-pilot", removeByPhase: 5, removal: "Extract loader helper leaves behind typed loader API/core ports." },
-  }, ["std", "reqwest", "flint_provider_api"])),
+  }, ["std", "reqwest", "flint_provider_api", "flint_core"])),
 ];
 export function reviewedProviderTargets() {
   return [...MOD_PROVIDER_TARGETS, ...LOADER_PROVIDER_TARGETS].map((target) => ({
