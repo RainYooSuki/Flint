@@ -167,8 +167,10 @@ impl ProcessPort for CommandProcessPort {
             .take()
             .ok_or_else(|| "Process stderr was not captured.".to_string())?;
         let limits = request.output_limits;
-        let (mut stdout_thread, stdout_state) = spawn_capture(stdout, limits.stdout_bytes, "stdout");
-        let (mut stderr_thread, stderr_state) = spawn_capture(stderr, limits.stderr_bytes, "stderr");
+        let (stdout_thread, stdout_state) = spawn_capture(stdout, limits.stdout_bytes, "stdout");
+        let (stderr_thread, stderr_state) = spawn_capture(stderr, limits.stderr_bytes, "stderr");
+        let mut stdout_thread = Some(stdout_thread);
+        let mut stderr_thread = Some(stderr_thread);
         let deadline = Instant::now() + request.timeout;
         let mut child_timed_out = false;
         let status = loop {
