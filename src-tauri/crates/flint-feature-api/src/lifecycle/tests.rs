@@ -842,7 +842,7 @@ fn invalid_provider_ids_fail_before_any_provider_or_feature_initialization() {
 }
 
 #[test]
-fn provider_init_failure_forces_catalog_unavailability_before_feature_checks() {
+fn provider_init_failure_blocks_required_feature_before_feature_checks() {
     let logs = RuntimeLogs::default();
     let core_calls = Arc::new(AtomicUsize::new(0));
     let catalog = TestProviderCatalog::new(&["provider.failed"])
@@ -882,7 +882,7 @@ fn provider_init_failure_forces_catalog_unavailability_before_feature_checks() {
     assert!(initialized_features(&logs).is_empty());
     assert_eq!(
         lifecycle.feature_state(&feature_id("flint.required")),
-        Some(FeatureState::Failed)
+        Some(FeatureState::BlockedDependency)
     );
     assert_eq!(core_calls.load(Ordering::SeqCst), 1);
 }
