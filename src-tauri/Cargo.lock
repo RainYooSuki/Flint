@@ -1168,6 +1168,7 @@ dependencies = [
  "flint-feature-api",
  "flint-feature-settings",
  "flint-feature-vanilla",
+ "md5",
  "serde",
  "serde_json",
  "zip",

@@ -1587,7 +1587,7 @@ const FEATURE_CRATE_SPECS = [
     crateName: "flint-feature-launch",
     manifest: "src-tauri/modules/flint-feature-launch/Cargo.toml",
     source: "src-tauri/modules/flint-feature-launch/src/lib.rs",
-    dependencies: ["flint-core", "flint-feature-accounts", "flint-feature-api", "flint-feature-settings", "flint-feature-vanilla", "serde", "serde_json", "zip"],
+    dependencies: ["flint-core", "flint-feature-accounts", "flint-feature-api", "flint-feature-settings", "flint-feature-vanilla", "md5", "serde", "serde_json", "zip"],
     localModules: [],
   },
   {

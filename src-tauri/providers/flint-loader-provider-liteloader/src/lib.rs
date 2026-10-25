@@ -9,7 +9,7 @@ use flint_core::{
         MAX_JSON_BYTES,
     },
     paths::component_is_safe,
-    ports::{DownloadRequest, NetworkPort, ServiceLabel},
+    ports::{DownloadRequest, ServiceLabel},
 };
 use flint_provider_api::{
     loader_descriptor_for, LoaderInstallContext, LoaderInstallOutputData, LoaderInstallRequest,
