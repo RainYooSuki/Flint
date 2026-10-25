@@ -1061,6 +1061,8 @@ dependencies = [
  "flint-feature-accounts",
  "flint-feature-api",
  "flint-feature-launch",
+ "flint-feature-loaders",
+ "flint-feature-mods",
  "flint-feature-saves",
  "flint-feature-settings",
  "flint-feature-vanilla",
@@ -1165,6 +1167,32 @@ dependencies = [
  "flint-feature-api",
  "flint-feature-settings",
  "flint-feature-vanilla",
+ "serde",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
+name = "flint-feature-loaders"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "flint-core",
+ "flint-feature-api",
+ "flint-feature-vanilla",
+ "flint-provider-api",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "flint-feature-mods"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "flint-core",
+ "flint-feature-api",
+ "flint-feature-settings",
+ "flint-provider-api",
+ "regex",
  "serde",
  "serde_json",
  "zip",

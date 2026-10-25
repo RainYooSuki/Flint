@@ -1,0 +1,16 @@
+[package]
+name = "flint-feature-loaders"
+version.workspace = true
+description = "Loader discovery and installation feature for Flint"
+authors = ["Flint Contributors"]
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+[dependencies]
+flint-core = { path = "../../crates/flint-core" }
+flint-feature-api = { path = "../../crates/flint-feature-api" }
+flint-feature-vanilla = { path = "../flint-feature-vanilla" }
+flint-provider-api = { path = "../../crates/flint-provider-api" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

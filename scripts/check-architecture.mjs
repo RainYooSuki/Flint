@@ -19,7 +19,7 @@ const FRONTEND_ROOT = path.join(REPO_ROOT, "src");
 const RUST_SOURCE_ROOT = path.join(REPO_ROOT, "src-tauri", "src");
 const RUST_MANIFEST = path.join(REPO_ROOT, "src-tauri", "Cargo.toml");
 const PROVIDER_API_SOURCE = "src-tauri/crates/flint-provider-api/src/lib.rs";
-const FOUNDATION_WORKSPACE_MEMBERS = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-accounts", "modules/flint-feature-launch", "modules/flint-feature-vanilla", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"];
+const FOUNDATION_WORKSPACE_MEMBERS = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-accounts", "modules/flint-feature-launch", "modules/flint-feature-loaders", "modules/flint-feature-mods", "modules/flint-feature-vanilla", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"];
 const COMPOSITION_ROOT = "src/app/composition.ts";
 const CONTRIBUTIONS_CONTRACT = "src/core/contributions.ts";
 const toPosix = (value) => value.split(path.sep).join("/");
@@ -997,7 +997,7 @@ const RUST_MODULE_EDGE_ALLOWLIST = new Map(Object.entries({
   main: [],
   feature_host: ["provider_composition"],
   install: ["models"],
-  loaders: ["install", "models"],
+  loaders: ["models"],
   models: [],
   mods: ["models"],
   provider_composition: [],
@@ -1579,6 +1579,20 @@ const FEATURE_CRATE_SPECS = [
     dependencies: ["flint-core", "flint-feature-accounts", "flint-feature-api", "flint-feature-settings", "flint-feature-vanilla", "serde", "serde_json", "zip"],
     localModules: [],
   },
+  {
+    crateName: "flint-feature-mods",
+    manifest: "src-tauri/modules/flint-feature-mods/Cargo.toml",
+    source: "src-tauri/modules/flint-feature-mods/src/lib.rs",
+    dependencies: ["flint-core", "flint-feature-api", "flint-feature-settings", "flint-provider-api", "regex", "serde", "serde_json", "zip"],
+    localModules: [],
+  },
+  {
+    crateName: "flint-feature-loaders",
+    manifest: "src-tauri/modules/flint-feature-loaders/Cargo.toml",
+    source: "src-tauri/modules/flint-feature-loaders/src/lib.rs",
+    dependencies: ["flint-core", "flint-feature-api", "flint-feature-vanilla", "flint-provider-api", "serde", "serde_json"],
+    localModules: [],
+  },
 ];
 export function reviewedFeatureCrateSpecs() {
   return FEATURE_CRATE_SPECS.map((spec) => ({
@@ -1698,6 +1712,34 @@ export function evaluateVanillaInstallBoundary(featureInstallText, hostAdapterTe
   }
   return issues;
 }
+export function evaluateHostModLoaderAdapters(modsText, loadersText) {
+  const issues = [];
+  const modsRequired = [
+    ["flint_feature_mods::install_mod_blocking", "host mods adapter must delegate installs to the feature crate"],
+    ["impl ModInstallProgressSink for TauriModInstallProgressSink", "host mods adapter must implement the feature sink"],
+    ["flint://mod-install-progress", "host mods adapter must preserve the mod progress event"],
+    ["self.app.emit(MOD_INSTALL_PROGRESS_EVENT, progress)", "host mods adapter must emit through the event adapter"],
+  ];
+  for (const [needle, message] of modsRequired) if (!modsText.includes(needle)) issues.push({ line: 1, message });
+  for (const forbidden of ["ProviderRegistry::new", "fn install_single_mod", "fn build_dependency_plan", "fn select_for_source", "fn parse_mod_jar_metadata"]) {
+    if (modsText.includes(forbidden)) issues.push({ line: 1, message: `host mods adapter still contains legacy implementation '${forbidden}'.` });
+  }
+  const loadersRequired = [
+    ["flint_feature_loaders::list_loader_versions_blocking", "host loaders adapter must delegate list operations"],
+    ["flint_feature_loaders::install_loader_blocking", "host loaders adapter must delegate installs"],
+    ["impl LoaderProgressSink for TauriLoaderProgressSink", "host loaders adapter must implement loader progress sink"],
+    ["impl LoaderInstallProgressSink for TauriVanillaProgressSink", "host loaders adapter must implement vanilla progress sink"],
+    ["flint://loader-install-progress", "host loaders adapter must preserve loader progress event"],
+    ["flint://install-progress", "host loaders adapter must preserve vanilla progress event"],
+    ["self.app.emit(LOADER_INSTALL_PROGRESS_EVENT, progress)", "host loaders adapter must emit loader progress"],
+    ["self.app.emit(INSTALL_PROGRESS_EVENT, progress)", "host loaders adapter must emit vanilla progress"],
+  ];
+  for (const [needle, message] of loadersRequired) if (!loadersText.includes(needle)) issues.push({ line: 1, message });
+  for (const forbidden of ["ProviderRegistry::new", "fn loader_binding", "fn select_loader_provider", "fn ensure_vanilla_base"]) {
+    if (loadersText.includes(forbidden)) issues.push({ line: 1, message: `host loaders adapter still contains legacy implementation '${forbidden}'.` });
+  }
+  return issues;
+}
 export function evaluateFeatureLockEntries(lockText) {
   const issues = [];
   const host = /\[\[package\]\]\s*\r?\nname = "flint"\s*\r?\nversion = "([^"]+)"/.exec(lockText);
@@ -1737,6 +1779,7 @@ export function reviewedLoaderProviderCrateSpecs() {
 const LOADER_PROVIDER_TARGET_BY_SOURCE = new Map();
 const LOADER_API_FILES = [PROVIDER_API_SOURCE, "src-tauri/crates/flint-provider-api/src/loaders.rs"];
 const LOADER_ADAPTER_FILES = ["src-tauri/src/loaders.rs"];
+const LOADER_BINDING_SOURCE = "src-tauri/modules/flint-feature-loaders/src/lib.rs";
 const LOADER_PROVIDER_TARGETS = [
   ...LOADER_API_FILES.map((file) =>
     providerTarget(
@@ -1751,9 +1794,9 @@ const LOADER_PROVIDER_TARGETS = [
     providerTarget(
       file,
       "loader-provider-adapter",
-      ["install", "java", "models", "paths", "version"],
+      ["models"],
       {},
-      ["std", "flint_core", "flint_provider_api", "tauri"],
+      ["std", "tauri", "flint_feature_loaders", "flint_provider_api"],
     ),
   ),
   ...LOADER_PROVIDER_CRATE_SPECS.map((spec) =>
@@ -2134,11 +2177,18 @@ function checkProviderCompositionBoundaries(graph, report) {
 }
 
 function checkModSourceBoundaries(graph, report) {
-  const bindingRelative = "src-tauri/src/mods.rs";
-  const bindingRecord = graph.records.find((record) => record.relative === bindingRelative);
+  const bindingRelative = "src-tauri/modules/flint-feature-mods/src/lib.rs";
+  let bindingRecord = graph.records.find((record) => record.relative === bindingRelative);
   if (!bindingRecord) {
-    report("RUST-PHASE-TARGET-001", bindingRelative, 1, "the sole ModSource-to-provider binding target is missing.");
-    return;
+    const absolute = path.join(REPO_ROOT, bindingRelative);
+    if (!fs.existsSync(absolute)) {
+      report("RUST-PHASE-TARGET-001", bindingRelative, 1, "the sole ModSource-to-provider binding target is missing.");
+      return;
+    }
+    bindingRecord = {
+      relative: bindingRelative,
+      productionText: prepareRustProductionSource(readText(absolute)),
+    };
   }
   const sourceBinding = findRustFunctionSpans(bindingRecord.productionText)
     .find((span) => span.name === "source_binding");
@@ -2152,7 +2202,7 @@ function checkModSourceBoundaries(graph, report) {
       "RUST-MODSOURCE-ADAPTER-001",
       bindingRelative,
       sourceBinding?.line ?? 1,
-      "expected exactly one reviewed ModSource-to-provider binding inside source_binding and no other production ModSource dispatch.",
+      "expected exactly one reviewed ModSource-to-provider binding inside source_binding in the mods feature crate and no other production ModSource dispatch.",
     );
   }
   for (const record of graph.records) {
@@ -2162,7 +2212,7 @@ function checkModSourceBoundaries(graph, report) {
         "RUST-MODSOURCE-DISPATCH-001",
         record.relative,
         site.line,
-        `ModSource dispatch form '${site.kind}' is forbidden outside the sole source_binding in src-tauri/src/mods.rs.`,
+        `ModSource dispatch form '${site.kind}' is forbidden outside the sole source_binding in the mods feature crate.`,
       );
     }
   }
@@ -2206,6 +2256,13 @@ function rustFilesUnder(relativeDirectory) {
   }
   return files.sort();
 }
+export function evaluateFeatureRegistryConstruction(text) {
+  const match = /\bProviderRegistry\s*::\s*new\s*\(/.exec(text);
+  return match
+    ? [{ line: lineOf(text, match.index), message: "feature crates may not construct provider registries; construction belongs only in provider_composition." }]
+    : [];
+}
+
 function checkFeatureTarget(phase, target, graph, report) {
   let record = graph.records.find((candidate) => candidate.relative === target.file);
   if (!record) {
@@ -2261,6 +2318,9 @@ function checkFeatureTarget(phase, target, graph, report) {
   if (hostHandle) {
     report("RUST-FEATURE-IO-001", record.relative, lineOf(record.productionText, hostHandle.index), "feature crates may not use Tauri host handles or emitters.");
   }
+  for (const issue of evaluateFeatureRegistryConstruction(record.productionText)) {
+    report("RUST-FEATURE-COMPOSITION-001", record.relative, issue.line, issue.message);
+  }
 }
 function checkFeatureCrateGate(phase, graph, report) {
   if (phase < 3) return;
@@ -2285,6 +2345,16 @@ function checkFeatureCrateGate(phase, graph, report) {
     for (const file of rustFilesUnder(path.dirname(spec.source))) {
       if (file === spec.source) continue;
       checkFeatureTarget(phase, { ...target, file }, graph, report);
+    }
+  }
+  const modsAdapter = path.join(REPO_ROOT, "src-tauri/src/mods.rs");
+  const loadersAdapter = path.join(REPO_ROOT, "src-tauri/src/loaders.rs");
+  if (!fs.existsSync(modsAdapter) || !fs.existsSync(loadersAdapter)) {
+    if (!fs.existsSync(modsAdapter)) report("RUST-FEATURE-TARGET-001", "src-tauri/src/mods.rs", 1, "host mods adapter is missing.");
+    if (!fs.existsSync(loadersAdapter)) report("RUST-FEATURE-TARGET-001", "src-tauri/src/loaders.rs", 1, "host loaders adapter is missing.");
+  } else {
+    for (const issue of evaluateHostModLoaderAdapters(readText(modsAdapter), readText(loadersAdapter))) {
+      report("RUST-FEATURE-HOST-ADAPTER-001", "src-tauri/src", issue.line, issue.message);
     }
   }
   const vanilla = FEATURE_CRATE_SPECS.find((spec) => spec.crateName === "flint-feature-vanilla");
@@ -2345,8 +2415,19 @@ function checkLoaderProviderGate(phase, graph, report) {
       }
     }
   }
-  const adapterRelative = LOADER_ADAPTER_FILES[0];
-  const adapterRecord = graph.records.find((record) => record.relative === adapterRelative);
+  const adapterRelative = LOADER_BINDING_SOURCE;
+  let adapterRecord = graph.records.find((record) => record.relative === adapterRelative);
+  if (!adapterRecord) {
+    const absolute = path.join(REPO_ROOT, adapterRelative);
+    if (!fs.existsSync(absolute)) {
+      report("RUST-PHASE-TARGET-001", adapterRelative, 1, "the sole LoaderKind-to-provider binding target is missing.");
+    } else {
+      adapterRecord = {
+        relative: adapterRelative,
+        productionText: prepareRustProductionSource(readText(absolute)),
+      };
+    }
+  }
   if (adapterRecord) {
     const binding = findRustFunctionSpans(adapterRecord.productionText)
       .find((span) => span.name === "loader_binding");
@@ -2375,7 +2456,7 @@ function checkLoaderProviderGate(phase, graph, report) {
       for (const site of findLoaderKindDispatchSites(record.productionText)) {
         if (reportedLines.has(site.line)) continue;
         reportedLines.add(site.line);
-        report("RUST-LOADER-DISPATCH-001", record.relative, site.line, `LoaderKind dispatch form '${site.kind}' is forbidden outside the sole host adapter src-tauri/src/loaders.rs.`);
+        report("RUST-LOADER-DISPATCH-001", record.relative, site.line, `LoaderKind dispatch form '${site.kind}' is forbidden outside the sole loader feature binding.`);
       }
     }
   }
@@ -2392,6 +2473,8 @@ const EXTRACTED_FEATURE_DEPENDENCIES = new Map([
   ["flint-feature-saves", ["flint-core", "flint-feature-api"]],
   ["flint-feature-accounts", ["flint-core", "flint-feature-api", "flint-feature-settings"]],
   ["flint-feature-launch", ["flint-core", "flint-feature-api", "flint-feature-accounts", "flint-feature-vanilla", "flint-feature-settings"]],
+  ["flint-feature-mods", ["flint-core", "flint-feature-api", "flint-feature-settings", "flint-provider-api"]],
+  ["flint-feature-loaders", ["flint-core", "flint-feature-api", "flint-feature-vanilla", "flint-provider-api"]],
   ["flint-feature-vanilla", ["flint-core", "flint-feature-api"]],
 ]);
 const CARGO_RULES = new Map([

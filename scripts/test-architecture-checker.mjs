@@ -16,6 +16,7 @@ import {
   evaluateFeatureCrateManifest,
   evaluateFeatureDirectoryNames,
   evaluateFeatureLockEntries,
+  evaluateFeatureRegistryConstruction,
   evaluateFrontendBoundary,
   evaluateHostFeatureDependencyDeclarations,
   evaluateHostLoaderDependencyDeclarations,
@@ -24,6 +25,7 @@ import {
   evaluateLoaderProviderDirectoryNames,
   evaluateLoaderProviderLockEntries,
   evaluatePhase3Orchestration,
+  evaluateHostModLoaderAdapters,
   evaluateVanillaInstallBoundary,
   findLoaderKindDispatchSites,
   findMatchSourceSites,
@@ -160,8 +162,8 @@ test("provider API policy targets the extracted crate and drops the host-local m
     (target) => target.role === "loader-provider-adapter" && target.file === loaderAdapter,
   );
   assert.ok(loaderAdapterTarget);
-  assert.deepEqual(loaderAdapterTarget.localTargets, ["install", "java", "models", "paths", "version"]);
-  assert.deepEqual(loaderAdapterTarget.externalRoots, ["flint_core", "flint_provider_api", "std", "tauri"]);
+  assert.deepEqual(loaderAdapterTarget.localTargets, ["models"]);
+  assert.deepEqual(loaderAdapterTarget.externalRoots, ["flint_feature_loaders", "flint_provider_api", "std", "tauri"]);
   assert.equal(targets.some((target) => target.file === "src-tauri/src/loaders/providers.rs"), false);
   assert.equal(targets.some((target) => target.file === "src-tauri/src/loader_api.rs"), false);
   assert.equal(reviewedHostRustModuleIds().includes("loader_api"), false);
@@ -227,7 +229,7 @@ test("phase-3 workspace foundation parser recognizes the exact reviewed members"
     "",
     "[workspace]",
     'resolver = "2"',
-    'members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-accounts", "modules/flint-feature-launch", "modules/flint-feature-vanilla", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"]',
+    'members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-accounts", "modules/flint-feature-launch", "modules/flint-feature-loaders", "modules/flint-feature-mods", "modules/flint-feature-vanilla", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"]',
     "",
     "[dependencies]",
     'flint-core = { path = "crates/flint-core" }',
@@ -236,7 +238,7 @@ test("phase-3 workspace foundation parser recognizes the exact reviewed members"
   assert.deepEqual(foundation, {
     present: true,
     resolver: "2",
-    members: [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-accounts", "modules/flint-feature-launch", "modules/flint-feature-vanilla", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"],
+    members: [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-accounts", "modules/flint-feature-launch", "modules/flint-feature-loaders", "modules/flint-feature-mods", "modules/flint-feature-vanilla", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"],
   });
   assert.equal(foundation.members.includes("crates/flint-feature-api"), true);
   assert.equal(foundation.members.some((member) => member.includes("*")), false);
@@ -336,12 +338,19 @@ test("loader provider lock entries share the host workspace version", () => {
   );
 });
 
+test("feature production code cannot construct provider registries", () => {
+  assert.deepEqual(evaluateFeatureRegistryConstruction("fn ok() { }"), []);
+  const issues = evaluateFeatureRegistryConstruction("let registry = ProviderRegistry::new(providers, MOD_PROVIDER_API).unwrap();");
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].line, 1);
+});
+
 test("extracted feature waves use exact manifests, edges, directories, and locks", () => {
   const specs = reviewedFeatureCrateSpecs();
-  assert.equal(specs.length, 5);
+  assert.equal(specs.length, 7);
   assert.deepEqual(
     specs.map((spec) => spec.crateName),
-    ["flint-feature-settings", "flint-feature-saves", "flint-feature-accounts", "flint-feature-vanilla", "flint-feature-launch"],
+    ["flint-feature-settings", "flint-feature-saves", "flint-feature-accounts", "flint-feature-vanilla", "flint-feature-launch", "flint-feature-mods", "flint-feature-loaders"],
   );
   assert.deepEqual(
     specs.find((spec) => spec.crateName === "flint-feature-settings").dependencies,
@@ -362,6 +371,14 @@ test("extracted feature waves use exact manifests, edges, directories, and locks
   assert.deepEqual(
     specs.find((spec) => spec.crateName === "flint-feature-launch").dependencies,
     ["flint-core", "flint-feature-accounts", "flint-feature-api", "flint-feature-settings", "flint-feature-vanilla", "serde", "serde_json", "zip"],
+  );
+  assert.deepEqual(
+    specs.find((spec) => spec.crateName === "flint-feature-mods").dependencies,
+    ["flint-core", "flint-feature-api", "flint-feature-settings", "flint-provider-api", "regex", "serde", "serde_json", "zip"],
+  );
+  assert.deepEqual(
+    specs.find((spec) => spec.crateName === "flint-feature-loaders").dependencies,
+    ["flint-core", "flint-feature-api", "flint-feature-vanilla", "flint-provider-api", "serde", "serde_json"],
   );
   for (const spec of specs) {
     const manifest = [
@@ -438,7 +455,7 @@ test("extracted feature waves use exact manifests, edges, directories, and locks
     1,
   );
   const targets = reviewedFeatureTargets();
-  assert.equal(targets.length, 5);
+  assert.equal(targets.length, 7);
   for (const target of targets) {
     assert.equal(target.role, "feature-leaf");
     assert.equal(target.externalRoots.includes("tauri"), false);
@@ -473,6 +490,22 @@ test("extracted feature waves use exact manifests, edges, directories, and locks
   );
   assert.deepEqual(
     targets.find((target) => target.file.includes("flint-feature-launch")).localTargets,
+    [],
+  );
+  assert.deepEqual(
+    targets.find((target) => target.file.includes("flint-feature-mods")).externalRoots,
+    ["flint_core", "flint_feature_api", "flint_feature_settings", "flint_provider_api", "regex", "serde", "serde_json", "std", "zip"],
+  );
+  assert.deepEqual(
+    targets.find((target) => target.file.includes("flint-feature-mods")).localTargets,
+    [],
+  );
+  assert.deepEqual(
+    targets.find((target) => target.file.includes("flint-feature-loaders")).externalRoots,
+    ["flint_core", "flint_feature_api", "flint_feature_vanilla", "flint_provider_api", "serde", "serde_json", "std"],
+  );
+  assert.deepEqual(
+    targets.find((target) => target.file.includes("flint-feature-loaders")).localTargets,
     [],
   );
 });
@@ -521,6 +554,44 @@ pub fn install_blocking(
   );
 });
 
+test("mods and loaders host adapters stay thin Tauri sink wrappers", () => {
+  const mods = `
+const MOD_INSTALL_PROGRESS_EVENT: &str = "flint://mod-install-progress";
+impl ModInstallProgressSink for TauriModInstallProgressSink<'_> {
+    fn report(&self, progress: ModInstallProgress) {
+        let _ = self.app.emit(MOD_INSTALL_PROGRESS_EVENT, progress);
+    }
+}
+flint_feature_mods::install_mod_blocking(registry, &sink, game_dir, source, project_id, version_id, game_version, loader, install_dependencies)
+`;
+  const loaders = `
+const LOADER_INSTALL_PROGRESS_EVENT: &str = "flint://loader-install-progress";
+const INSTALL_PROGRESS_EVENT: &str = "flint://install-progress";
+impl LoaderProgressSink for TauriLoaderProgressSink<'_> {
+    fn report(&self, progress: LoaderInstallProgress) {
+        let _ = self.app.emit(LOADER_INSTALL_PROGRESS_EVENT, progress);
+    }
+}
+impl LoaderInstallProgressSink for TauriVanillaProgressSink<'_> {
+    fn report(&self, progress: InstallProgress) {
+        let _ = self.app.emit(INSTALL_PROGRESS_EVENT, progress);
+    }
+}
+flint_feature_loaders::list_loader_versions_blocking(registry, loader, game_version)
+flint_feature_loaders::install_loader_blocking(registry, request, &loader_sink, &vanilla_sink)
+`;
+  assert.deepEqual(evaluateHostModLoaderAdapters(mods, loaders), []);
+  assert.equal(
+    evaluateHostModLoaderAdapters(mods, loaders.replace("flint://install-progress", "wrong"))
+      .some((issue) => issue.message.includes("vanilla progress event")),
+    true,
+  );
+  assert.equal(
+    evaluateHostModLoaderAdapters(`${mods}\nfn install_single_mod() {}`, loaders)
+      .some((issue) => issue.message.includes("legacy implementation")),
+    true,
+  );
+});
 test("loader provider composition requires six leaf descriptors, keys, constructors, and one registry", () => {
   const descriptors = [
     "FABRIC_LOADER_DESCRIPTOR",

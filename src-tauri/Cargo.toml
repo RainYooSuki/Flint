@@ -12,7 +12,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [workspace]
 resolver = "2"
-members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-accounts", "modules/flint-feature-launch", "modules/flint-feature-vanilla", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"]
+members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-accounts", "modules/flint-feature-launch", "modules/flint-feature-loaders", "modules/flint-feature-mods", "modules/flint-feature-vanilla", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"]
 
 [workspace.package]
 version = "2026.10.1-d1cce64"
@@ -40,6 +40,8 @@ flint-core = { path = "crates/flint-core" }
 flint-feature-api = { path = "crates/flint-feature-api" }
 flint-feature-accounts = { path = "modules/flint-feature-accounts" }
 flint-feature-launch = { path = "modules/flint-feature-launch" }
+flint-feature-loaders = { path = "modules/flint-feature-loaders" }
+flint-feature-mods = { path = "modules/flint-feature-mods" }
 flint-feature-vanilla = { path = "modules/flint-feature-vanilla" }
 flint-feature-saves = { path = "modules/flint-feature-saves" }
 flint-feature-settings = { path = "modules/flint-feature-settings" }

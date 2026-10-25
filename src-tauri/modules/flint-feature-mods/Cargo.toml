@@ -1,0 +1,18 @@
+[package]
+name = "flint-feature-mods"
+version.workspace = true
+description = "Mod discovery, dependency, and installation feature for Flint"
+authors = ["Flint Contributors"]
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+[dependencies]
+flint-core = { path = "../../crates/flint-core" }
+flint-feature-api = { path = "../../crates/flint-feature-api" }
+flint-feature-settings = { path = "../flint-feature-settings" }
+flint-provider-api = { path = "../../crates/flint-provider-api" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "=1.11.1"
+zip = { version = "=2.2.2", default-features = false, features = ["deflate"] }
