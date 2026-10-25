@@ -6,6 +6,11 @@ authors = ["Flint Contributors"]
 edition = "2021"
 rust-version = "1.90"
 
+[features]
+default = []
+test-ports = []
+test-support = ["test-ports"]
+
 [dependencies]
 flint-core = { path = "../flint-core" }
 semver = "1"

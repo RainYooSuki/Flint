@@ -7,8 +7,13 @@ use std::{
 
 pub use flint_core::contract::{ApiVersion, ProviderRequirement};
 
+pub mod loaders;
 pub mod mods;
+pub use loaders::*;
 pub use mods::*;
+
+#[cfg(any(test, feature = "test-ports"))]
+pub mod test_support;
 
 /// A capability exposed by a provider. Selection keys are scoped by the
 /// capability ID and must be unique among providers exposing that capability.

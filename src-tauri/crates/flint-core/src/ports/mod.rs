@@ -14,6 +14,7 @@ pub use control::{
 };
 pub use network::{DownloadRequest, NetworkPort, NetworkRequest, ReqwestNetwork, ServiceLabel};
 pub use process::{
-    JavaRunRequest, JavaRunner, OutputLimits, ProcessOutput, ProcessPort, ProcessRequest,
+    CommandProcessPort, JavaRunRequest, JavaRunner, OutputLimits, ProcessJavaRunner,
+    ProcessOutput, ProcessPort, ProcessRequest,
 };
 pub use workspace::{ArchiveEntry, ArchiveLimits, PathPort, SafeWorkspace};

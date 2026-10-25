@@ -3,8 +3,9 @@
 use std::{
     collections::HashSet,
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 use crate::{net, paths};
@@ -116,7 +117,18 @@ fn portable_path_key(normalized: &str) -> String {
 pub trait PathPort: Send + Sync {
     fn safe_join(&self, base: &Path, relative: &str) -> Result<PathBuf, String>;
     fn ensure_directory(&self, path: &Path) -> Result<(), String>;
+    fn read_file(&self, path: &Path) -> Result<Vec<u8>, String>;
+    fn read_file_prefix(&self, path: &Path, max_bytes: usize) -> Result<Vec<u8>, String>;
+    fn write_file(&self, path: &Path, bytes: &[u8]) -> Result<(), String>;
     fn write_atomic(&self, destination: &Path, bytes: &[u8]) -> Result<(), String>;
+    fn list_directory(&self, path: &Path) -> Result<Vec<PathBuf>, String>;
+    fn rename(&self, from: &Path, to: &Path) -> Result<(), String>;
+    fn remove_file(&self, path: &Path) -> Result<(), String>;
+    fn remove_directory(&self, path: &Path) -> Result<(), String>;
+    fn is_regular_file(&self, path: &Path) -> bool;
+    fn is_symlink(&self, path: &Path) -> bool;
+    fn is_directory(&self, path: &Path) -> bool;
+    fn modified(&self, path: &Path) -> Option<SystemTime>;
     fn validate_archive_entries(
         &self,
         entries: &[ArchiveEntry],
@@ -136,6 +148,27 @@ impl PathPort for SafeWorkspace {
 
     fn ensure_directory(&self, path: &Path) -> Result<(), String> {
         net::ensure_directory(path)
+    }
+
+    fn read_file(&self, path: &Path) -> Result<Vec<u8>, String> {
+        fs::read(path)
+            .map_err(|error| format!("Cannot read file ({}): {error}", path.display()))
+    }
+
+    fn read_file_prefix(&self, path: &Path, max_bytes: usize) -> Result<Vec<u8>, String> {
+        let file = fs::File::open(path)
+            .map_err(|error| format!("Cannot open file ({}): {error}", path.display()))?;
+        let mut bytes = Vec::new();
+        let mut limited = file.take(max_bytes as u64);
+        limited
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("Cannot read file ({}): {error}", path.display()))?;
+        Ok(bytes)
+    }
+
+    fn write_file(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+        fs::write(path, bytes)
+            .map_err(|error| format!("Cannot write file ({}): {error}", path.display()))
     }
 
     fn write_atomic(&self, destination: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -161,6 +194,61 @@ impl PathPort for SafeWorkspace {
             let _ = fs::remove_file(&temp);
         }
         result
+    }
+
+    fn list_directory(&self, path: &Path) -> Result<Vec<PathBuf>, String> {
+        let entries = fs::read_dir(path)
+            .map_err(|error| format!("Cannot read directory ({}): {error}", path.display()))?;
+        let mut paths = Vec::new();
+        for entry in entries {
+            let entry = entry
+                .map_err(|error| format!("Cannot read directory entry in {}: {error}", path.display()))?;
+            paths.push(entry.path());
+        }
+        paths.sort();
+        Ok(paths)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> Result<(), String> {
+        fs::rename(from, to).map_err(|error| {
+            format!(
+                "Cannot rename file ({} -> {}): {error}",
+                from.display(),
+                to.display()
+            )
+        })
+    }
+
+    fn remove_file(&self, path: &Path) -> Result<(), String> {
+        fs::remove_file(path)
+            .map_err(|error| format!("Cannot remove file ({}): {error}", path.display()))
+    }
+
+    fn remove_directory(&self, path: &Path) -> Result<(), String> {
+        fs::remove_dir_all(path)
+            .map_err(|error| format!("Cannot remove directory ({}): {error}", path.display()))
+    }
+
+    fn is_regular_file(&self, path: &Path) -> bool {
+        fs::symlink_metadata(path)
+            .map(|metadata| metadata.file_type().is_file())
+            .unwrap_or(false)
+    }
+
+    fn is_symlink(&self, path: &Path) -> bool {
+        fs::symlink_metadata(path)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false)
+    }
+
+    fn is_directory(&self, path: &Path) -> bool {
+        fs::symlink_metadata(path)
+            .map(|metadata| metadata.file_type().is_dir())
+            .unwrap_or(false)
+    }
+
+    fn modified(&self, path: &Path) -> Option<SystemTime> {
+        fs::metadata(path).ok().and_then(|metadata| metadata.modified().ok())
     }
 
     fn validate_archive_entries(
@@ -422,6 +510,28 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.contains("duplicate entry path"));
+    }
+
+    #[test]
+    fn safe_workspace_supports_bounded_reads_and_file_lifecycle_checks() {
+        let root = std::env::temp_dir().join(format!("flint-core-path-ops-{}", net::nonce()));
+        let workspace = SafeWorkspace;
+        workspace.ensure_directory(&root).unwrap();
+        let source = root.join("source.bin");
+        workspace.write_file(&source, b"abcdef").unwrap();
+        assert_eq!(workspace.read_file(&source).unwrap(), b"abcdef".to_vec());
+        assert_eq!(workspace.read_file_prefix(&source, 3).unwrap(), b"abc".to_vec());
+        assert!(workspace.is_regular_file(&source));
+        assert!(!workspace.is_symlink(&source));
+        assert!(workspace.is_directory(&root));
+        assert_eq!(workspace.list_directory(&root).unwrap(), vec![source.clone()]);
+        let destination = root.join("renamed.bin");
+        workspace.rename(&source, &destination).unwrap();
+        assert!(!source.exists());
+        assert!(destination.is_file());
+        workspace.remove_file(&destination).unwrap();
+        workspace.remove_directory(&root).unwrap();
+        assert!(!root.exists());
     }
 
     #[test]
