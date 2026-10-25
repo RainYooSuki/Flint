@@ -113,7 +113,6 @@ jobs:
 
   verify:
     name: Verify workspace tests
-    needs: prepare
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
@@ -176,7 +175,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.platform }}
-    needs: verify
+    needs: [prepare, verify]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:

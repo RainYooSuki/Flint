@@ -21,6 +21,16 @@ The workflow computes `YYYY.M.N-sha7`, builds Windows x64, Linux x64, macOS x64,
 
 At post-release recording, if branch `VERSION` already equals the released version, the workflow exits without another commit. Otherwise it requires branch `VERSION` to equal the source-commit `VERSION`, writes the released value, and refuses any unexpected branch `VERSION` state rather than overwriting it.
 
+## Parallel workspace test verification
+
+The `verify` job has no dependency on `prepare`, so release metadata/static checks and the full Rust workspace tests start concurrently on separate Ubuntu runners. It installs the reviewed Linux Tauri prerequisites, Node 22/frontend dependencies, builds `dist` for the Tauri context, then runs:
+
+```bash
+cargo test --workspace --all-targets --locked --manifest-path src-tauri/Cargo.toml
+```
+
+The four-platform `build` matrix declares `needs: [prepare, verify]`, so neither a static/architecture failure nor a Rust test failure can publish a release. Windows/macOS compilation remains platform-specific; the workspace test suite executes on Linux.
+
 ## Phase 5 prepare gate
 
 The `prepare` job installs frontend dependencies and runs:
