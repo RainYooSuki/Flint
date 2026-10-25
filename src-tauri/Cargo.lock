@@ -1059,6 +1059,12 @@ dependencies = [
  "flate2",
  "flint-core",
  "flint-feature-api",
+ "flint-loader-provider-fabric",
+ "flint-loader-provider-forge",
+ "flint-loader-provider-liteloader",
+ "flint-loader-provider-neoforge",
+ "flint-loader-provider-optifine",
+ "flint-loader-provider-quilt",
  "flint-mod-provider-curseforge",
  "flint-mod-provider-modrinth",
  "flint-provider-api",
@@ -1095,6 +1101,60 @@ dependencies = [
  "flint-core",
  "semver",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "flint-loader-provider-fabric"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "flint-core",
+ "flint-provider-api",
+ "serde_json",
+]
+
+[[package]]
+name = "flint-loader-provider-forge"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "flint-core",
+ "flint-provider-api",
+ "serde_json",
+]
+
+[[package]]
+name = "flint-loader-provider-liteloader"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "flint-core",
+ "flint-provider-api",
+ "regex",
+ "serde_json",
+]
+
+[[package]]
+name = "flint-loader-provider-neoforge"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "flint-core",
+ "flint-provider-api",
+]
+
+[[package]]
+name = "flint-loader-provider-optifine"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "flint-core",
+ "flint-provider-api",
+ "regex",
+]
+
+[[package]]
+name = "flint-loader-provider-quilt"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "flint-core",
+ "flint-provider-api",
  "serde_json",
 ]
 

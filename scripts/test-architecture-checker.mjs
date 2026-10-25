@@ -14,6 +14,11 @@ import {
   collectImportMetaMembers,
   collectUnsafeCodeSites,
   evaluateFrontendBoundary,
+  evaluateHostLoaderDependencyDeclarations,
+  evaluateLoaderProviderComposition,
+  evaluateLoaderProviderCrateManifest,
+  evaluateLoaderProviderDirectoryNames,
+  evaluateLoaderProviderLockEntries,
   evaluatePhase3Orchestration,
   findLoaderKindDispatchSites,
   findMatchSourceSites,
@@ -32,6 +37,7 @@ import {
   resolveFrontendModule,
   reviewedFeatureCommandGates,
   reviewedHostRustModuleIds,
+  reviewedLoaderProviderCrateSpecs,
   reviewedProviderTargets,
 } from "./check-architecture.mjs";
 
@@ -83,13 +89,14 @@ test("phase 2 fails closed when mandatory loader targets are absent", () => {
   const report = (rule, file, line, message) => violations.push({ rule, file, line, message });
   const files = requiredLoaderFiles(2, report, () => false);
   assert.deepEqual(files, []);
-  assert.equal(violations.length, 2);
+  assert.equal(violations.length, 3);
   assert.equal(violations.every((violation) => violation.rule === "RUST-PHASE-TARGET-001"), true);
 });
 
 test("provider API policy targets the extracted crate and drops the host-local module", () => {
   const providerApi = "src-tauri/crates/flint-provider-api/src/lib.rs";
-  const loaderAdapter = "src-tauri/src/loaders/providers.rs";
+  const loaderContract = "src-tauri/crates/flint-provider-api/src/loaders.rs";
+  const loaderAdapter = "src-tauri/src/loaders.rs";
   const targets = reviewedProviderTargets();
   const providerApiTargets = targets.filter((target) => target.file === providerApi);
   assert.deepEqual(
@@ -125,18 +132,59 @@ test("provider API policy targets the extracted crate and drops the host-local m
   }
   assert.equal(targets.some((target) => target.file === "src-tauri/src/mods/providers.rs"), false);
   assert.equal(reviewedHostRustModuleIds().includes("mods::providers"), false);
+  const loaderApiTargets = targets.filter((target) => target.role === "loader-provider-api");
+  assert.deepEqual(
+    loaderApiTargets.map((target) => target.file).sort(),
+    [loaderContract, providerApi].sort(),
+  );
+  const loaderContractTarget = targets.find(
+    (target) => target.role === "loader-provider-api" && target.file === loaderContract,
+  );
+  assert.ok(loaderContractTarget);
+  assert.deepEqual(loaderContractTarget.localTargets, []);
+  assert.deepEqual(loaderContractTarget.externalRoots, ["flint_core", "std"]);
+  const loaderLeaves = targets.filter((target) => target.role === "loader-provider-leaf");
+  assert.equal(loaderLeaves.length, 6);
+  assert.deepEqual(
+    loaderLeaves.map((target) => target.file).sort(),
+    reviewedLoaderProviderCrateSpecs().map((spec) => spec.source).sort(),
+  );
   const loaderAdapterTarget = targets.find(
     (target) => target.role === "loader-provider-adapter" && target.file === loaderAdapter,
   );
   assert.ok(loaderAdapterTarget);
-  assert.deepEqual(loaderAdapterTarget.localTargets, ["loader_api", "models"]);
-  assert.deepEqual(loaderAdapterTarget.externalRoots, ["flint_core", "flint_provider_api", "reqwest", "std"]);
+  assert.deepEqual(loaderAdapterTarget.localTargets, ["install", "java", "models", "paths", "version"]);
+  assert.deepEqual(loaderAdapterTarget.externalRoots, ["flint_core", "flint_provider_api", "std", "tauri"]);
+  assert.equal(targets.some((target) => target.file === "src-tauri/src/loaders/providers.rs"), false);
+  assert.equal(targets.some((target) => target.file === "src-tauri/src/loader_api.rs"), false);
+  assert.equal(reviewedHostRustModuleIds().includes("loader_api"), false);
+  assert.equal(reviewedHostRustModuleIds().includes("loader_providers"), false);
+  assert.equal(reviewedHostRustModuleIds().includes("loaders::providers"), false);
 
   const violations = [];
   const report = (rule, file, line, message) => violations.push({ rule, file, line, message });
-  const files = requiredLoaderFiles(2, report, (file) => file === providerApi || file === loaderAdapter);
-  assert.deepEqual(files, [providerApi, loaderAdapter]);
+  const files = requiredLoaderFiles(
+    2,
+    report,
+    (file) => file === providerApi || file === loaderContract || file === loaderAdapter,
+  );
+  assert.deepEqual(files, [providerApi, loaderContract, loaderAdapter]);
   assert.deepEqual(violations, []);
+  const legacyViolations = [];
+  const legacyReport = (rule, file, line, message) => legacyViolations.push({ rule, file, line, message });
+  requiredLoaderFiles(
+    2,
+    legacyReport,
+    (file) => file === "src-tauri/src/loaders/providers.rs",
+  );
+  assert.equal(
+    legacyViolations.some(
+      (violation) =>
+        violation.rule === "RUST-LOADER-ADAPTER-001" &&
+        violation.file === "src-tauri/src/loaders/providers.rs",
+    ),
+    true,
+  );
 });
 
 test("provider manifest dependency parser covers normal, target, and dev sections", () => {
@@ -172,7 +220,7 @@ test("phase-3 workspace foundation parser recognizes the exact reviewed members"
     "",
     "[workspace]",
     'resolver = "2"',
-    'members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth"]',
+    'members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"]',
     "",
     "[dependencies]",
     'flint-core = { path = "crates/flint-core" }',
@@ -181,7 +229,7 @@ test("phase-3 workspace foundation parser recognizes the exact reviewed members"
   assert.deepEqual(foundation, {
     present: true,
     resolver: "2",
-    members: [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth"],
+    members: [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"],
   });
   assert.equal(foundation.members.includes("crates/flint-feature-api"), true);
   assert.equal(foundation.members.some((member) => member.includes("*")), false);
@@ -190,6 +238,162 @@ test("phase-3 workspace foundation parser recognizes the exact reviewed members"
     resolver: null,
     members: null,
   });
+});
+
+test("exact six loader provider crate manifests and host path dependencies are checked", () => {
+  const specs = reviewedLoaderProviderCrateSpecs();
+  assert.equal(specs.length, 6);
+  assert.deepEqual(
+    specs.map((spec) => spec.crateName),
+    [
+      "flint-loader-provider-fabric",
+      "flint-loader-provider-quilt",
+      "flint-loader-provider-forge",
+      "flint-loader-provider-neoforge",
+      "flint-loader-provider-liteloader",
+      "flint-loader-provider-optifine",
+    ],
+  );  assert.deepEqual(evaluateLoaderProviderDirectoryNames(specs.map((spec) => spec.crateName)), []);
+  assert.deepEqual(
+    evaluateLoaderProviderDirectoryNames([...specs.map((spec) => spec.crateName), "flint-loader-provider-extra"]),
+    ["unexpected loader provider crate directory 'flint-loader-provider-extra'."],
+  );
+  for (const spec of specs) {
+    const manifest = [
+      "[package]",
+      `name = "${spec.crateName}"`,
+      "version.workspace = true",
+      "publish = false",
+      "",
+      "[dependencies]",
+      ...spec.dependencies.map((dependency) => `${dependency} = "1"`),
+      "",
+      "[dev-dependencies]",
+      'flint-provider-api = { path = "../../crates/flint-provider-api", features = ["test-ports"] }',
+      "",
+    ].join("\n");
+    assert.deepEqual(evaluateLoaderProviderCrateManifest(spec.manifest, manifest), []);
+    const withExtraDependency = manifest.replace(
+      "[dev-dependencies]",
+      'unexpected = "1"\n\n[dev-dependencies]',
+    );
+    assert.equal(
+      evaluateLoaderProviderCrateManifest(spec.manifest, withExtraDependency)
+        .some((issue) => issue.message.includes("dependencies must be exactly")),
+      true,
+    );
+    const wrongVersion = manifest.replace("version.workspace = true", 'version = "1.0.0"');
+    assert.equal(
+      evaluateLoaderProviderCrateManifest(spec.manifest, wrongVersion)
+        .some((issue) => issue.message.includes("inherit the workspace version")),
+      true,
+    );
+  }
+  const declarations = specs.map((spec) => {
+    const relativePath = spec.manifest
+      .replace(/^src-tauri\//, "")
+      .replace(/\/Cargo\.toml$/, "");
+    return `${spec.crateName} = { path = "${relativePath}" }`;
+  }).join("\n");
+  assert.deepEqual(evaluateHostLoaderDependencyDeclarations(declarations), []);
+  assert.equal(
+    evaluateHostLoaderDependencyDeclarations(declarations.replace("providers/flint-loader-provider-quilt", "providers/wrong-quilt"))
+      .length,
+    1,
+  );
+});
+
+test("loader provider lock entries share the host workspace version", () => {
+  const specs = reviewedLoaderProviderCrateSpecs();
+  const lock = [
+    "[[package]]",
+    'name = "flint"',
+    'version = "2026.10.1-d1cce64"',
+    "",
+    ...specs.flatMap((spec) => [
+      "[[package]]",
+      `name = "${spec.crateName}"`,
+      'version = "2026.10.1-d1cce64"',
+      "",
+    ]),
+  ].join("\n");
+  assert.deepEqual(evaluateLoaderProviderLockEntries(lock), []);
+  assert.equal(
+    evaluateLoaderProviderLockEntries(
+      lock.replace(
+        'name = "flint-loader-provider-quilt"\nversion = "2026.10.1-d1cce64"',
+        'name = "flint-loader-provider-quilt"\nversion = "0.0.0"',
+      ),
+    ).length,
+    1,
+  );
+});
+
+test("loader provider composition requires six leaf descriptors, keys, constructors, and one registry", () => {
+  const descriptors = [
+    "FABRIC_LOADER_DESCRIPTOR",
+    "FORGE_LOADER_DESCRIPTOR",
+    "LITELOADER_LOADER_DESCRIPTOR",
+    "NEOFORGE_LOADER_DESCRIPTOR",
+    "OPTIFINE_LOADER_DESCRIPTOR",
+    "QUILT_LOADER_DESCRIPTOR",
+  ];
+  const keys = [
+    "FABRIC_SELECTION_KEY",
+    "FORGE_SELECTION_KEY",
+    "LITELOADER_SELECTION_KEY",
+    "NEOFORGE_SELECTION_KEY",
+    "OPTIFINE_SELECTION_KEY",
+    "QUILT_SELECTION_KEY",
+  ];
+  const constructors = [
+    "FabricLoaderProvider::new",
+    "ForgeLoaderProvider::new",
+    "LiteLoaderProvider::new",
+    "NeoForgeLoaderProvider::new",
+    "OptiFineProvider::new",
+    "QuiltLoaderProvider::new",
+  ];
+  const source = [
+    ...descriptors.map((name) => `const ${name} = descriptor;`),
+    ...keys.map((name) => `const ${name} = key;`),
+    "pub struct LoaderProviderState { registry: Result<Arc<ProviderRegistry<dyn LoaderProvider>>, String> }",
+    "fn loader_provider_descriptors() -> Vec<ProviderDescriptor> {",
+    `    vec![${descriptors.join(", ")}]`,
+    "}",
+    "fn loader_provider_requirements() -> Vec<ProviderRequirement> {",
+    `    vec![${keys.map((key) => `requirement(${key})`).join(", ")}]`,
+    "}",
+    "fn build_loader_provider_registry() -> Result<ProviderRegistry<dyn LoaderProvider>, String> {",
+    `    let providers = vec![${constructors.map((constructor) => `Box::new(${constructor})`).join(", ")}];`,
+    "    ProviderRegistry::new(providers, LOADER_PROVIDER_API).map_err(|error| error.to_string())",
+    "}",
+  ].join("\n");
+  assert.deepEqual(evaluateLoaderProviderComposition(source), []);
+  assert.equal(
+    evaluateLoaderProviderComposition(source.replace("QUILT_SELECTION_KEY", "OTHER_KEY"))
+      .some((issue) => issue.message.includes("QUILT_SELECTION_KEY")),
+    true,
+  );
+  assert.equal(
+    evaluateLoaderProviderComposition(source.replace("OPTIFINE_LOADER_DESCRIPTOR", "OTHER_DESCRIPTOR"))
+      .some((issue) => issue.message.includes("OPTIFINE_LOADER_DESCRIPTOR")),
+    true,
+  );
+  assert.equal(
+    evaluateLoaderProviderComposition(source.replace("QuiltLoaderProvider::new", "OtherProvider::new"))
+      .some((issue) => issue.message.includes("QuiltLoaderProvider::new")),
+    true,
+  );
+  assert.equal(
+    evaluateLoaderProviderComposition(
+      source.replace(
+        "ProviderRegistry::new(providers, LOADER_PROVIDER_API).map_err(|error| error.to_string())",
+        "ProviderRegistry::new(providers, LOADER_PROVIDER_API); ProviderRegistry::new(providers, LOADER_PROVIDER_API)",
+      ),
+    ).some((issue) => issue.message.includes("exactly one provider registry")),
+    true,
+  );
 });
 
 test("host command gate map covers exactly the 28 feature commands and reviewed module", () => {

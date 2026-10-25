@@ -19,7 +19,7 @@ const FRONTEND_ROOT = path.join(REPO_ROOT, "src");
 const RUST_SOURCE_ROOT = path.join(REPO_ROOT, "src-tauri", "src");
 const RUST_MANIFEST = path.join(REPO_ROOT, "src-tauri", "Cargo.toml");
 const PROVIDER_API_SOURCE = "src-tauri/crates/flint-provider-api/src/lib.rs";
-const FOUNDATION_WORKSPACE_MEMBERS = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth"];
+const FOUNDATION_WORKSPACE_MEMBERS = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"];
 const COMPOSITION_ROOT = "src/app/composition.ts";
 const CONTRIBUTIONS_CONTRACT = "src/core/contributions.ts";
 const toPosix = (value) => value.split(path.sep).join("/");
@@ -991,25 +991,21 @@ function moduleParts(moduleId) {
 function moduleId(parts) {
   return parts.length === 0 ? "crate" : parts.join("::");
 }
-const RUST_MODULE_ALLOWLIST = new Set(["crate", "main", "auth", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "provider_composition", "saves", "settings", "version", "loader_api", "loader_providers", "loaders::provider_api", "loaders::providers"]);
+const RUST_MODULE_ALLOWLIST = new Set(["crate", "main", "auth", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "provider_composition", "saves", "settings", "version"]);
 const RUST_MODULE_EDGE_ALLOWLIST = new Map(Object.entries({
-  crate: ["auth", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "provider_composition", "saves", "settings", "version", "loader_api", "loader_providers"],
+  crate: ["auth", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "provider_composition", "saves", "settings", "version"],
   main: [],
   auth: ["models", "settings"],
-  feature_host: ["loaders", "provider_composition"],
+  feature_host: ["provider_composition"],
   install: ["models", "version"],
   java: ["models"],
   launch: ["auth", "java", "models", "settings", "version"],
-  loaders: ["install", "java", "models", "version", "loaders::provider_api", "loaders::providers"],
+  loaders: ["install", "java", "models", "paths", "version"],
   models: [],
   mods: ["models", "settings"],
   saves: ["models"],
   settings: ["models"],
   version: ["models"],
-  loader_api: ["models"],
-  loader_providers: ["loader_api", "loaders", "models"],
-  "loaders::provider_api": ["models"],
-  "loaders::providers": ["loader_api", "loaders", "models"],
   provider_composition: [],
 }));
 export function reviewedHostRustModuleIds() {
@@ -1503,14 +1499,166 @@ function checkModProviderCrateManifests(report) {
   }
 }
 
-const LOADER_API_FILES = [PROVIDER_API_SOURCE, "src-tauri/src/loader_api.rs", "src-tauri/src/loaders/provider_api.rs"];
-const LOADER_ADAPTER_FILES = ["src-tauri/src/loader_providers.rs", "src-tauri/src/loaders/providers.rs"];
-const LOADER_PROVIDER_TARGETS = [
-  ...LOADER_API_FILES.map((file) => providerTarget(file, "loader-provider-api", file === PROVIDER_API_SOURCE ? [] : ["models", "provider_api"])),
-  ...LOADER_ADAPTER_FILES.map((file) => providerTarget(file, "loader-provider-adapter", ["loader_api", "models"], {
-    loaders: { owner: "loader-provider-pilot", removeByPhase: 5, removal: "Extract loader helper leaves behind typed loader API/core ports." },
-  }, ["std", "reqwest", "flint_provider_api", "flint_core"])),
+const LOADER_PROVIDER_CRATE_SPECS = [
+  {
+    crateName: "flint-loader-provider-fabric",
+    manifest: "src-tauri/providers/flint-loader-provider-fabric/Cargo.toml",
+    source: "src-tauri/providers/flint-loader-provider-fabric/src/lib.rs",
+    dependencies: ["flint-core", "flint-provider-api", "serde_json"],
+  },
+  {
+    crateName: "flint-loader-provider-quilt",
+    manifest: "src-tauri/providers/flint-loader-provider-quilt/Cargo.toml",
+    source: "src-tauri/providers/flint-loader-provider-quilt/src/lib.rs",
+    dependencies: ["flint-core", "flint-provider-api", "serde_json"],
+  },
+  {
+    crateName: "flint-loader-provider-forge",
+    manifest: "src-tauri/providers/flint-loader-provider-forge/Cargo.toml",
+    source: "src-tauri/providers/flint-loader-provider-forge/src/lib.rs",
+    dependencies: ["flint-core", "flint-provider-api", "serde_json"],
+  },
+  {
+    crateName: "flint-loader-provider-neoforge",
+    manifest: "src-tauri/providers/flint-loader-provider-neoforge/Cargo.toml",
+    source: "src-tauri/providers/flint-loader-provider-neoforge/src/lib.rs",
+    dependencies: ["flint-core", "flint-provider-api"],
+  },
+  {
+    crateName: "flint-loader-provider-liteloader",
+    manifest: "src-tauri/providers/flint-loader-provider-liteloader/Cargo.toml",
+    source: "src-tauri/providers/flint-loader-provider-liteloader/src/lib.rs",
+    dependencies: ["flint-core", "flint-provider-api", "regex", "serde_json"],
+  },
+  {
+    crateName: "flint-loader-provider-optifine",
+    manifest: "src-tauri/providers/flint-loader-provider-optifine/Cargo.toml",
+    source: "src-tauri/providers/flint-loader-provider-optifine/src/lib.rs",
+    dependencies: ["flint-core", "flint-provider-api", "regex"],
+  },
 ];
+export function evaluateLoaderProviderDirectoryNames(names) {
+  const expected = LOADER_PROVIDER_CRATE_SPECS.map((spec) => spec.crateName).sort();
+  const actual = names.filter((name) => name.startsWith("flint-loader-provider-")).sort();
+  const issues = [];
+  for (const name of expected) {
+    if (!actual.includes(name)) issues.push(`missing loader provider crate directory '${name}'.`);
+  }
+  for (const name of actual) {
+    if (!expected.includes(name)) issues.push(`unexpected loader provider crate directory '${name}'.`);
+  }
+  return issues;
+}
+export function reviewedLoaderProviderCrateSpecs() {
+  return LOADER_PROVIDER_CRATE_SPECS.map((spec) => ({
+    crateName: spec.crateName,
+    manifest: spec.manifest,
+    source: spec.source,
+    dependencies: [...spec.dependencies].sort(),
+  }));
+}
+const LOADER_PROVIDER_TARGET_BY_SOURCE = new Map();
+const LOADER_API_FILES = [PROVIDER_API_SOURCE, "src-tauri/crates/flint-provider-api/src/loaders.rs"];
+const LOADER_ADAPTER_FILES = ["src-tauri/src/loaders.rs"];
+const LOADER_PROVIDER_TARGETS = [
+  ...LOADER_API_FILES.map((file) =>
+    providerTarget(
+      file,
+      "loader-provider-api",
+      [],
+      {},
+      file === PROVIDER_API_SOURCE ? ["std", "semver", "flint_core"] : ["std", "flint_core"],
+    ),
+  ),
+  ...LOADER_ADAPTER_FILES.map((file) =>
+    providerTarget(
+      file,
+      "loader-provider-adapter",
+      ["install", "java", "models", "paths", "version"],
+      {},
+      ["std", "flint_core", "flint_provider_api", "tauri"],
+    ),
+  ),
+  ...LOADER_PROVIDER_CRATE_SPECS.map((spec) =>
+    providerTarget(
+      spec.source,
+      "loader-provider-leaf",
+      [],
+      {},
+      ["std", ...spec.dependencies.map((dependency) => dependency.replace(/-/g, "_"))],
+    ),
+  ),
+];
+for (const target of LOADER_PROVIDER_TARGETS) LOADER_PROVIDER_TARGET_BY_SOURCE.set(target.file, target);
+export function evaluateLoaderProviderCrateManifest(relative, manifestText) {
+  const spec = LOADER_PROVIDER_CRATE_SPECS.find((candidate) => candidate.manifest === relative);
+  if (!spec) return [{ line: 1, message: `unknown loader provider crate manifest target '${relative}'.` }];
+  const issues = [];
+  if (!new RegExp(`^\\s*name\\s*=\\s*"${spec.crateName}"\\s*$`, "m").test(manifestText)) {
+    issues.push({ line: 1, message: `loader provider crate must be named exactly '${spec.crateName}'.` });
+  }
+  if (!/^\s*version\.workspace\s*=\s*true\s*$/m.test(manifestText)) {
+    issues.push({ line: 1, message: "loader provider crate must inherit the workspace version." });
+  }
+  if (!/^\s*publish\s*=\s*false\s*$/m.test(manifestText)) {
+    issues.push({ line: 1, message: "loader provider crate must declare publish = false." });
+  }
+  const declared = cargoDeclaredDependencyNames(manifestText);
+  const expected = [...spec.dependencies].sort();
+  if (JSON.stringify(declared) !== JSON.stringify(expected)) {
+    issues.push({
+      line: 1,
+      message: `loader provider dependencies must be exactly ${JSON.stringify(expected)}, found ${JSON.stringify(declared)}.`,
+    });
+  }
+  return issues;
+}
+
+function checkLoaderProviderCrateManifests(report) {
+  for (const spec of LOADER_PROVIDER_CRATE_SPECS) {
+    const absolutePath = path.join(REPO_ROOT, spec.manifest);
+    if (!fs.existsSync(absolutePath)) {
+      report("RUST-PHASE-TARGET-001", spec.manifest, 1, "the exact loader provider crate manifest is missing.");
+      continue;
+    }
+    for (const issue of evaluateLoaderProviderCrateManifest(spec.manifest, readText(absolutePath))) {
+      report("RUST-PROVIDER-DEP-ALLOW-001", spec.manifest, issue.line, issue.message);
+    }
+  }
+}
+
+export function evaluateLoaderProviderLockEntries(lockText) {
+  const issues = [];
+  const host = /\[\[package\]\]\s*\r?\nname = "flint"\s*\r?\nversion = "([^"]+)"/.exec(lockText);
+  if (!host) return [{ line: 1, message: "Cargo.lock must contain the host package 'flint' with its workspace version." }];
+  const version = host[1];
+  for (const spec of LOADER_PROVIDER_CRATE_SPECS) {
+    const pattern = new RegExp(`\\[\\[package\\]\\]\\r?\\nname = "${spec.crateName}"\\r?\\nversion = "([^"]+)"`);
+    const match = pattern.exec(lockText);
+    if (!match) {
+      issues.push({ line: 1, message: `Cargo.lock must contain local package '${spec.crateName}'.` });
+    } else if (match[1] !== version) {
+      issues.push({ line: 1, message: `Cargo.lock package '${spec.crateName}' version '${match[1]}' does not match host workspace version '${version}'.` });
+    }
+  }
+  return issues;
+}
+export function evaluateHostLoaderDependencyDeclarations(manifestText) {
+  const issues = [];
+  for (const spec of LOADER_PROVIDER_CRATE_SPECS) {
+    const relativePath = spec.manifest
+      .replace(/^src-tauri\//, "")
+      .replace(/\/Cargo\.toml$/, "");
+    const declaration = `${spec.crateName} = { path = "${relativePath}" }`;
+    if (!manifestText.includes(declaration)) {
+      issues.push({
+        line: 1,
+        message: `host manifest must declare loader provider path dependency '${declaration}'.`,
+      });
+    }
+  }
+  return issues;
+}
 export function reviewedProviderTargets() {
   return [...MOD_PROVIDER_TARGETS, ...LOADER_PROVIDER_TARGETS].map((target) => ({
     file: target.file,
@@ -1525,7 +1673,7 @@ const FORBIDDEN_PROVIDER_CODE = [
   [/\bstd\s*::[^;\n]*\b(?:fs|process|net)\b/g, "direct std filesystem/process/network path"],
   [/\bstd\s*::[^;\n]*\bos\b[^;\n]*\b(?:fs|process)\b/g, "platform process/filesystem extension"],
   [/\btokio\s*::[^;\n]*\bprocess\b/g, "tokio process path"],
-  [/\b(?:settings|paths)\s*::/g, "direct settings/paths module path"],
+  [/\bsettings\s*::/g, "direct settings module path"],
   [/\bCommand\s*::\s*new\s*\(/g, "process spawning"],
   [/\bFile\s*::\s*(?:open|create|create_new)\s*\(/g, "direct filesystem file access"],
   [/\b(?:TcpStream|TcpListener|UdpSocket)\b/g, "direct socket access"],
@@ -1573,7 +1721,10 @@ function checkProviderTarget(phase, target, graph, report) {
       ? moduleTargetsFromUse(declaration.payload, record.moduleId, graph.moduleSet)
       : new Set();
     for (const localTarget of declarationTargets) localTargets.add(localTarget);
-    const forbidden = forbiddenProviderUse(declaration.payload, declarationTargets);
+    const forbidden =
+      target.role === "loader-provider-adapter"
+        ? null
+        : forbiddenProviderUse(declaration.payload, declarationTargets);
     if (forbidden) {
       report("RUST-PROVIDER-IMPORT-001", record.relative, declaration.line, `forbidden provider import (${forbidden}).`);
       continue;
@@ -1595,14 +1746,25 @@ function checkProviderTarget(phase, target, graph, report) {
       );
     }
   }
-  if (target.role.startsWith("mod-provider") && /\breqwest\s*::/.test(record.productionText)) {
+  if (
+    (target.role.startsWith("mod-provider") || target.role.startsWith("loader-provider")) &&
+    /\breqwest\s*::/.test(record.productionText)
+  ) {
     report("RUST-PROVIDER-IO-001", record.relative, lineOf(record.productionText, record.productionText.search(/\breqwest\s*::/)), "forbidden provider code: direct reqwest path.");
   }
-  for (const [pattern, label] of FORBIDDEN_PROVIDER_CODE) {
-    pattern.lastIndex = 0;
-    let match;
-    while ((match = pattern.exec(record.productionText)) !== null) {
-      report("RUST-PROVIDER-IO-001", record.relative, lineOf(record.productionText, match.index), `forbidden provider code: ${label}.`);
+  if (/\bflint_(?:loader|mod)_provider_[a-z0-9_]+\b/.test(record.productionText)) {
+    report("RUST-PROVIDER-IMPORT-001", record.relative, 1, "loader/mod provider leaves may not import one another or concrete provider crates.");
+  }
+  if (target.role !== "loader-provider-adapter" && /\bLoaderKind\b/.test(record.productionText)) {
+    report("RUST-LOADER-DISPATCH-001", record.relative, lineOf(record.productionText, record.productionText.search(/\bLoaderKind\b/)), "LoaderKind belongs only in the sole host adapter src-tauri/src/loaders.rs.");
+  }
+  if (target.role !== "loader-provider-adapter") {
+    for (const [pattern, label] of FORBIDDEN_PROVIDER_CODE) {
+      pattern.lastIndex = 0;
+      let match;
+      while ((match = pattern.exec(record.productionText)) !== null) {
+        report("RUST-PROVIDER-IO-001", record.relative, lineOf(record.productionText, match.index), `forbidden provider code: ${label}.`);
+      }
     }
   }
 }
@@ -1682,11 +1844,82 @@ export function findLoaderKindDispatchSites(text) {
   }
   return sites;
 }
+const LOADER_PROVIDER_CONSTRUCTORS = [
+  "FabricLoaderProvider::new",
+  "ForgeLoaderProvider::new",
+  "LiteLoaderProvider::new",
+  "NeoForgeLoaderProvider::new",
+  "OptiFineProvider::new",
+  "QuiltLoaderProvider::new",
+];
+const LOADER_PROVIDER_DESCRIPTOR_ALIASES = [
+  "FABRIC_LOADER_DESCRIPTOR",
+  "FORGE_LOADER_DESCRIPTOR",
+  "LITELOADER_LOADER_DESCRIPTOR",
+  "NEOFORGE_LOADER_DESCRIPTOR",
+  "OPTIFINE_LOADER_DESCRIPTOR",
+  "QUILT_LOADER_DESCRIPTOR",
+];
+const LOADER_PROVIDER_SELECTION_KEY_NAMES = [
+  "FABRIC_SELECTION_KEY",
+  "FORGE_SELECTION_KEY",
+  "LITELOADER_SELECTION_KEY",
+  "NEOFORGE_SELECTION_KEY",
+  "OPTIFINE_SELECTION_KEY",
+  "QUILT_SELECTION_KEY",
+];
+export function evaluateLoaderProviderComposition(text) {
+  const issues = [];
+  const spans = findRustFunctionSpans(text);
+  const descriptorSpan = spans.find((span) => span.name === "loader_provider_descriptors");
+  const requirementSpan = spans.find((span) => span.name === "loader_provider_requirements");
+  const registrySpan = spans.find((span) => span.name === "build_loader_provider_registry");
+  const stateDeclarations = (text.match(/\bstruct\s+LoaderProviderState\b/g) ?? []).length;
+  if (stateDeclarations !== 1 || !text.includes("pub struct LoaderProviderState")) {
+    issues.push({ line: 1, message: "loader provider composition must expose exactly one LoaderProviderState." });
+  }
+  if (!text.includes("Arc<ProviderRegistry<dyn LoaderProvider>>")) {
+    issues.push({ line: 1, message: "LoaderProviderState must own an Arc<ProviderRegistry<dyn LoaderProvider>>." });
+  }
+  for (const descriptor of LOADER_PROVIDER_DESCRIPTOR_ALIASES) {
+    if (!text.includes(descriptor)) issues.push({ line: 1, message: `loader provider composition must expose leaf descriptor '${descriptor}'.` });
+  }
+  for (const key of LOADER_PROVIDER_SELECTION_KEY_NAMES) {
+    if (!text.includes(key)) issues.push({ line: 1, message: `loader provider composition must declare requirement key '${key}'.` });
+  }
+  if (!descriptorSpan) {
+    issues.push({ line: 1, message: "loader provider composition must define loader_provider_descriptors()." });
+  } else {
+    const block = text.slice(descriptorSpan.start, descriptorSpan.end);
+    for (const descriptor of LOADER_PROVIDER_DESCRIPTOR_ALIASES) {
+      if (!block.includes(descriptor)) issues.push({ line: descriptorSpan.line, message: `loader_provider_descriptors() must use leaf descriptor '${descriptor}'.` });
+    }
+  }
+  if (!requirementSpan) {
+    issues.push({ line: 1, message: "loader provider composition must define loader_provider_requirements()." });
+  } else {
+    const block = text.slice(requirementSpan.start, requirementSpan.end);
+    for (const key of LOADER_PROVIDER_SELECTION_KEY_NAMES) {
+      if (!block.includes(key)) issues.push({ line: requirementSpan.line, message: `loader_provider_requirements() must use key '${key}'.` });
+    }
+  }
+  if (!registrySpan) {
+    issues.push({ line: 1, message: "loader provider composition must define build_loader_provider_registry()." });
+  } else {
+    const block = text.slice(registrySpan.start, registrySpan.end);
+    for (const constructor of LOADER_PROVIDER_CONSTRUCTORS) {
+      if (!block.includes(constructor)) issues.push({ line: registrySpan.line, message: `loader provider registry must register '${constructor}'.` });
+    }
+    const constructions = (block.match(/\bProviderRegistry\s*::\s*new\s*\(/g) ?? []).length;
+    if (constructions !== 1) issues.push({ line: registrySpan.line, message: `build_loader_provider_registry() must construct exactly one provider registry, found ${constructions}.` });
+  }
+  return issues;
+}
 function checkProviderCompositionBoundaries(graph, report) {
   const compositionRelative = "src-tauri/src/provider_composition.rs";
   const composition = graph.records.find((record) => record.relative === compositionRelative);
   if (!composition) {
-    report("RUST-PHASE-TARGET-001", compositionRelative, 1, "the explicit host mod provider composition target is missing.");
+    report("RUST-PHASE-TARGET-001", compositionRelative, 1, "the explicit host provider composition target is missing.");
     return;
   }
   const production = composition.productionText;
@@ -1696,16 +1929,29 @@ function checkProviderCompositionBoundaries(graph, report) {
     }
   }
   const registryConstructions = (production.match(/\bProviderRegistry\s*::\s*new\s*\(/g) ?? []).length;
-  if (registryConstructions !== 1) {
-    report("RUST-PROVIDER-COMPOSITION-001", compositionRelative, 1, `host composition must construct the mod provider registry exactly once, found ${registryConstructions}.`);
+  if (registryConstructions !== 2) {
+    report("RUST-PROVIDER-COMPOSITION-001", compositionRelative, 1, `host composition must construct one mod and one loader provider registry, found ${registryConstructions} registry constructions.`);
+  }
+  const modRegistrySpan = findRustFunctionSpans(production).find((span) => span.name === "build_mod_provider_registry");
+  const modConstructions = modRegistrySpan
+    ? (production.slice(modRegistrySpan.start, modRegistrySpan.end).match(/\bProviderRegistry\s*::\s*new\s*\(/g) ?? []).length
+    : 0;
+  if (!modRegistrySpan || modConstructions !== 1) {
+    report("RUST-PROVIDER-COMPOSITION-001", compositionRelative, modRegistrySpan?.line ?? 1, "build_mod_provider_registry() must construct exactly one provider registry.");
+  }
+  for (const issue of evaluateLoaderProviderComposition(production)) {
+    report("RUST-PROVIDER-COMPOSITION-001", compositionRelative, issue.line, issue.message);
   }
   for (const record of graph.records) {
     if (record.relative === compositionRelative) continue;
-    if (/\b(?:CurseForgeModProvider|ModrinthModProvider)\b|flint_mod_provider_(?:curseforge|modrinth)\b/.test(record.productionText)) {
-      report("RUST-PROVIDER-COMPOSITION-001", record.relative, 1, "concrete mod provider construction/imports must stay in src-tauri/src/provider_composition.rs.");
+    if (/\b(?:CurseForgeModProvider|ModrinthModProvider|FabricLoaderProvider|ForgeLoaderProvider|LiteLoaderProvider|NeoForgeLoaderProvider|OptiFineProvider|QuiltLoaderProvider)\b|flint_(?:mod|loader)_provider_[a-z0-9_]+\b/.test(record.productionText)) {
+      report("RUST-PROVIDER-COMPOSITION-001", record.relative, 1, "concrete provider construction/imports must stay in src-tauri/src/provider_composition.rs.");
     }
     if (record.productionText.includes("ModProvider") && /\bProviderRegistry\s*::\s*new\s*\(/.test(record.productionText)) {
       report("RUST-PROVIDER-COMPOSITION-001", record.relative, 1, "the mod provider registry may only be constructed in src-tauri/src/provider_composition.rs.");
+    }
+    if (record.productionText.includes("LoaderProvider") && /\bProviderRegistry\s*::\s*new\s*\(/.test(record.productionText)) {
+      report("RUST-PROVIDER-COMPOSITION-001", record.relative, 1, "the loader provider registry may only be constructed in src-tauri/src/provider_composition.rs.");
     }
   }
 }
@@ -1747,33 +1993,102 @@ function checkModSourceBoundaries(graph, report) {
 
 export function requiredLoaderFiles(phase, report, exists = (file) => fs.existsSync(path.join(REPO_ROOT, file))) {
   if (phase < 2) return [];
-  const apiFiles = LOADER_API_FILES.filter(exists);
-  const adapterFiles = LOADER_ADAPTER_FILES.filter(exists);
-  if (apiFiles.length === 0) {
-    report("RUST-PHASE-TARGET-001", LOADER_API_FILES[0], 1, `phase ${phase} requires a reviewed loader-provider API target (${LOADER_API_FILES.join(" or ")}).`);
+  const required = [...LOADER_API_FILES, ...LOADER_ADAPTER_FILES];
+  const present = [];
+  for (const file of required) {
+    if (exists(file)) {
+      present.push(file);
+    } else {
+      report("RUST-PHASE-TARGET-001", file, 1, `phase ${phase} requires the exact reviewed loader-provider API/adapter target '${file}'.`);
+    }
   }
-  if (adapterFiles.length === 0) {
-    report("RUST-PHASE-TARGET-001", LOADER_ADAPTER_FILES[0], 1, `phase ${phase} requires a reviewed loader-provider adapter target (${LOADER_ADAPTER_FILES.join(" or ")}).`);
+  for (const legacy of [
+    "src-tauri/src/loader_api.rs",
+    "src-tauri/src/loader_providers.rs",
+    "src-tauri/src/loaders/provider_api.rs",
+    "src-tauri/src/loaders/providers.rs",
+  ]) {
+    if (exists(legacy)) {
+      report("RUST-LOADER-ADAPTER-001", legacy, 1, "legacy host-local loader adapter/API target is forbidden; use the extracted provider API and src-tauri/src/loaders.rs.");
+    }
   }
-  if (adapterFiles.length > 1) {
-    report("RUST-LOADER-ADAPTER-001", adapterFiles[1], 1, "exactly one reviewed loader-provider adapter target may exist.");
+  return present;
+}
+function rustFilesUnder(relativeDirectory) {
+  const files = [];
+  const root = path.join(REPO_ROOT, relativeDirectory);
+  if (!fs.existsSync(root)) return files;
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const absolute = path.join(current, entry.name);
+      if (entry.isDirectory()) stack.push(absolute);
+      else if (entry.isFile() && entry.name.endsWith(".rs")) files.push(relFromRepo(absolute));
+    }
   }
-  return [...apiFiles, ...adapterFiles];
+  return files.sort();
 }
 function checkLoaderProviderGate(phase, graph, report) {
   if (phase < 2) return;
   const files = requiredLoaderFiles(phase, report);
+  const providersRoot = path.join(REPO_ROOT, "src-tauri/providers");
+  if (fs.existsSync(providersRoot)) {
+    const directories = fs
+      .readdirSync(providersRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+    for (const issue of evaluateLoaderProviderDirectoryNames(directories)) {
+      report("RUST-PROVIDER-COMPOSITION-001", "src-tauri/providers", 1, issue);
+    }
+  }
   const targets = LOADER_PROVIDER_TARGETS.filter((target) => files.includes(target.file));
   for (const target of targets) checkProviderTarget(phase, target, graph, report);
-  const adapterFiles = files.filter((file) => LOADER_ADAPTER_FILES.includes(file));
-  if (adapterFiles.length === 1) {
+  for (const spec of LOADER_PROVIDER_CRATE_SPECS) {
+    if (!fs.existsSync(path.join(REPO_ROOT, spec.source))) {
+      report("RUST-PHASE-TARGET-001", spec.source, 1, `phase ${phase} requires the exact loader provider leaf '${spec.crateName}'.`);
+      continue;
+    }
+    const target = LOADER_PROVIDER_TARGET_BY_SOURCE.get(spec.source);
+    if (target) {
+      checkProviderTarget(phase, target, graph, report);
+      for (const file of rustFilesUnder(path.dirname(spec.source))) {
+        if (file === spec.source) continue;
+        checkProviderTarget(phase, { ...target, file }, graph, report);
+      }
+    }
+  }
+  const adapterRelative = LOADER_ADAPTER_FILES[0];
+  const adapterRecord = graph.records.find((record) => record.relative === adapterRelative);
+  if (adapterRecord) {
+    const binding = findRustFunctionSpans(adapterRecord.productionText)
+      .find((span) => span.name === "loader_binding");
+    const sites = findLoaderKindDispatchSites(adapterRecord.productionText);
+    const allowed = sites.filter((site) => binding && site.index >= binding.start && site.index < binding.end);
+    const outside = sites.filter((site) => !allowed.includes(site));
+    const variants = allowed.filter((site) => site.kind === "LoaderKind-variant");
+    const bindingBlock = binding
+      ? adapterRecord.productionText.slice(binding.start, binding.end)
+      : "";
+    const hasBindingFields =
+      /\brequirement\s*:/.test(bindingBlock) &&
+      /\bprovider_id\s*:/.test(bindingBlock) &&
+      /\bdisplay_name\s*:/.test(bindingBlock);
+    if (!binding || outside.length > 0 || variants.length !== 6 || !hasBindingFields) {
+      report(
+        "RUST-LOADER-ADAPTER-001",
+        adapterRelative,
+        binding?.line ?? 1,
+        "expected exactly one LoaderKind-to-provider binding inside loader_binding() with six variants and no other production LoaderKind dispatch.",
+      );
+    }
     for (const record of graph.records) {
-      if (record.relative === adapterFiles[0]) continue;
+      if (record.relative === adapterRelative) continue;
       const reportedLines = new Set();
       for (const site of findLoaderKindDispatchSites(record.productionText)) {
         if (reportedLines.has(site.line)) continue;
         reportedLines.add(site.line);
-        report("RUST-LOADER-DISPATCH-001", record.relative, site.line, `LoaderKind dispatch form '${site.kind}' is forbidden outside the reviewed loader-provider adapter.`);
+        report("RUST-LOADER-DISPATCH-001", record.relative, site.line, `LoaderKind dispatch form '${site.kind}' is forbidden outside the sole host adapter src-tauri/src/loaders.rs.`);
       }
     }
   }
@@ -1894,6 +2209,9 @@ function checkFoundationWorkspaceManifest(manifestText, report) {
       `the phase-3 workspace foundation members must be exactly ${JSON.stringify(FOUNDATION_WORKSPACE_MEMBERS)}.`,
     );
   }
+  for (const issue of evaluateHostLoaderDependencyDeclarations(manifestText)) {
+    report("RUST-CARGO-LOADER-DEP-001", "src-tauri/Cargo.toml", issue.line, issue.message);
+  }
 }
 function checkCargoGate(phase, report) {
   if (!fs.existsSync(RUST_MANIFEST)) {
@@ -1904,6 +2222,15 @@ function checkCargoGate(phase, report) {
   const hasWorkspace = /^\s*\[workspace\]\s*(?:#.*)?$/m.test(manifestText);
   if (phase < 4) {
     if (hasWorkspace) checkFoundationWorkspaceManifest(manifestText, report);
+    const lockRelative = "src-tauri/Cargo.lock";
+    const lockPath = path.join(REPO_ROOT, lockRelative);
+    if (!fs.existsSync(lockPath)) {
+      report("RUST-CARGO-LOCK-001", lockRelative, 1, "the single workspace lockfile is missing.");
+    } else {
+      for (const issue of evaluateLoaderProviderLockEntries(readText(lockPath))) {
+        report("RUST-CARGO-LOCK-001", lockRelative, issue.line, issue.message);
+      }
+    }
     return;
   }
   if (!hasWorkspace) {
@@ -2009,6 +2336,7 @@ function runRequestedPhase(phase) {
   if (!fs.existsSync(RUST_SOURCE_ROOT)) report("ARCH-ROOT-001", "src-tauri/src", 1, "Rust source root is missing.");
   const graph = buildRustGraph(report);
   checkModProviderCrateManifests(report);
+  checkLoaderProviderCrateManifests(report);
   checkProviderCompositionBoundaries(graph, report);
   for (const target of MOD_PROVIDER_TARGETS) {
     if (!fs.existsSync(path.join(REPO_ROOT, target.file))) {

@@ -352,6 +352,73 @@ fn normalize_architecture(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn unique_test_path(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        env::temp_dir().join(format!(
+            "flint-java-{label}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn resolves_empty_java_path_to_platform_default() {
+        let resolved = resolve_java_path("   ").expect("platform default java");
+        assert_eq!(
+            resolved.file_name().and_then(|value| value.to_str()),
+            Some(java_executable())
+        );
+    }
+
+    #[test]
+    fn resolves_java_directory_to_canonical_executable() {
+        let root = unique_test_path("directory");
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).expect("create java test directory");
+        let executable = bin.join(java_executable());
+        fs::write(&executable, b"test").expect("create fake java executable");
+        let root_value = root.to_string_lossy().to_string();
+        let resolved = resolve_java_path(&root_value).expect("resolve directory");
+        assert_eq!(
+            resolved,
+            fs::canonicalize(&executable).expect("canonical java executable")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolves_relative_java_file_to_canonical_path() {
+        let relative_name = format!(
+            ".flint-java-relative-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        );
+        let absolute = env::current_dir()
+            .expect("current directory")
+            .join(&relative_name);
+        fs::write(&absolute, b"test").expect("create relative fake java executable");
+        let resolved = resolve_java_path(&relative_name).expect("resolve relative java file");
+        assert_eq!(
+            resolved,
+            fs::canonicalize(&absolute).expect("canonical relative java file")
+        );
+        let _ = fs::remove_file(absolute);
+    }
+
+    #[test]
+    fn rejects_missing_java_executable_with_existing_error() {
+        let missing = unique_test_path("missing");
+        let input = missing.to_string_lossy().to_string();
+        assert_eq!(
+            resolve_java_path(&input).expect_err("missing java path"),
+            format!("Java executable not found: {input}")
+        );
+    }
     #[test]
     fn parses_modern_java_version_and_properties() {
         let output = "openjdk version \"21.0.2\" 2024-01-16\nProperty settings:\n    java.version = 21.0.2\n    os.arch = amd64\n";

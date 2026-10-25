@@ -98,26 +98,44 @@ impl LoggerPort for NoopLogger {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Deadline {
-    expires_at: Instant,
+    expires_at: Option<Instant>,
 }
 
 impl Deadline {
+    /// A non-expiring deadline for operations whose individual requests and
+    /// processes already carry their own bounded timeouts.
+    pub const fn none() -> Self {
+        Self { expires_at: None }
+    }
+
     pub fn after(duration: Duration) -> Self {
         Self {
-            expires_at: Instant::now() + duration,
+            expires_at: Some(Instant::now() + duration),
         }
     }
 
     pub fn at(expires_at: Instant) -> Self {
-        Self { expires_at }
+        Self {
+            expires_at: Some(expires_at),
+        }
     }
 
     pub fn remaining(&self) -> Duration {
-        self.expires_at.saturating_duration_since(Instant::now())
+        match self.expires_at {
+            Some(expires_at) => expires_at.saturating_duration_since(Instant::now()),
+            None => Duration::MAX,
+        }
     }
 
     pub fn is_expired(&self) -> bool {
-        Instant::now() >= self.expires_at
+        match self.expires_at {
+            Some(expires_at) => Instant::now() >= expires_at,
+            None => false,
+        }
+    }
+
+    pub fn is_none(&self) -> bool {
+        self.expires_at.is_none()
     }
 
     pub fn check(&self) -> Result<(), String> {
@@ -180,12 +198,31 @@ mod tests {
     #[test]
     fn deadlines_and_cancellation_are_fail_closed() {
         let deadline = Deadline::after(Duration::from_secs(60));
+        assert!(!deadline.is_none());
         assert!(!deadline.is_expired());
+        assert!(deadline.remaining() <= Duration::from_secs(60));
         assert!(deadline.check().is_ok());
+
+        let expired = Deadline::at(Instant::now() - Duration::from_secs(1));
+        assert!(expired.is_expired());
+        assert_eq!(
+            expired.check().expect_err("expired deadline"),
+            "Operation deadline exceeded."
+        );
+
         let cancellation = Cancellation::new();
         assert!(cancellation.check().is_ok());
         cancellation.cancel();
         assert!(cancellation.is_cancelled());
         assert!(cancellation.check().is_err());
+    }
+
+    #[test]
+    fn non_expiring_deadlines_are_explicit_and_never_fail() {
+        let deadline = Deadline::none();
+        assert!(deadline.is_none());
+        assert!(!deadline.is_expired());
+        assert_eq!(deadline.remaining(), Duration::MAX);
+        assert!(deadline.check().is_ok());
     }
 }

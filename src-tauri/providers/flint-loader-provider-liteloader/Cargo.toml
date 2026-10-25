@@ -1,0 +1,17 @@
+[package]
+name = "flint-loader-provider-liteloader"
+version.workspace = true
+description = "LiteLoader LoaderProvider implementation for Flint"
+authors = ["Flint Contributors"]
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+[dependencies]
+flint-core = { path = "../../crates/flint-core" }
+flint-provider-api = { path = "../../crates/flint-provider-api" }
+regex = "=1.11.1"
+serde_json = "1"
+
+[dev-dependencies]
+flint-provider-api = { path = "../../crates/flint-provider-api", features = ["test-ports"] }

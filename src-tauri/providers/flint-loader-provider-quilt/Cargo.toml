@@ -1,0 +1,16 @@
+[package]
+name = "flint-loader-provider-quilt"
+version.workspace = true
+description = "Quilt LoaderProvider implementation for Flint"
+authors = ["Flint Contributors"]
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+[dependencies]
+flint-core = { path = "../../crates/flint-core" }
+flint-provider-api = { path = "../../crates/flint-provider-api" }
+serde_json = "1"
+
+[dev-dependencies]
+flint-provider-api = { path = "../../crates/flint-provider-api", features = ["test-ports"] }

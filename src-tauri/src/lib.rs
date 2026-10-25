@@ -195,13 +195,16 @@ async fn refresh_active_account(
 #[tauri::command]
 async fn list_loader_versions(
     runtime: tauri::State<'_, feature_host::HostRuntime>,
+    loader_providers: tauri::State<'_, provider_composition::LoaderProviderState>,
     loader: LoaderKind,
     game_version: String,
 ) -> Result<Vec<LoaderVersionInfo>, String> {
     runtime.ensure_feature_ready(feature_host::FEATURE_LOADERS)?;
     drop(runtime);
+    let registry = loader_providers.registry()?;
+    drop(loader_providers);
     tokio::task::spawn_blocking(move || {
-        loaders::list_loader_versions_blocking(loader, &game_version)
+        loaders::list_loader_versions_blocking(registry, loader, &game_version)
     })
     .await
     .map_err(error::background_error)?
@@ -210,14 +213,19 @@ async fn list_loader_versions(
 #[tauri::command]
 async fn install_loader(
     runtime: tauri::State<'_, feature_host::HostRuntime>,
+    loader_providers: tauri::State<'_, provider_composition::LoaderProviderState>,
     app: tauri::AppHandle,
     request: LoaderInstallRequest,
 ) -> Result<LoaderInstallResult, String> {
     runtime.ensure_feature_ready(feature_host::FEATURE_LOADERS)?;
     drop(runtime);
-    tokio::task::spawn_blocking(move || loaders::install_loader_blocking(&app, &request))
-        .await
-        .map_err(error::background_error)?
+    let registry = loader_providers.registry()?;
+    drop(loader_providers);
+    tokio::task::spawn_blocking(move || {
+        loaders::install_loader_blocking(&app, registry, &request)
+    })
+    .await
+    .map_err(error::background_error)?
 }
 
 #[tauri::command]
@@ -473,6 +481,9 @@ pub fn run() {
             }
             if !app.manage(provider_composition::ModProviderState::new()) {
                 eprintln!("Mod provider registry state registration failed; provider commands will be unavailable.");
+            }
+            if !app.manage(provider_composition::LoaderProviderState::new()) {
+                eprintln!("Loader provider registry state registration failed; loader commands will be unavailable.");
             }
             Ok(())
         })

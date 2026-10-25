@@ -785,6 +785,83 @@ pub fn log_info(logger: &dyn LoggerPort, message: &str) {
     logger.info(message);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkOperation {
+    Request,
+    Download,
+}
+
+/// Shared translation of typed-network errors into stable user-facing loader
+/// messages. Providers must route network failures through this helper so
+/// status, transport, body-limit, and download failures stay consistent.
+pub fn translate_network_error(
+    service: &str,
+    operation: NetworkOperation,
+    error: impl std::fmt::Display,
+) -> String {
+    let sanitized = crate::ports::network::sanitize_network_error(error);
+    let detail = strip_network_service_prefix(service, &sanitized);
+    if is_network_body_error(&detail) {
+        return detail;
+    }
+    if detail.starts_with("Refusing to use a non-HTTPS URL.") {
+        return detail;
+    }
+    let Some(status) = network_http_status(&detail) else {
+        if operation == NetworkOperation::Download
+            && (detail.starts_with("Download failed for ")
+                || detail.starts_with("Invalid SHA-1 supplied for "))
+        {
+            return detail;
+        }
+        return format!("Cannot contact {service}: {detail}");
+    };
+    match status {
+        401 | 403 => format!(
+            "{service} rejected the request. Check access permissions or try another version."
+        ),
+        404 => format!("{service} did not find the requested resource."),
+        _ => format!(
+            "{service} request failed with HTTP {status}. Check connectivity or try another version."
+        ),
+    }
+}
+
+fn strip_network_service_prefix(service: &str, error: &str) -> String {
+    let prefixes = [
+        format!("{service} request failed: "),
+        format!("{service} request rejected: "),
+        format!("{service} download setup failed: "),
+        format!("{service}: "),
+    ];
+    for prefix in prefixes {
+        if let Some(detail) = error.strip_prefix(prefix.as_str()) {
+            return detail.to_string();
+        }
+    }
+    error.to_string()
+}
+
+fn is_network_body_error(error: &str) -> bool {
+    error.contains("HTTP response is too large (")
+        || error.contains("HTTP response exceeds the ")
+        || error.contains("Cannot read HTTP response:")
+}
+
+fn network_http_status(error: &str) -> Option<u16> {
+    let tail = &error[error.find("HTTP status")?..];
+    let open = tail.find('(')?;
+    let code = tail[open + 1..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>();
+    if code.len() == 3 {
+        code.parse().ok()
+    } else {
+        None
+    }
+}
+
 pub fn fetch_json(
     network: &dyn NetworkPort,
     url: &str,
@@ -798,7 +875,9 @@ pub fn fetch_json(
     let label = ServiceLabel::new(service)
         .map_err(|error| format!("Invalid metadata service label: {error}"))?;
     let request = NetworkRequest::new(url, label, max_bytes, timeout);
-    let bytes = network.read_bytes(&request)?;
+    let bytes = network
+        .read_bytes(&request)
+        .map_err(|error| translate_network_error(service, NetworkOperation::Request, error))?;
     serde_json::from_slice(&bytes)
         .map_err(|error| format!("{service} returned invalid JSON: {error}"))
 }
@@ -816,7 +895,9 @@ pub fn fetch_text(
     let label = ServiceLabel::new(service)
         .map_err(|error| format!("Invalid metadata service label: {error}"))?;
     let request = NetworkRequest::new(url, label, max_bytes, timeout);
-    let bytes = network.read_bytes(&request)?;
+    let bytes = network
+        .read_bytes(&request)
+        .map_err(|error| translate_network_error(service, NetworkOperation::Request, error))?;
     Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
@@ -958,7 +1039,8 @@ pub fn install_meta_profile(
         };
         let url = force_https_url(url);
         let destination = workspace.join(&format!("libraries/{}", file.path))?;
-        let label = ServiceLabel::new("Minecraft library")
+        let download_service = "Minecraft library";
+        let label = ServiceLabel::new(download_service)
             .map_err(|error| format!("Invalid library service label: {error}"))?;
         let download = DownloadRequest::new(
             url,
@@ -968,7 +1050,16 @@ pub fn install_meta_profile(
             request.library_max_bytes,
             request.metadata_timeout,
         );
-        context.network().download_atomic(&download)?;
+        context
+            .network()
+            .download_atomic(&download)
+            .map_err(|error| {
+                translate_network_error(
+                    download_service,
+                    NetworkOperation::Download,
+                    error,
+                )
+            })?;
         downloaded += 1;
         report_progress(
             context.progress(),
@@ -978,8 +1069,25 @@ pub fn install_meta_profile(
         );
     }
     context.check_control()?;
+    report_progress(
+        context.progress(),
+        0,
+        Some(1),
+        "Writing loader version profile",
+    );
     write_version_profile(context.root(), context.workspace(), installed_id, &profile)?;
-    report_progress(context.progress(), 1, Some(1), format!("{} profile written", request.service_name));
+    report_progress(
+        context.progress(),
+        1,
+        Some(1),
+        "Loader version profile written",
+    );
+    report_progress(
+        context.progress(),
+        1,
+        Some(1),
+        format!("{} installation complete", request.service_name),
+    );
     Ok(MetaProfileOutput {
         installed_version_id: installed_id.to_string(),
         libraries_downloaded: downloaded,
@@ -1086,7 +1194,8 @@ pub fn install_java_installer(
     let installer_relative = format!("loader-installers/{}", request.installer_file_name);
     let installer_path = workspace.join(&installer_relative)?;
     context.check_control()?;
-    let label = ServiceLabel::new(format!("{} installer", request.service_name))
+    let download_service = format!("{} installer", request.service_name);
+    let label = ServiceLabel::new(download_service.clone())
         .map_err(|error| format!("Invalid installer service label: {error}"))?;
     let download = DownloadRequest::new(
         installer_url,
@@ -1101,7 +1210,16 @@ pub fn install_java_installer(
         context.logger(),
         &format!("Downloading {} installer", request.service_name),
     );
-    context.network().download_atomic(&download)?;
+    context
+        .network()
+        .download_atomic(&download)
+        .map_err(|error| {
+            translate_network_error(
+                &download_service,
+                NetworkOperation::Download,
+                error,
+            )
+        })?;
     context.check_control()?;
     let prefix = workspace.read_jar_prefix(&installer_relative)?;
     if !is_jar_zip_prefix(&prefix) {
@@ -1500,6 +1618,89 @@ mod tests {
     }
 
     #[test]
+    fn shared_network_error_translation_preserves_loader_semantics() {
+        assert_eq!(
+            translate_network_error(
+                "Fabric Meta",
+                NetworkOperation::Request,
+                "Fabric Meta request failed: HTTP status client error (404 Not Found)"
+            ),
+            "Fabric Meta did not find the requested resource."
+        );
+        assert_eq!(
+            translate_network_error(
+                "Fabric Meta",
+                NetworkOperation::Request,
+                "Fabric Meta request failed: HTTP status client error (401 Unauthorized)"
+            ),
+            "Fabric Meta rejected the request. Check access permissions or try another version."
+        );
+        assert_eq!(
+            translate_network_error(
+                "Fabric Meta",
+                NetworkOperation::Request,
+                "Fabric Meta request failed: HTTP status client error (403 Forbidden)"
+            ),
+            "Fabric Meta rejected the request. Check access permissions or try another version."
+        );
+        assert_eq!(
+            translate_network_error(
+                "Fabric Meta",
+                NetworkOperation::Request,
+                "Fabric Meta request failed: HTTP status server error (500 Internal Server Error)"
+            ),
+            "Fabric Meta request failed with HTTP 500. Check connectivity or try another version."
+        );
+        assert_eq!(
+            translate_network_error(
+                "Fabric Meta",
+                NetworkOperation::Request,
+                "Fabric Meta request failed: connection reset while opening https://example.com/path?token=secret"
+            ),
+            "Cannot contact Fabric Meta: connection reset while opening [redacted-url]"
+        );
+        assert_eq!(
+            translate_network_error(
+                "Fabric Meta",
+                NetworkOperation::Request,
+                "Fabric Meta request failed: HTTP response is too large (999 bytes, limit 16777216)."
+            ),
+            "HTTP response is too large (999 bytes, limit 16777216)."
+        );        assert_eq!(
+            translate_network_error(
+                "Fabric Meta",
+                NetworkOperation::Request,
+                "Fabric Meta request failed: Cannot read HTTP response: connection reset"
+            ),
+            "Cannot read HTTP response: connection reset"
+        );
+        assert_eq!(
+            translate_network_error(
+                "Forge installer",
+                NetworkOperation::Download,
+                "Forge installer: Download failed for Forge installer after 3 attempts: HTTP response is too large (999 bytes, limit 16777216)."
+            ),
+            "Download failed for Forge installer after 3 attempts: HTTP response is too large (999 bytes, limit 16777216)."
+        );
+        assert_eq!(
+            translate_network_error(
+                "Forge installer",
+                NetworkOperation::Download,
+                "Forge installer: Download failed for Forge installer after 3 attempts: connection reset"
+            ),
+            "Download failed for Forge installer after 3 attempts: connection reset"
+        );
+        assert_eq!(
+            translate_network_error(
+                "Forge installer",
+                NetworkOperation::Download,
+                "Forge installer: Download failed for Forge installer after 3 attempts: HTTP status client error (404 Not Found)"
+            ),
+            "Forge installer did not find the requested resource."
+        );
+    }
+
+    #[test]
     fn version_helpers_handle_rules_native_files_and_version_order() {
         let platform = MinecraftPlatform::new("windows", "10.0", "x86_64");
         let context = platform.rule_context();
@@ -1631,7 +1832,7 @@ mod tests {
         let network = FakeNetwork::new(b"not json".to_vec());
         let deadline = Deadline::after(Duration::from_secs(75));
         let cancellation = Cancellation::new();
-        assert!(fetch_json(
+        let error = fetch_json(
             &network,
             "https://example.com/metadata.json",
             "Example",
@@ -1640,7 +1841,8 @@ mod tests {
             &deadline,
             &cancellation,
         )
-        .is_err());
+        .expect_err("invalid JSON must fail");
+        assert!(error.starts_with("Example returned invalid JSON:"));
         fn assert_send_sync<T: ?Sized + Send + Sync>() {}
         assert_send_sync::<dyn NetworkPort>();
         assert_send_sync::<dyn JavaRunner>();
