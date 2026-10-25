@@ -703,7 +703,7 @@ test("extracted feature waves use exact manifests, edges, directories, and locks
   );
   assert.deepEqual(
     specs.find((spec) => spec.crateName === "flint-feature-vanilla").dependencies,
-    ["flint-core", "flint-feature-api", "regex", "reqwest", "serde", "serde_json", "sha1"],
+    ["dirs", "flint-core", "flint-feature-api", "regex", "reqwest", "serde", "serde_json", "sha1"],
   );
   assert.deepEqual(
     specs.find((spec) => spec.crateName === "flint-feature-launch").dependencies,
@@ -815,7 +815,7 @@ test("extracted feature waves use exact manifests, edges, directories, and locks
   );
   assert.deepEqual(
     targets.find((target) => target.file.includes("flint-feature-vanilla")).externalRoots,
-    ["flint_core", "flint_feature_api", "regex", "reqwest", "serde", "serde_json", "sha1", "std"],
+    ["dirs", "flint_core", "flint_feature_api", "regex", "reqwest", "serde", "serde_json", "sha1", "std"],
   );
   assert.deepEqual(
     targets.find((target) => target.file.includes("flint-feature-vanilla")).localTargets,
