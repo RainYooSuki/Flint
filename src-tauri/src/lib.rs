@@ -5,7 +5,7 @@ mod models;
 mod mods;
 mod provider_composition;
 
-pub(crate) use flint_core::{error, net, paths};
+pub(crate) use flint_core::{error, paths};
 pub(crate) use flint_feature_accounts as auth;
 pub(crate) use flint_feature_launch as launch;
 pub(crate) use flint_feature_saves as saves;

@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,7 +14,7 @@ pub use flint_feature_saves::{SaveInfo, SaveTransferResult};
 pub use flint_feature_settings::LauncherSettings;
 
 pub use flint_feature_accounts::{
-    AccountInfo, AccountType, LoginStatus, MicrosoftDeviceCode, MicrosoftLoginPoll,
+    AccountInfo, MicrosoftDeviceCode, MicrosoftLoginPoll,
 };
 pub use flint_feature_vanilla::{
     InstallProgress, InstallResult, InstanceInfo, JavaInfo, RemoteVersion,
@@ -27,13 +27,15 @@ pub use flint_feature_loaders::{
 };
 
 pub use flint_feature_mods::{
-    InstalledModInfo, ModDependencyPlan, ModDependencyRef, ModDependencyType, ModInstallProgress,
-    ModInstallResult, ModProject, ModSearchPage, ModSource, ModVersionInfo,
+    InstalledModInfo, ModDependencyPlan, ModInstallProgress, ModInstallResult, ModSearchPage,
+    ModSource, ModVersionInfo,
 };
 
 #[cfg(test)]
 mod contract_tests {
     use super::*;
+    use flint_feature_accounts::{AccountType, LoginStatus};
+    use flint_feature_mods::ModDependencyType;
 
     #[test]
     fn enums_use_contract_lowercase_names() {
