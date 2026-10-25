@@ -3,7 +3,7 @@
 use flint_core::{
     minecraft::{
         fetch_text, install_java_installer, validate_game_version, InstallerContext,
-        InstallerRequest, MAX_HTML_BYTES,
+        InstallerRequest, MAX_HTML_BYTES, MAX_INSTALLER_BYTES,
     },
     paths::component_is_safe,
 };
