@@ -56,7 +56,8 @@ fn redact_url_like(value: &str) -> String {
     tokens.join(" ")
 }
 
-fn sanitize_network_error(error: impl fmt::Display) -> String {
+/// Redacts URL-like tokens from network diagnostics before they reach user-facing errors.
+pub fn sanitize_network_error(error: impl fmt::Display) -> String {
     redact_url_like(&error.to_string())
 }
 
@@ -64,12 +65,14 @@ fn sanitize_reqwest_error(error: reqwest::Error) -> String {
     sanitize_network_error(error.without_url())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NetworkRequest {
     pub url: String,
     pub service: ServiceLabel,
     pub max_bytes: u64,
     pub timeout: Duration,
+    /// Headers are scoped to this request and are redacted from Debug output and sanitized errors.
+    pub headers: Vec<(String, String)>,
 }
 
 impl NetworkRequest {
@@ -84,7 +87,33 @@ impl NetworkRequest {
             service,
             max_bytes,
             timeout,
+            headers: Vec::new(),
         }
+    }
+
+    /// Adds a request-scoped header. Providers use this for credentials and
+    /// content negotiation without exposing them in URLs or diagnostics.
+    pub fn with_header(
+        mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.headers.push((name.into(), value.into()));
+        self
+    }
+}
+
+impl fmt::Debug for NetworkRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let headers = format!("[{} redacted header(s)]", self.headers.len());
+        formatter
+            .debug_struct("NetworkRequest")
+            .field("url", &"[redacted-url]")
+            .field("service", &self.service)
+            .field("max_bytes", &self.max_bytes)
+            .field("timeout", &self.timeout)
+            .field("headers", &headers)
+            .finish()
     }
 }
 
@@ -175,10 +204,14 @@ impl NetworkPort for ReqwestNetwork {
                     sanitize_network_error(error)
                 )
             })?;
-        let response = self
+        let mut builder = self
             .client
             .get(request.url.clone())
-            .timeout(request.timeout)
+            .timeout(request.timeout);
+        for (name, value) in &request.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        let response = builder
             .send()
             .and_then(|response| response.error_for_status())
             .map_err(|error| {
@@ -233,6 +266,47 @@ mod tests {
         assert!(ServiceLabel::new("bad/service").is_err());
         assert!(ServiceLabel::new("bad\nservice").is_err());
         assert!(ServiceLabel::new("").is_err());
+    }
+
+    #[test]
+    fn network_requests_accept_headers_without_network_access() {
+        let request = NetworkRequest::new(
+            "https://example.com/api",
+            ServiceLabel::new("Example").unwrap(),
+            1024,
+            Duration::from_secs(1),
+        )
+        .with_header("x-api-key", "test-key")
+        .with_header("Accept", "application/json");
+        assert_eq!(
+            request.headers,
+            vec![
+                ("x-api-key".to_string(), "test-key".to_string()),
+                ("Accept".to_string(), "application/json".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn network_request_debug_redacts_url_queries_and_credentials() {
+        let request = NetworkRequest::new(
+            "https://api.example.com/mods/search?token=url-secret&api_key=query-secret",
+            ServiceLabel::new("Example").unwrap(),
+            1024,
+            Duration::from_secs(45),
+        )
+        .with_header("x-api-key", "credential-secret")
+        .with_header("Authorization", "Bearer bearer-secret");
+        let debug = format!("{request:?}");
+        assert!(debug.contains("Example"));
+        assert!(debug.contains("2 redacted header(s)"));
+        assert!(!debug.contains("api.example.com"));
+        assert!(!debug.contains("url-secret"));
+        assert!(!debug.contains("query-secret"));
+        assert!(!debug.contains("x-api-key"));
+        assert!(!debug.contains("credential-secret"));
+        assert!(!debug.contains("Authorization"));
+        assert!(!debug.contains("bearer-secret"));
     }
 
     #[test]

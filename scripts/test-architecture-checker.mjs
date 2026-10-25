@@ -7,6 +7,7 @@ import test from "node:test";
 import ts from "typescript";
 import {
   auditHostCommandGates,
+  cargoDeclaredDependencyNames,
   classifyTauriImport,
   collectFrontendModuleReferences,
   collectHtmlInjectionSites,
@@ -92,20 +93,38 @@ test("provider API policy targets the extracted crate and drops the host-local m
   const targets = reviewedProviderTargets();
   const providerApiTargets = targets.filter((target) => target.file === providerApi);
   assert.deepEqual(
-    providerApiTargets.map((target) => target.role).sort(),
+    [...new Set(providerApiTargets.map((target) => target.role))].sort(),
     ["loader-provider-api", "mod-provider-api"],
   );
-  const genericApi = providerApiTargets.find((target) => target.role === "mod-provider-api");
+  const modApiTargets = targets.filter((target) => target.role === "mod-provider-api");
+  assert.equal(modApiTargets.length, 2);
+  const genericApi = modApiTargets.find((target) => target.file === providerApi);
   assert.ok(genericApi);
   assert.deepEqual(genericApi.localTargets, []);
   assert.deepEqual(genericApi.externalRoots, ["flint_core", "semver", "std"]);
+  const modContract = modApiTargets.find(
+    (target) => target.file === "src-tauri/crates/flint-provider-api/src/mods.rs",
+  );
+  assert.ok(modContract);
+  assert.deepEqual(modContract.localTargets, []);
+  assert.deepEqual(modContract.externalRoots, ["flint_core", "std"]);
   assert.equal(targets.some((target) => target.file === "src-tauri/src/provider_api.rs"), false);
   assert.equal(reviewedHostRustModuleIds().includes("provider_api"), false);
 
-  const modAdapter = targets.find((target) => target.role === "mod-provider-adapter");
-  assert.ok(modAdapter);
-  assert.deepEqual(modAdapter.localTargets, ["models"]);
-  assert.deepEqual(modAdapter.externalRoots, ["flint_core", "flint_provider_api", "reqwest", "std"]);
+  const modLeaves = targets.filter((target) => target.role === "mod-provider-leaf");
+  assert.deepEqual(
+    modLeaves.map((target) => target.file).sort(),
+    [
+      "src-tauri/providers/flint-mod-provider-curseforge/src/lib.rs",
+      "src-tauri/providers/flint-mod-provider-modrinth/src/lib.rs",
+    ],
+  );
+  for (const leaf of modLeaves) {
+    assert.deepEqual(leaf.localTargets, []);
+    assert.deepEqual(leaf.externalRoots, ["flint_core", "flint_provider_api", "serde_json", "std"]);
+  }
+  assert.equal(targets.some((target) => target.file === "src-tauri/src/mods/providers.rs"), false);
+  assert.equal(reviewedHostRustModuleIds().includes("mods::providers"), false);
   const loaderAdapterTarget = targets.find(
     (target) => target.role === "loader-provider-adapter" && target.file === loaderAdapter,
   );
@@ -120,6 +139,31 @@ test("provider API policy targets the extracted crate and drops the host-local m
   assert.deepEqual(violations, []);
 });
 
+test("provider manifest dependency parser covers normal, target, and dev sections", () => {
+  const manifest = [
+    "[package]",
+    'name = "provider"',
+    "",
+    "[dependencies]",
+    'flint-core = { path = "../../crates/flint-core" }',
+    'flint-provider-api = { path = "../../crates/flint-provider-api" }',
+    'serde_json = "1"',
+    "",
+    "[dev-dependencies]",
+    'serde_json = "1"',
+    "",
+    "[target.'cfg(unix)'.dependencies]",
+    'semver = "1"',
+    "",
+  ].join("\n");
+  assert.deepEqual(cargoDeclaredDependencyNames(manifest), [
+    "flint-core",
+    "flint-provider-api",
+    "semver",
+    "serde_json",
+  ]);
+});
+
 test("phase-3 workspace foundation parser recognizes the exact reviewed members", () => {
   const manifest = [
     "[package]",
@@ -128,7 +172,7 @@ test("phase-3 workspace foundation parser recognizes the exact reviewed members"
     "",
     "[workspace]",
     'resolver = "2"',
-    'members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api"]',
+    'members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth"]',
     "",
     "[dependencies]",
     'flint-core = { path = "crates/flint-core" }',
@@ -137,7 +181,7 @@ test("phase-3 workspace foundation parser recognizes the exact reviewed members"
   assert.deepEqual(foundation, {
     present: true,
     resolver: "2",
-    members: [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api"],
+    members: [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth"],
   });
   assert.equal(foundation.members.includes("crates/flint-feature-api"), true);
   assert.equal(foundation.members.some((member) => member.includes("*")), false);
@@ -172,6 +216,7 @@ test("host command gate map covers exactly the 28 feature commands and reviewed 
     "flint.saves": 6,
   });
   assert.equal(reviewedHostRustModuleIds().includes("feature_host"), true);
+  assert.equal(reviewedHostRustModuleIds().includes("provider_composition"), true);
   assert.equal(reviewedHostRustModuleIds().includes("error"), false);
   assert.equal(reviewedHostRustModuleIds().includes("net"), false);
   assert.equal(reviewedHostRustModuleIds().includes("paths"), false);
@@ -238,14 +283,29 @@ test("Rust use roots accept normal and leading-:: paths", () => {
 });
 
 test("Rust crate-root use payloads resolve to imported modules rather than graph sentinels", () => {
-  const modules = new Set(["crate", "main", "models", "mods", "mods::providers"]);
+  const modules = new Set([
+    "crate",
+    "main",
+    "models",
+    "mods",
+    "provider_composition",
+    "provider_composition::tests",
+  ]);
   assert.deepEqual(
-    [...moduleTargetsFromUse(" crate::models::{ModSource}", "mods::providers", modules)].sort(),
+    [...moduleTargetsFromUse(
+      " crate::models::{ModSource}",
+      "provider_composition::tests",
+      modules,
+    )].sort(),
     ["models"],
   );
   assert.deepEqual(
-    [...moduleTargetsFromUse(" super::{helper}", "mods::providers", modules)].sort(),
-    ["mods"],
+    [...moduleTargetsFromUse(
+      " super::{helper}",
+      "provider_composition::tests",
+      modules,
+    )].sort(),
+    ["provider_composition"],
   );
 });
 

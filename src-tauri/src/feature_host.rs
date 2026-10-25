@@ -127,7 +127,7 @@ fn build_feature_registry() -> Result<FeatureRegistry, String> {
             FEATURE_MODS,
             StartupPolicy::Optional,
             &[FEATURE_SETTINGS],
-            crate::mods::provider_requirements(),
+            crate::provider_composition::mod_provider_requirements(),
         )?),
         registration(feature_descriptor(
             FEATURE_SAVES,
@@ -237,7 +237,7 @@ impl ProviderCatalog for HostProviderCatalog {
 }
 
 fn build_provider_catalog() -> Result<HostProviderCatalog, String> {
-    let mut descriptors = crate::mods::provider_descriptors();
+    let mut descriptors = crate::provider_composition::mod_provider_descriptors();
     descriptors.extend(crate::loaders::provider_descriptors());
     HostProviderCatalog::new(descriptors)
 }
@@ -453,7 +453,7 @@ mod tests {
     fn provider_requirement(selection_key: &str) -> ProviderRequirement {
         crate::loaders::provider_requirements()
             .into_iter()
-            .chain(crate::mods::provider_requirements())
+            .chain(crate::provider_composition::mod_provider_requirements())
             .find(|requirement| requirement.selection_key == Some(selection_key))
             .expect("reviewed provider requirement")
     }
@@ -582,7 +582,7 @@ mod tests {
                 ProviderAvailability::Available
             ));
         }
-        for requirement in crate::mods::provider_requirements() {
+        for requirement in crate::provider_composition::mod_provider_requirements() {
             assert!(matches!(
                 catalog.availability(&requirement),
                 ProviderAvailability::Available

@@ -12,7 +12,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [workspace]
 resolver = "2"
-members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api"]
+members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth"]
 
 [workspace.package]
 version = "2026.10.1-d1cce64"
@@ -39,3 +39,5 @@ tokio = { version = "1", features = ["rt"] }
 flint-core = { path = "crates/flint-core" }
 flint-feature-api = { path = "crates/flint-feature-api" }
 flint-provider-api = { path = "crates/flint-provider-api" }
+flint-mod-provider-curseforge = { path = "providers/flint-mod-provider-curseforge" }
+flint-mod-provider-modrinth = { path = "providers/flint-mod-provider-modrinth" }

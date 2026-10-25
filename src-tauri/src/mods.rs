@@ -1,7 +1,3 @@
-mod providers;
-
-use providers::{ModProvider, ModProviderContext};
-
 use crate::{
     models::{
         InstalledModInfo, ModDependencyPlan, ModDependencyRef, ModDependencyType,
@@ -11,10 +7,20 @@ use crate::{
     paths::resolve_game_dir,
     settings,
 };
+use flint_core::ports::{
+    Cancellation, Deadline, DownloadRequest, NetworkPort, NoopLogger, NoopProgress,
+    ReqwestNetwork, ServiceLabel,
+};
+use flint_provider_api::{
+    mod_provider_requirement, validate_mod_provider_id, ModDependencyData, ModDependencyKind,
+    ModDependencyVersionRequest, ModListVersionsRequest, ModProvider, ModProviderContext,
+    ModProjectData, ModSearchRequest, ModSearchResultData, ModVersionData, ModVersionRequest,
+    ProviderRegistry, ProviderRequirement, ScopedCredential, CURSEFORGE_SELECTION_KEY,
+    MODRINTH_SELECTION_KEY,
+};
 use regex::Regex;
-use reqwest::blocking::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::{
     collections::HashSet,
     fs,
@@ -25,26 +31,21 @@ use std::{
 use tauri::{AppHandle, Emitter};
 use zip::ZipArchive;
 
-pub(crate) fn provider_descriptors() -> Vec<flint_provider_api::ProviderDescriptor> {
-    providers::provider_descriptors()
-}
+static NOOP_PROGRESS: NoopProgress = NoopProgress;
+static NOOP_LOGGER: NoopLogger = NoopLogger;
 
-pub(crate) fn provider_requirements() -> Vec<flint_provider_api::ProviderRequirement> {
-    providers::provider_requirements()
-}
-
-const MODRINTH_API: &str = "https://api.modrinth.com/v2";
-const CURSEFORGE_API: &str = "https://api.curseforge.com/v1";
-const MAX_API_BODY: u64 = 16 * 1024 * 1024;
 const MAX_MOD_DOWNLOAD: u64 = 512 * 1024 * 1024;
 const MAX_MOD_METADATA_ENTRY: u64 = 2 * 1024 * 1024;
 const MAX_MOD_ARCHIVE_ENTRIES: usize = 20_000;
 const MAX_DEPENDENCY_DEPTH: usize = 8;
 const MAX_DEPENDENCY_NODES: usize = 64;
-const CURSE_MINECRAFT_GAME_ID: u32 = 432;
-const CURSE_MODS_CLASS_ID: u32 = 6;
+const SEARCH_MODS_TIMEOUT: Duration = Duration::from_secs(45);
+const LIST_MOD_VERSIONS_TIMEOUT: Duration = Duration::from_secs(45);
+const RESOLVE_MOD_DEPENDENCIES_TIMEOUT: Duration = Duration::from_secs(60);
+const INSTALL_MOD_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub fn search_mods_blocking(
+    registry: &ProviderRegistry<dyn ModProvider>,
     source: ModSource,
     query: &str,
     game_version: &str,
@@ -54,58 +55,70 @@ pub fn search_mods_blocking(
 ) -> Result<ModSearchPage, String> {
     validate_search_inputs(query, game_version, offset, limit)?;
     let loader = normalize_loader(loader);
-    let client = net::http_client(Duration::from_secs(45))?;
-    let registry = providers::build_registry()?;
-    let selected = providers::select_for_source(&registry, source, &client)?;
-    selected.provider.search(
+    let timeout = SEARCH_MODS_TIMEOUT;
+    let network = ReqwestNetwork::new(timeout)?;
+    let selected = select_for_source(registry, source, &network, timeout)?;
+    let result = selected.provider.search(
         &selected.context,
-        query.trim(),
-        game_version.trim(),
-        &loader,
-        offset,
-        limit,
-    )
+        &ModSearchRequest {
+            query: query.trim().to_string(),
+            game_version: game_version.trim().to_string(),
+            loader,
+            offset,
+            limit,
+        },
+    )?;
+    Ok(mod_search_page_from_data(result, source))
 }
 
 pub fn list_mod_versions_blocking(
+    registry: &ProviderRegistry<dyn ModProvider>,
     source: ModSource,
     project_id: &str,
     game_version: &str,
     loader: &str,
 ) -> Result<Vec<ModVersionInfo>, String> {
-    validate_provider_id(project_id)?;
+    validate_mod_provider_id(project_id)?;
     validate_filter_text(game_version, "game version")?;
     let loader = normalize_loader(loader);
-    let client = net::http_client(Duration::from_secs(45))?;
-    let registry = providers::build_registry()?;
-    let selected = providers::select_for_source(&registry, source, &client)?;
-    selected.provider.list_versions(
+    let timeout = LIST_MOD_VERSIONS_TIMEOUT;
+    let network = ReqwestNetwork::new(timeout)?;
+    let selected = select_for_source(registry, source, &network, timeout)?;
+    let versions = selected.provider.list_versions(
         &selected.context,
-        project_id,
-        game_version.trim(),
-        &loader,
-    )
+        &ModListVersionsRequest {
+            project_id: project_id.to_string(),
+            game_version: game_version.trim().to_string(),
+            loader,
+        },
+    )?;
+    Ok(versions
+        .into_iter()
+        .map(|version| mod_version_from_data(version, source))
+        .collect())
 }
 
 pub fn resolve_mod_dependencies_blocking(
+    registry: &ProviderRegistry<dyn ModProvider>,
     source: ModSource,
     project_id: &str,
     version_id: &str,
     game_version: &str,
     loader: &str,
 ) -> Result<ModDependencyPlan, String> {
-    validate_provider_id(project_id)?;
+    validate_mod_provider_id(project_id)?;
     if !version_id.trim().is_empty() {
-        validate_provider_id(version_id)?;
+        validate_mod_provider_id(version_id)?;
     }
     validate_filter_text(game_version, "game version")?;
     let loader = normalize_loader(loader);
-    let client = net::http_client(Duration::from_secs(60))?;
-    let registry = providers::build_registry()?;
-    let selected = providers::select_for_source(&registry, source, &client)?;
+    let timeout = RESOLVE_MOD_DEPENDENCIES_TIMEOUT;
+    let network = ReqwestNetwork::new(timeout)?;
+    let selected = select_for_source(registry, source, &network, timeout)?;
     let root = load_root_version(
         selected.provider,
         &selected.context,
+        source,
         project_id,
         version_id,
         game_version.trim(),
@@ -114,6 +127,7 @@ pub fn resolve_mod_dependencies_blocking(
     build_dependency_plan(
         selected.provider,
         &selected.context,
+        source,
         root,
         game_version.trim(),
         &loader,
@@ -121,6 +135,7 @@ pub fn resolve_mod_dependencies_blocking(
 }
 
 pub fn install_mod_blocking(
+    registry: &ProviderRegistry<dyn ModProvider>,
     app: &AppHandle,
     game_dir: &str,
     source: ModSource,
@@ -130,21 +145,22 @@ pub fn install_mod_blocking(
     loader: &str,
     install_dependencies: bool,
 ) -> Result<ModInstallResult, String> {
-    validate_provider_id(project_id)?;
+    validate_mod_provider_id(project_id)?;
     if !version_id.trim().is_empty() {
-        validate_provider_id(version_id)?;
+        validate_mod_provider_id(version_id)?;
     }
     validate_filter_text(game_version, "game version")?;
     let loader = normalize_loader(loader);
     let game_root = resolve_game_dir(game_dir);
     let mods_dir = game_root.join("mods");
     net::ensure_directory(&mods_dir)?;
-    let client = net::http_client(Duration::from_secs(600))?;
-    let registry = providers::build_registry()?;
-    let selected = providers::select_for_source(&registry, source, &client)?;
+    let timeout = INSTALL_MOD_TIMEOUT;
+    let network = ReqwestNetwork::new(timeout)?;
+    let selected = select_for_source(registry, source, &network, timeout)?;
     let root_version = load_root_version(
         selected.provider,
         &selected.context,
+        source,
         project_id,
         version_id,
         game_version.trim(),
@@ -156,6 +172,7 @@ pub fn install_mod_blocking(
         let plan = build_dependency_plan(
             selected.provider,
             &selected.context,
+            source,
             root_version.clone(),
             game_version.trim(),
             &loader,
@@ -197,7 +214,8 @@ pub fn install_mod_blocking(
             total,
             &format!("Installing {}", version.file_name),
         );
-        let (installed, was_skipped) = install_single_mod(&client, &mods_dir, version, &loader)?;
+        let (installed, was_skipped) =
+            install_single_mod(&network, &mods_dir, version, &loader, INSTALL_MOD_TIMEOUT)?;
         if was_skipped {
             skipped.push(version.file_name.clone());
         }
@@ -368,19 +386,6 @@ fn normalize_loader(loader: &str) -> String {
     }
 }
 
-fn validate_provider_id(value: &str) -> Result<(), String> {
-    let value = value.trim();
-    if value.is_empty()
-        || value.len() > 128
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        return Err("The provider project or version id is invalid.".to_string());
-    }
-    Ok(())
-}
-
 fn require_curseforge_key() -> Result<String, String> {
     let settings = settings::load_settings()?;
     let key = settings.curseforge_api_key.trim().to_string();
@@ -393,553 +398,159 @@ fn require_curseforge_key() -> Result<String, String> {
     Ok(key)
 }
 
-fn modrinth_search(
-    client: &Client,
-    query: &str,
-    game_version: &str,
-    loader: &str,
-    offset: u32,
-    limit: u32,
-) -> Result<ModSearchPage, String> {
-    let facets = if loader == "vanilla" {
-        json!([["project_type:mod"], ["versions:{}", game_version]])
-    } else {
-        json!([
-            ["project_type:mod"],
-            ["versions:{}", game_version],
-            ["categories:{}", loader]
-        ])
-    };
-    let facets = facets.to_string();
-    let request = client
-        .get(format!("{MODRINTH_API}/search"))
-        .header(reqwest::header::ACCEPT, "application/json")
-        .query(&[
-            ("query", query),
-            ("facets", facets.as_str()),
-            ("offset", &offset.to_string()),
-            ("limit", &limit.to_string()),
-        ]);
-    let value = send_json(request, "Modrinth")?;
-    let hits = value
-        .get("hits")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "Modrinth search response has no hits array.".to_string())?;
-    let projects = hits
-        .iter()
-        .filter_map(modrinth_project_from_search)
-        .collect();
-    Ok(ModSearchPage {
-        source: ModSource::Modrinth,
-        total: u64_field(&value, "total_hits"),
-        offset,
-        limit,
-        hits: projects,
-    })
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialKind {
+    None,
+    CurseForgeApiKey,
 }
 
-fn modrinth_project_from_search(value: &Value) -> Option<ModProject> {
-    let id = value_id(value.get("project_id")?)?;
-    let slug = value
-        .get("slug")
-        .and_then(Value::as_str)
-        .unwrap_or(&id)
-        .to_string();
-    let fallback_url = format!("https://modrinth.com/mod/{slug}");
-    let project_url = value
-        .get("project_url")
-        .and_then(Value::as_str)
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| fallback_url.clone());
-    let project_url = optional_https_url(&project_url).unwrap_or(fallback_url);
-    Some(ModProject {
-        id,
-        source: ModSource::Modrinth,
-        slug,
-        name: value
-            .get("title")
-            .and_then(Value::as_str)
-            .unwrap_or("Untitled mod")
-            .to_string(),
-        summary: value
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        author: value
-            .get("author")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        downloads: u64_field(value, "downloads"),
-        icon_url: value
-            .get("icon_url")
-            .and_then(Value::as_str)
-            .and_then(optional_https_url),
-        categories: string_array(value.get("categories")),
-        project_url,
-    })
+struct SourceBinding {
+    requirement: ProviderRequirement,
+    credential: CredentialKind,
 }
 
-fn modrinth_list_versions(
-    client: &Client,
-    project_id: &str,
-    game_version: &str,
-    loader: &str,
-) -> Result<Vec<ModVersionInfo>, String> {
-    validate_provider_id(project_id)?;
-    let game_versions = serde_json::to_string(&[game_version])
-        .map_err(|error| format!("Cannot encode game-version filter: {error}"))?;
-    let loaders = if loader == "vanilla" {
-        None
-    } else {
-        Some(
-            serde_json::to_string(&[loader])
-                .map_err(|error| format!("Cannot encode loader filter: {error}"))?,
+fn source_binding(source: ModSource) -> SourceBinding {
+    match source {
+        ModSource::Modrinth => SourceBinding {
+            requirement: mod_provider_requirement(Some(MODRINTH_SELECTION_KEY)),
+            credential: CredentialKind::None,
+        },
+        ModSource::Curseforge => SourceBinding {
+            requirement: mod_provider_requirement(Some(CURSEFORGE_SELECTION_KEY)),
+            credential: CredentialKind::CurseForgeApiKey,
+        },
+    }
+}
+
+fn load_credential(kind: CredentialKind) -> Result<Option<String>, String> {
+    match kind {
+        CredentialKind::None => Ok(None),
+        CredentialKind::CurseForgeApiKey => require_curseforge_key().map(Some),
+    }
+}
+
+struct SelectedModProvider<'a> {
+    provider: &'a dyn ModProvider,
+    context: ModProviderContext<'a>,
+}
+
+fn select_for_source<'a>(
+    registry: &'a ProviderRegistry<dyn ModProvider>,
+    source: ModSource,
+    network: &'a dyn NetworkPort,
+    timeout: Duration,
+) -> Result<SelectedModProvider<'a>, String> {
+    let binding = source_binding(source);
+    let credential = load_credential(binding.credential)?;
+    let provider = registry.select(&binding.requirement).map_err(|error| {
+        format!(
+            "Cannot select the {} mod provider: {error}",
+            source.as_str()
         )
-    };
-    let mut request = client
-        .get(format!("{MODRINTH_API}/project/{project_id}/version"))
-        .header(reqwest::header::ACCEPT, "application/json")
-        .query(&[("game_versions", game_versions.as_str())]);
-    if let Some(loaders) = loaders.as_deref() {
-        request = request.query(&[("loaders", loaders)]);
-    }
-    let value = send_json(request, "Modrinth")?;
-    let versions = value
-        .as_array()
-        .ok_or_else(|| "Modrinth version response is not an array.".to_string())?;
-    let mut result: Vec<ModVersionInfo> = versions
-        .iter()
-        .filter_map(|value| modrinth_version_from_value(value, project_id))
-        .collect();
-    result.sort_by(|left, right| {
-        right
-            .published_at
-            .as_deref()
-            .unwrap_or_default()
-            .cmp(left.published_at.as_deref().unwrap_or_default())
-    });
-    Ok(result)
+    })?;
+    let context = ModProviderContext::new(
+        network,
+        credential.map(ScopedCredential::new),
+        &NOOP_PROGRESS,
+        &NOOP_LOGGER,
+        timeout,
+        Deadline::after(Duration::from_secs(3_600)),
+        Cancellation::new(),
+    );
+    Ok(SelectedModProvider { provider, context })
 }
 
-fn modrinth_version_by_id(client: &Client, version_id: &str) -> Result<ModVersionInfo, String> {
-    validate_provider_id(version_id)?;
-    let request = client
-        .get(format!("{MODRINTH_API}/version/{version_id}"))
-        .header(reqwest::header::ACCEPT, "application/json");
-    let value = send_json(request, "Modrinth")?;
-    modrinth_version_from_value(&value, "")
-        .ok_or_else(|| "Modrinth returned an invalid version object.".to_string())
-}
-
-fn modrinth_version_from_value(value: &Value, fallback_project_id: &str) -> Option<ModVersionInfo> {
-    let id = value_id(value.get("id")?)?;
-    let project_id = value
-        .get("project_id")
-        .and_then(value_id)
-        .unwrap_or_else(|| fallback_project_id.to_string());
-    let files = value.get("files").and_then(Value::as_array)?;
-    let selected_file = files
-        .iter()
-        .find(|file| {
-            file.get("primary")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-                && file
-                    .get("filename")
-                    .and_then(Value::as_str)
-                    .map(|name| name.to_ascii_lowercase().ends_with(".jar"))
-                    .unwrap_or(false)
-        })
-        .or_else(|| {
-            files.iter().find(|file| {
-                file.get("filename")
-                    .and_then(Value::as_str)
-                    .map(|name| name.to_ascii_lowercase().ends_with(".jar"))
-                    .unwrap_or(false)
-            })
-        })?;
-    let file_name = selected_file
-        .get("filename")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let download_url = selected_file
-        .get("url")
-        .and_then(Value::as_str)
-        .and_then(optional_https_url);
-    let dependencies = value
-        .get("dependencies")
-        .and_then(Value::as_array)
-        .map(|dependencies| {
-            dependencies
-                .iter()
-                .filter_map(modrinth_dependency_from_value)
-                .collect()
-        })
-        .unwrap_or_default();
-    Some(ModVersionInfo {
-        id,
-        source: ModSource::Modrinth,
-        project_id,
-        name: value
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or("Unnamed mod version")
-            .to_string(),
-        version_number: value
-            .get("version_number")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        file_name,
-        download_url,
-        game_versions: string_array(value.get("game_versions")),
-        loaders: string_array(value.get("loaders")),
-        release_type: value
-            .get("version_type")
-            .and_then(Value::as_str)
-            .unwrap_or("release")
-            .to_string(),
-        published_at: value
-            .get("date_published")
-            .and_then(Value::as_str)
-            .map(|value| value.to_string()),
-        dependencies,
-    })
-}
-
-fn modrinth_dependency_from_value(value: &Value) -> Option<ModDependencyRef> {
-    let dependency_type = match value
-        .get("dependency_type")
-        .and_then(Value::as_str)
-        .unwrap_or("required")
-    {
-        "required" => ModDependencyType::Required,
-        "optional" => ModDependencyType::Optional,
-        "embedded" => ModDependencyType::Embedded,
-        "incompatible" => ModDependencyType::Incompatible,
-        _ => return None,
-    };
-    let project_id = value
-        .get("project_id")
-        .and_then(value_id)
-        .unwrap_or_default();
-    let version_id = value.get("version_id").and_then(value_id);
-    let name = value
-        .get("file_name")
-        .and_then(Value::as_str)
-        .map(|value| value.to_string())
-        .or_else(|| {
-            if project_id.is_empty() {
-                None
-            } else {
-                Some(format!("Modrinth project {project_id}"))
-            }
-        })
-        .unwrap_or_else(|| "Unknown Modrinth dependency".to_string());
-    Some(ModDependencyRef {
-        source: ModSource::Modrinth,
-        project_id,
-        version_id,
-        name,
-        dependency_type,
-    })
-}
-fn curseforge_search(
-    client: &Client,
-    api_key: &str,
-    query: &str,
-    game_version: &str,
-    loader: &str,
-    offset: u32,
-    limit: u32,
-) -> Result<ModSearchPage, String> {
-    let mut request = client
-        .get(format!("{CURSEFORGE_API}/mods/search"))
-        .header("x-api-key", api_key)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .query(&[
-            ("gameId", CURSE_MINECRAFT_GAME_ID.to_string()),
-            ("classId", CURSE_MODS_CLASS_ID.to_string()),
-            ("index", offset.to_string()),
-            ("pageSize", limit.to_string()),
-            ("sortField", "2".to_string()),
-            ("sortOrder", "desc".to_string()),
-            ("gameVersion", game_version.to_string()),
-        ]);
-    if !query.is_empty() {
-        request = request.query(&[("searchFilter", query.to_string())]);
-    }
-    if let Some(loader_type) = curseforge_loader_type(loader) {
-        request = request.query(&[("modLoaderType", loader_type.to_string())]);
-    }
-    let value = send_json(request, "CurseForge")?;
-    let data = value
-        .get("data")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "CurseForge search response has no data array.".to_string())?;
-    let hits = data
-        .iter()
-        .filter_map(curseforge_project_from_search)
-        .collect();
-    let pagination = value.get("pagination").cloned().unwrap_or(Value::Null);
-    Ok(ModSearchPage {
-        source: ModSource::Curseforge,
-        total: u64_field(&pagination, "totalCount"),
-        offset,
-        limit,
-        hits,
-    })
-}
-
-fn curseforge_project_from_search(value: &Value) -> Option<ModProject> {
-    let id = value_id(value.get("id")?)?;
-    let slug = value
-        .get("slug")
-        .and_then(Value::as_str)
-        .unwrap_or(&id)
-        .to_string();
-    let fallback_url = format!("https://www.curseforge.com/minecraft/mc-mods/{slug}");
-    let project_url = value
-        .get("links")
-        .and_then(|links| links.get("websiteUrl"))
-        .and_then(Value::as_str)
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| fallback_url.clone());
-    let project_url = optional_https_url(&project_url).unwrap_or(fallback_url);
-    let authors = value
-        .get("authors")
-        .and_then(Value::as_array)
-        .map(|authors| {
-            authors
-                .iter()
-                .filter_map(|author| author.get("name").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default();
-    let categories = value
-        .get("categories")
-        .and_then(Value::as_array)
-        .map(|categories| {
-            categories
-                .iter()
-                .filter_map(|category| {
-                    category
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .or_else(|| category.as_str())
-                        .map(|value| value.to_string())
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    Some(ModProject {
-        id,
-        source: ModSource::Curseforge,
-        slug,
-        name: value
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or("Untitled mod")
-            .to_string(),
-        summary: value
-            .get("summary")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        author: authors,
-        downloads: u64_field(value, "downloadCount"),
-        icon_url: value
-            .get("logo")
-            .and_then(|logo| logo.get("thumbnailUrl").or_else(|| logo.get("url")))
-            .and_then(Value::as_str)
-            .and_then(optional_https_url),
-        categories,
-        project_url,
-    })
-}
-
-fn curseforge_list_versions(
-    client: &Client,
-    api_key: &str,
-    project_id: &str,
-    game_version: &str,
-    loader: &str,
-) -> Result<Vec<ModVersionInfo>, String> {
-    validate_provider_id(project_id)?;
-    let mut result = Vec::new();
-    let mut seen = HashSet::new();
-    for page in 0..10u32 {
-        let mut request = client
-            .get(format!("{CURSEFORGE_API}/mods/{project_id}/files"))
-            .header("x-api-key", api_key)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .query(&[
-                ("gameVersion", game_version.to_string()),
-                ("index", (page * 50).to_string()),
-                ("pageSize", "50".to_string()),
-            ]);
-        if let Some(loader_type) = curseforge_loader_type(loader) {
-            request = request.query(&[("modLoaderType", loader_type.to_string())]);
-        }
-        let value = send_json(request, "CurseForge")?;
-        let data = value
-            .get("data")
-            .and_then(Value::as_array)
-            .ok_or_else(|| "CurseForge file response has no data array.".to_string())?;
-        for version in data
-            .iter()
-            .filter_map(|value| curseforge_version_from_value(value, project_id, loader))
-        {
-            if seen.insert(version.id.clone()) {
-                result.push(version);
-            }
-        }
-        if data.len() < 50 {
-            break;
-        }
-    }
-    result.sort_by(|left, right| {
-        right
-            .published_at
-            .as_deref()
-            .unwrap_or_default()
-            .cmp(left.published_at.as_deref().unwrap_or_default())
-    });
-    Ok(result)
-}
-
-fn curseforge_version_from_value(
-    value: &Value,
-    fallback_project_id: &str,
-    requested_loader: &str,
-) -> Option<ModVersionInfo> {
-    let id = value_id(value.get("id")?)?;
-    let project_id = value
-        .get("modId")
-        .and_then(value_id)
-        .unwrap_or_else(|| fallback_project_id.to_string());
-    let file_name = value
-        .get("fileName")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    if file_name.is_empty() {
-        return None;
-    }
-    let game_versions = string_array(value.get("gameVersions"));
-    let mut loaders: Vec<String> = game_versions
-        .iter()
-        .filter_map(|value| curseforge_loader_label(value))
-        .collect();
-    loaders.sort();
-    loaders.dedup();
-    if loaders.is_empty() && requested_loader != "vanilla" {
-        loaders.push(requested_loader.to_string());
-    }
-    let dependencies = value
-        .get("dependencies")
-        .and_then(Value::as_array)
-        .map(|dependencies| {
-            dependencies
-                .iter()
-                .filter_map(curseforge_dependency_from_value)
-                .collect()
-        })
-        .unwrap_or_default();
-    Some(ModVersionInfo {
-        id,
-        source: ModSource::Curseforge,
-        project_id,
-        name: value
-            .get("displayName")
-            .and_then(Value::as_str)
-            .unwrap_or(&file_name)
-            .to_string(),
-        version_number: value
-            .get("displayName")
-            .and_then(Value::as_str)
-            .unwrap_or(&file_name)
-            .to_string(),
-        file_name,
-        download_url: value
-            .get("downloadUrl")
-            .and_then(Value::as_str)
-            .and_then(optional_https_url),
-        game_versions,
-        loaders,
-        release_type: curseforge_release_type(
-            value
-                .get("releaseType")
-                .and_then(Value::as_u64)
-                .unwrap_or(1),
-        ),
-        published_at: value
-            .get("fileDate")
-            .and_then(Value::as_str)
-            .map(|value| value.to_string()),
-        dependencies,
-    })
-}
-
-fn curseforge_dependency_from_value(value: &Value) -> Option<ModDependencyRef> {
-    let project_id = value_id(value.get("modId")?)?;
-    let relation_type = value
-        .get("relationType")
-        .and_then(Value::as_u64)
-        .unwrap_or(3);
-    let dependency_type = match relation_type {
-        3 => ModDependencyType::Required,
-        1 => ModDependencyType::Embedded,
-        5 => ModDependencyType::Incompatible,
-        2 | 4 | 6 => ModDependencyType::Optional,
-        _ => ModDependencyType::Optional,
-    };
-    Some(ModDependencyRef {
-        source: ModSource::Curseforge,
-        project_id: project_id.clone(),
-        version_id: None,
-        name: format!("CurseForge project {project_id}"),
-        dependency_type,
-    })
-}
-
-fn curseforge_loader_type(loader: &str) -> Option<u32> {
-    match loader {
-        "forge" => Some(1),
-        "liteloader" => Some(3),
-        "fabric" => Some(4),
-        "quilt" => Some(5),
-        "neoforge" => Some(6),
-        _ => None,
+fn mod_search_page_from_data(data: ModSearchResultData, source: ModSource) -> ModSearchPage {
+    ModSearchPage {
+        source,
+        total: data.total,
+        offset: data.offset,
+        limit: data.limit,
+        hits: data
+            .hits
+            .into_iter()
+            .map(|project| mod_project_from_data(project, source))
+            .collect(),
     }
 }
 
-fn curseforge_loader_label(value: &str) -> Option<String> {
-    let lower = value.to_ascii_lowercase();
-    for loader in ["neoforge", "forge", "fabric", "quilt", "liteloader"] {
-        if lower.contains(loader) {
-            return Some(loader.to_string());
-        }
+fn mod_project_from_data(data: ModProjectData, source: ModSource) -> ModProject {
+    ModProject {
+        id: data.id,
+        source,
+        slug: data.slug,
+        name: data.name,
+        summary: data.summary,
+        author: data.author,
+        downloads: data.downloads,
+        icon_url: data.icon_url,
+        categories: data.categories,
+        project_url: data.project_url,
     }
-    None
 }
 
-fn curseforge_release_type(value: u64) -> String {
-    match value {
-        2 => "beta",
-        3 => "alpha",
-        _ => "release",
+fn mod_version_from_data(data: ModVersionData, source: ModSource) -> ModVersionInfo {
+    ModVersionInfo {
+        id: data.id,
+        source,
+        project_id: data.project_id,
+        name: data.name,
+        version_number: data.version_number,
+        file_name: data.file_name,
+        download_url: data.download_url,
+        game_versions: data.game_versions,
+        loaders: data.loaders,
+        release_type: data.release_type,
+        published_at: data.published_at,
+        dependencies: data
+            .dependencies
+            .into_iter()
+            .map(|dependency| mod_dependency_from_data(dependency, source))
+            .collect(),
     }
-    .to_string()
+}
+
+fn mod_dependency_from_data(data: ModDependencyData, source: ModSource) -> ModDependencyRef {
+    ModDependencyRef {
+        source,
+        project_id: data.project_id,
+        version_id: data.version_id,
+        name: data.name,
+        dependency_type: mod_dependency_kind_to_host(data.dependency_type),
+    }
+}
+
+fn mod_dependency_to_data(dependency: &ModDependencyRef) -> ModDependencyData {
+    ModDependencyData {
+        project_id: dependency.project_id.clone(),
+        version_id: dependency.version_id.clone(),
+        name: dependency.name.clone(),
+        dependency_type: mod_dependency_kind_from_host(dependency.dependency_type),
+    }
+}
+
+fn mod_dependency_kind_to_host(kind: ModDependencyKind) -> ModDependencyType {
+    match kind {
+        ModDependencyKind::Required => ModDependencyType::Required,
+        ModDependencyKind::Optional => ModDependencyType::Optional,
+        ModDependencyKind::Embedded => ModDependencyType::Embedded,
+        ModDependencyKind::Incompatible => ModDependencyType::Incompatible,
+    }
+}
+
+fn mod_dependency_kind_from_host(kind: ModDependencyType) -> ModDependencyKind {
+    match kind {
+        ModDependencyType::Required => ModDependencyKind::Required,
+        ModDependencyType::Optional => ModDependencyKind::Optional,
+        ModDependencyType::Embedded => ModDependencyKind::Embedded,
+        ModDependencyType::Incompatible => ModDependencyKind::Incompatible,
+    }
 }
 
 fn load_root_version(
     provider: &dyn ModProvider,
     context: &ModProviderContext<'_>,
+    source: ModSource,
     project_id: &str,
     version_id: &str,
     game_version: &str,
@@ -947,9 +558,29 @@ fn load_root_version(
 ) -> Result<ModVersionInfo, String> {
     let version_id = version_id.trim();
     let versions = if version_id.is_empty() {
-        provider.list_versions(context, project_id, game_version, loader)?
+        provider
+            .list_versions(
+                context,
+                &ModListVersionsRequest {
+                    project_id: project_id.to_string(),
+                    game_version: game_version.to_string(),
+                    loader: loader.to_string(),
+                },
+            )?
+            .into_iter()
+            .map(|version| mod_version_from_data(version, source))
+            .collect()
     } else {
-        vec![provider.version_by_id(context, project_id, version_id, game_version, loader)?]
+        let version = provider.version_by_id(
+            context,
+            &ModVersionRequest {
+                project_id: project_id.to_string(),
+                version_id: version_id.to_string(),
+                game_version: game_version.to_string(),
+                loader: loader.to_string(),
+            },
+        )?;
+        vec![mod_version_from_data(version, source)]
     };
     versions
         .into_iter()
@@ -982,6 +613,7 @@ fn load_root_version(
 fn build_dependency_plan(
     provider: &dyn ModProvider,
     context: &ModProviderContext<'_>,
+    source: ModSource,
     root: ModVersionInfo,
     game_version: &str,
     loader: &str,
@@ -990,7 +622,15 @@ fn build_dependency_plan(
         return Err("The selected mod version has no safe HTTPS download URL.".to_string());
     }
     resolve_dependency_plan_with(root, |dependency| {
-        provider.dependency_version(context, dependency, game_version, loader)
+        let data = provider.dependency_version(
+            context,
+            &ModDependencyVersionRequest {
+                dependency: mod_dependency_to_data(dependency),
+                game_version: game_version.to_string(),
+                loader: loader.to_string(),
+            },
+        )?;
+        Ok(data.map(|version| mod_version_from_data(version, source)))
     })
 }
 
@@ -1143,11 +783,35 @@ fn dependency_project_key(dependency: &ModDependencyRef) -> String {
         format!("{}:{}", dependency.source.as_str(), dependency.project_id)
     }
 }
+fn mod_download_service_label(file_name: &str) -> Result<ServiceLabel, String> {
+    let sanitized = file_name
+        .chars()
+        .take(80)
+        .map(|character| {
+            if character.is_ascii_alphanumeric()
+                || matches!(character, ' ' | '-' | '_' | '.')
+            {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let sanitized = sanitized.trim();
+    let label = if sanitized.is_empty() {
+        "Mod download"
+    } else {
+        sanitized
+    };
+    ServiceLabel::new(label).map_err(|error| format!("Cannot initialize mod download: {error}"))
+}
+
 fn install_single_mod(
-    client: &Client,
+    network: &dyn NetworkPort,
     mods_dir: &Path,
     version: &ModVersionInfo,
     requested_loader: &str,
+    timeout: Duration,
 ) -> Result<(InstalledModInfo, bool), String> {
     validate_mod_file_name(&version.file_name)?;
     if !version.file_name.to_ascii_lowercase().ends_with(".jar") {
@@ -1180,14 +844,16 @@ fn install_single_mod(
             version.file_name
         ));
     }
-    net::download_atomic(
-        client,
-        download_url,
-        &destination,
+    let service = mod_download_service_label(&version.file_name)?;
+    let request = DownloadRequest::new(
+        download_url.to_string(),
+        destination.clone(),
         None,
+        service,
         MAX_MOD_DOWNLOAD,
-        &version.file_name,
-    )?;
+        timeout,
+    );
+    network.download_atomic(&request)?;
     if let Err(error) = validate_downloaded_mod_archive(&destination) {
         let _ = fs::remove_file(&destination);
         return Err(error);
@@ -1534,66 +1200,6 @@ fn ensure_regular_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn send_json(request: RequestBuilder, service: &str) -> Result<Value, String> {
-    let response = request
-        .send()
-        .map_err(|error| format!("Cannot contact {service}: {error}"))?;
-    let status = response.status();
-    let bytes = net::read_body_limited(response, MAX_API_BODY)?;
-    if !status.is_success() {
-        if service == "CurseForge" && matches!(status.as_u16(), 401 | 403) {
-            return Err(
-                "CurseForge rejected the configured API key. Check the key in Settings."
-                    .to_string(),
-            );
-        }
-        if status.as_u16() == 404 {
-            return Err(format!(
-                "{service} did not find the requested project or version."
-            ));
-        }
-        return Err(format!(
-            "{service} request failed with HTTP {}.",
-            status.as_u16()
-        ));
-    }
-    serde_json::from_slice(&bytes)
-        .map_err(|error| format!("{service} returned invalid JSON: {error}"))
-}
-
-fn value_id(value: &Value) -> Option<String> {
-    value
-        .as_str()
-        .map(|value| value.to_string())
-        .or_else(|| value.as_u64().map(|value| value.to_string()))
-        .or_else(|| value.as_i64().map(|value| value.to_string()))
-}
-
-fn u64_field(value: &Value, field: &str) -> u64 {
-    value.get(field).and_then(Value::as_u64).unwrap_or(0)
-}
-
-fn string_array(value: Option<&Value>) -> Vec<String> {
-    value
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(|value| value.to_string())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn optional_https_url(value: &str) -> Option<String> {
-    if value.starts_with("https://") {
-        Some(value.to_string())
-    } else {
-        None
-    }
-}
-
 fn emit_mod_progress(
     app: &AppHandle,
     project_name: &str,
@@ -1752,6 +1358,12 @@ mod tests {
     }
 
     #[test]
+    fn download_service_labels_keep_a_sanitized_mod_file_identity() {
+        let label = mod_download_service_label("example+mod 1.0.jar").expect("service label");
+        assert_eq!(label.as_str(), "example-mod 1.0.jar");
+    }
+
+    #[test]
     fn parses_forge_and_neoforge_metadata() {
         let text = r#"
             modLoader="javafml"
@@ -1783,48 +1395,6 @@ mod tests {
         assert!(validate_mod_file_name("example.zip").is_err());
     }
 
-    #[test]
-    fn provider_urls_must_be_https() {
-        assert_eq!(
-            optional_https_url("https://cdn.example.com/file.jar").as_deref(),
-            Some("https://cdn.example.com/file.jar")
-        );
-        assert!(optional_https_url("http://cdn.example.com/file.jar").is_none());
-    }
-
-    #[test]
-    fn parses_modrinth_version_shape() {
-        let value = serde_json::json!({
-            "id": "version-id",
-            "project_id": "project-id",
-            "name": "Example Version",
-            "version_number": "1.0.0",
-            "version_type": "release",
-            "date_published": "2025-01-01T00:00:00Z",
-            "game_versions": ["1.20.1"],
-            "loaders": ["fabric"],
-            "files": [{
-                "filename": "example.jar",
-                "url": "https://cdn.modrinth.com/example.jar",
-                "primary": true
-            }],
-            "dependencies": [{
-                "project_id": "dependency",
-                "version_id": null,
-                "file_name": "dependency.jar",
-                "dependency_type": "required"
-            }]
-        });
-        let version = modrinth_version_from_value(&value, "").expect("modrinth version");
-        assert_eq!(version.id, "version-id");
-        assert_eq!(version.project_id, "project-id");
-        assert_eq!(version.file_name, "example.jar");
-        assert_eq!(version.dependencies.len(), 1);
-        assert_eq!(
-            version.dependencies[0].dependency_type,
-            ModDependencyType::Required
-        );
-    }
 }
 
 #[cfg(test)]
@@ -1851,6 +1421,81 @@ mod additional_tests {
             std::process::id(),
             net::nonce()
         ))
+    }
+
+    #[test]
+    fn maps_neutral_provider_data_to_host_source_fields() {
+        let project = mod_project_from_data(
+            ModProjectData {
+                id: "project".to_string(),
+                slug: "project".to_string(),
+                name: "Project".to_string(),
+                summary: "Summary".to_string(),
+                author: "Author".to_string(),
+                downloads: 1,
+                icon_url: None,
+                categories: vec!["utility".to_string()],
+                project_url: "https://example.com/project".to_string(),
+            },
+            ModSource::Curseforge,
+        );
+        assert_eq!(project.source, ModSource::Curseforge);
+
+        let version = mod_version_from_data(
+            ModVersionData {
+                id: "version".to_string(),
+                project_id: "project".to_string(),
+                name: "Version".to_string(),
+                version_number: "1.0.0".to_string(),
+                file_name: "mod.jar".to_string(),
+                download_url: None,
+                game_versions: vec!["1.20.1".to_string()],
+                loaders: vec!["fabric".to_string()],
+                release_type: "release".to_string(),
+                published_at: None,
+                dependencies: vec![ModDependencyData {
+                    project_id: "dependency".to_string(),
+                    version_id: None,
+                    name: "Dependency".to_string(),
+                    dependency_type: ModDependencyKind::Required,
+                }],
+            },
+            ModSource::Modrinth,
+        );
+        assert_eq!(version.source, ModSource::Modrinth);
+        assert_eq!(version.dependencies[0].source, ModSource::Modrinth);
+        assert_eq!(
+            version.dependencies[0].dependency_type,
+            ModDependencyType::Required
+        );
+        for dependency_type in [
+            ModDependencyType::Required,
+            ModDependencyType::Optional,
+            ModDependencyType::Embedded,
+            ModDependencyType::Incompatible,
+        ] {
+            assert_eq!(
+                mod_dependency_kind_to_host(mod_dependency_kind_from_host(dependency_type)),
+                dependency_type
+            );
+        }
+    }
+
+    #[test]
+    fn source_binding_has_one_requirement_and_credential_kind_per_source() {
+        let curseforge = source_binding(ModSource::Curseforge);
+        assert_eq!(
+            curseforge.requirement.selection_key,
+            Some(CURSEFORGE_SELECTION_KEY)
+        );
+        assert_eq!(curseforge.credential, CredentialKind::CurseForgeApiKey);
+
+        let modrinth = source_binding(ModSource::Modrinth);
+        assert_eq!(
+            modrinth.requirement.selection_key,
+            Some(MODRINTH_SELECTION_KEY)
+        );
+        assert_eq!(modrinth.credential, CredentialKind::None);
     }
 
     #[test]
@@ -1922,34 +1567,6 @@ mod additional_tests {
     }
 
     #[test]
-    fn maps_curseforge_dependency_relation_types() {
-        let required = curseforge_dependency_from_value(&serde_json::json!({
-            "modId": 123,
-            "relationType": 3
-        }))
-        .expect("required dependency");
-        assert_eq!(required.dependency_type, ModDependencyType::Required);
-
-        let incompatible = curseforge_dependency_from_value(&serde_json::json!({
-            "modId": 124,
-            "relationType": 5
-        }))
-        .expect("incompatible dependency");
-        assert_eq!(
-            incompatible.dependency_type,
-            ModDependencyType::Incompatible
-        );
-
-        let embedded = curseforge_dependency_from_value(&serde_json::json!({
-            "modId": 125,
-            "relationType": 1
-        }))
-        .expect("embedded dependency");
-        assert_eq!(embedded.dependency_type, ModDependencyType::Embedded);
-        assert_eq!(curseforge_release_type(3), "alpha");
-    }
-
-    #[test]
     fn manages_enabled_disabled_and_deleted_mods_with_sidecars() {
         let root = temp_mods_root("mod-management");
         let mods_dir = root.join("mods");
@@ -2000,4 +1617,222 @@ mod additional_tests {
             .exists());
         let _ = fs::remove_dir_all(root);
     }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+    use flint_core::ports::{DownloadRequest, NetworkRequest};
+    use flint_provider_api::{
+        descriptor_for, ModDependencyVersionRequest, ModListVersionsRequest, ModProvider,
+        ModProviderContext, ModSearchRequest, ModSearchResultData, ModVersionData, ModVersionRequest,
+        Provider, ProviderDescriptor, ProviderRegistry, MOD_PROVIDER_API, MODRINTH_CAPABILITIES,
+        MODRINTH_PROVIDER_ID,
+    };
+    use serde_json::Value;
+    use std::sync::{Arc, Mutex};
+
+    struct NoopNetwork;
+
+    impl NetworkPort for NoopNetwork {
+        fn read_json(&self, _request: &NetworkRequest) -> Result<Value, String> {
+            Err("not used".to_string())
+        }
+
+        fn read_text(&self, _request: &NetworkRequest) -> Result<String, String> {
+            Err("not used".to_string())
+        }
+
+        fn read_bytes(&self, _request: &NetworkRequest) -> Result<Vec<u8>, String> {
+            Err("not used".to_string())
+        }
+
+        fn download_atomic(&self, _request: &DownloadRequest) -> Result<u64, String> {
+            Err("not used".to_string())
+        }
+    }
+
+    struct DownloadProbeNetwork {
+        timeout: Mutex<Option<Duration>>,
+    }
+
+    impl NetworkPort for DownloadProbeNetwork {
+        fn read_json(&self, _request: &NetworkRequest) -> Result<Value, String> {
+            Err("not used".to_string())
+        }
+
+        fn read_text(&self, _request: &NetworkRequest) -> Result<String, String> {
+            Err("not used".to_string())
+        }
+
+        fn read_bytes(&self, _request: &NetworkRequest) -> Result<Vec<u8>, String> {
+            Err("not used".to_string())
+        }
+
+        fn download_atomic(&self, request: &DownloadRequest) -> Result<u64, String> {
+            *self.timeout.lock().expect("download timeout lock") = Some(request.timeout);
+            Err("timeout probe download".to_string())
+        }
+    }
+
+    struct TimeoutProbeProvider {
+        timeouts: Arc<Mutex<Vec<Duration>>>,
+    }
+
+    impl TimeoutProbeProvider {
+        fn record(&self, context: &ModProviderContext<'_>) {
+            self.timeouts
+                .lock()
+                .expect("timeout probe lock")
+                .push(context.timeout());
+        }
+    }
+
+    impl Provider for TimeoutProbeProvider {
+        fn descriptor(&self) -> ProviderDescriptor {
+            descriptor_for(MODRINTH_PROVIDER_ID, MODRINTH_CAPABILITIES)
+        }
+    }
+
+    impl ModProvider for TimeoutProbeProvider {
+        fn search(
+            &self,
+            context: &ModProviderContext<'_>,
+            _request: &ModSearchRequest,
+        ) -> Result<ModSearchResultData, String> {
+            self.record(context);
+            Err("timeout probe".to_string())
+        }
+
+        fn list_versions(
+            &self,
+            context: &ModProviderContext<'_>,
+            _request: &ModListVersionsRequest,
+        ) -> Result<Vec<ModVersionData>, String> {
+            self.record(context);
+            Err("timeout probe".to_string())
+        }
+
+        fn version_by_id(
+            &self,
+            context: &ModProviderContext<'_>,
+            _request: &ModVersionRequest,
+        ) -> Result<ModVersionData, String> {
+            self.record(context);
+            Err("timeout probe".to_string())
+        }
+
+        fn dependency_version(
+            &self,
+            context: &ModProviderContext<'_>,
+            _request: &ModDependencyVersionRequest,
+        ) -> Result<Option<ModVersionData>, String> {
+            self.record(context);
+            Err("timeout probe".to_string())
+        }
+    }
+
+    fn probe_registry() -> (ProviderRegistry<dyn ModProvider>, Arc<Mutex<Vec<Duration>>>) {
+        let timeouts = Arc::new(Mutex::new(Vec::new()));
+        let providers: Vec<Box<dyn ModProvider>> = vec![Box::new(TimeoutProbeProvider {
+            timeouts: Arc::clone(&timeouts),
+        })];
+        let registry =
+            ProviderRegistry::new(providers, MOD_PROVIDER_API).expect("timeout probe registry");
+        (registry, timeouts)
+    }
+
+    #[test]
+    fn host_operation_timeouts_remain_45_45_60_600_and_enter_provider_context() {
+        assert_eq!(SEARCH_MODS_TIMEOUT, Duration::from_secs(45));
+        assert_eq!(LIST_MOD_VERSIONS_TIMEOUT, Duration::from_secs(45));
+        assert_eq!(RESOLVE_MOD_DEPENDENCIES_TIMEOUT, Duration::from_secs(60));
+        assert_eq!(INSTALL_MOD_TIMEOUT, Duration::from_secs(600));
+
+        let (registry, timeouts) = probe_registry();
+        assert!(search_mods_blocking(
+            &registry,
+            ModSource::Modrinth,
+            "probe",
+            "1.20.1",
+            "fabric",
+            0,
+            20,
+        )
+        .is_err());
+        assert!(list_mod_versions_blocking(
+            &registry,
+            ModSource::Modrinth,
+            "project",
+            "1.20.1",
+            "fabric",
+        )
+        .is_err());
+        assert!(resolve_mod_dependencies_blocking(
+            &registry,
+            ModSource::Modrinth,
+            "project",
+            "",
+            "1.20.1",
+            "fabric",
+        )
+        .is_err());
+        assert_eq!(
+            timeouts.lock().expect("timeout probe lock").clone(),
+            vec![
+                Duration::from_secs(45),
+                Duration::from_secs(45),
+                Duration::from_secs(60)
+            ]
+        );
+
+        let network = NoopNetwork;
+        let selected = select_for_source(
+            &registry,
+            ModSource::Modrinth,
+            &network,
+            INSTALL_MOD_TIMEOUT,
+        )
+        .expect("selected install provider");
+        assert_eq!(selected.context.timeout(), Duration::from_secs(600));
+    }
+    #[test]
+    fn install_download_uses_the_600s_operation_timeout() {
+        let mods_dir = std::env::temp_dir().join(format!(
+            "flint-timeout-probe-{}-{}",
+            std::process::id(),
+            net::nonce()
+        ));
+        let network = DownloadProbeNetwork {
+            timeout: Mutex::new(None),
+        };
+        let version = ModVersionInfo {
+            id: "version".to_string(),
+            source: ModSource::Modrinth,
+            project_id: "project".to_string(),
+            name: "Probe".to_string(),
+            version_number: "1.0.0".to_string(),
+            file_name: "probe.jar".to_string(),
+            download_url: Some("https://cdn.example/probe.jar".to_string()),
+            game_versions: vec!["1.20.1".to_string()],
+            loaders: vec!["fabric".to_string()],
+            release_type: "release".to_string(),
+            published_at: None,
+            dependencies: Vec::new(),
+        };
+
+        assert!(install_single_mod(
+            &network,
+            &mods_dir,
+            &version,
+            "fabric",
+            INSTALL_MOD_TIMEOUT,
+        )
+        .is_err());
+        assert_eq!(
+            *network.timeout.lock().expect("download timeout lock"),
+            Some(Duration::from_secs(600))
+        );
+    }
+
 }

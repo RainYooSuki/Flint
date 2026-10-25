@@ -19,7 +19,7 @@ const FRONTEND_ROOT = path.join(REPO_ROOT, "src");
 const RUST_SOURCE_ROOT = path.join(REPO_ROOT, "src-tauri", "src");
 const RUST_MANIFEST = path.join(REPO_ROOT, "src-tauri", "Cargo.toml");
 const PROVIDER_API_SOURCE = "src-tauri/crates/flint-provider-api/src/lib.rs";
-const FOUNDATION_WORKSPACE_MEMBERS = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api"];
+const FOUNDATION_WORKSPACE_MEMBERS = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth"];
 const COMPOSITION_ROOT = "src/app/composition.ts";
 const CONTRIBUTIONS_CONTRACT = "src/core/contributions.ts";
 const toPosix = (value) => value.split(path.sep).join("/");
@@ -991,19 +991,18 @@ function moduleParts(moduleId) {
 function moduleId(parts) {
   return parts.length === 0 ? "crate" : parts.join("::");
 }
-const RUST_MODULE_ALLOWLIST = new Set(["crate", "main", "auth", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "mods::providers", "saves", "settings", "version", "loader_api", "loader_providers", "loaders::provider_api", "loaders::providers"]);
+const RUST_MODULE_ALLOWLIST = new Set(["crate", "main", "auth", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "provider_composition", "saves", "settings", "version", "loader_api", "loader_providers", "loaders::provider_api", "loaders::providers"]);
 const RUST_MODULE_EDGE_ALLOWLIST = new Map(Object.entries({
-  crate: ["auth", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "saves", "settings", "version", "loader_api", "loader_providers"],
+  crate: ["auth", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "provider_composition", "saves", "settings", "version", "loader_api", "loader_providers"],
   main: [],
   auth: ["models", "settings"],
-  feature_host: ["loaders", "mods"],
+  feature_host: ["loaders", "provider_composition"],
   install: ["models", "version"],
   java: ["models"],
   launch: ["auth", "java", "models", "settings", "version"],
   loaders: ["install", "java", "models", "version", "loaders::provider_api", "loaders::providers"],
   models: [],
-  mods: ["models", "mods::providers", "settings"],
-  "mods::providers": ["models", "mods"],
+  mods: ["models", "settings"],
   saves: ["models"],
   settings: ["models"],
   version: ["models"],
@@ -1011,6 +1010,7 @@ const RUST_MODULE_EDGE_ALLOWLIST = new Map(Object.entries({
   loader_providers: ["loader_api", "loaders", "models"],
   "loaders::provider_api": ["models"],
   "loaders::providers": ["loader_api", "loaders", "models"],
+  provider_composition: [],
 }));
 export function reviewedHostRustModuleIds() {
   return [...RUST_MODULE_ALLOWLIST].sort();
@@ -1042,6 +1042,33 @@ function cargoExternalRoots(manifestText, packageName) {
   }
   return roots;
 }
+export function cargoDeclaredDependencyNames(manifestText) {
+  const names = [];
+  let dependencySection = false;
+  for (const rawLine of manifestText.split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+#.*$/, "").trim();
+    if (line.startsWith("[") && line.endsWith("]")) {
+      const section = line.slice(1, -1);
+      dependencySection =
+        section === "dependencies" ||
+        section === "dev-dependencies" ||
+        section === "build-dependencies" ||
+        section.endsWith(".dependencies") ||
+        section.endsWith(".dev-dependencies") ||
+        section.endsWith(".build-dependencies");
+      if (section.startsWith("dependencies.")) {
+        const name = section.slice("dependencies.".length).split(".")[0];
+        if (/^[A-Za-z0-9_-]+$/.test(name)) names.push(name);
+      }
+      continue;
+    }
+    if (!dependencySection) continue;
+    const key = /^([A-Za-z0-9_-]+)\s*=/.exec(line);
+    if (key) names.push(key[1]);
+  }
+  return [...new Set(names)].sort();
+}
+
 function extractRustUseDeclarations(productionText) {
   const declarations = [];
   const pattern = /\buse\b([\s\S]*?);/g;
@@ -1418,7 +1445,7 @@ function checkHostCommandGates(report) {
 // Phase 1/2 provider boundaries and single ModSource mapping adapter
 // ---------------------------------------------------------------------------
 const HOST_PRIVATE_MODULES = new Set([
-  "auth", "feature_host", "install", "java", "launch", "saves", "settings", "version",
+  "auth", "feature_host", "install", "java", "launch", "provider_composition", "saves", "settings", "version",
 ]);
 // Exact provider files/import roots. transitional entries are named and expire at phase 5.
 const providerTarget = (file, role, localTargets, transitional = {}, external = ["std", "semver", "flint_core"]) => ({
@@ -1426,10 +1453,56 @@ const providerTarget = (file, role, localTargets, transitional = {}, external = 
 });
 const MOD_PROVIDER_TARGETS = [
   providerTarget(PROVIDER_API_SOURCE, "mod-provider-api", []),
-  providerTarget("src-tauri/src/mods/providers.rs", "mod-provider-adapter", ["models"], {
-    mods: { owner: "mod-provider-pilot", removeByPhase: 5, removal: "Extract shared helper leaves behind typed provider API/core ports." },
-  }, ["std", "reqwest", "flint_provider_api", "flint_core"]),
+  providerTarget("src-tauri/crates/flint-provider-api/src/mods.rs", "mod-provider-api", [], {}, ["std", "flint_core"]),
+  providerTarget(
+    "src-tauri/providers/flint-mod-provider-curseforge/src/lib.rs",
+    "mod-provider-leaf",
+    [],
+    {},
+    ["std", "serde_json", "flint_core", "flint_provider_api"],
+  ),
+  providerTarget(
+    "src-tauri/providers/flint-mod-provider-modrinth/src/lib.rs",
+    "mod-provider-leaf",
+    [],
+    {},
+    ["std", "serde_json", "flint_core", "flint_provider_api"],
+  ),
 ];
+const MOD_PROVIDER_CRATE_MANIFESTS = [
+  "src-tauri/providers/flint-mod-provider-curseforge/Cargo.toml",
+  "src-tauri/providers/flint-mod-provider-modrinth/Cargo.toml",
+];
+const MOD_PROVIDER_CRATE_REQUIRED_DEPENDENCIES = new Set([
+  "flint-core",
+  "flint-provider-api",
+  "serde_json",
+]);
+const MOD_PROVIDER_CRATE_ALLOWED_DEPENDENCIES = new Set([
+  ...MOD_PROVIDER_CRATE_REQUIRED_DEPENDENCIES,
+  "semver",
+]);
+function checkModProviderCrateManifests(report) {
+  for (const relative of MOD_PROVIDER_CRATE_MANIFESTS) {
+    const absolute = path.join(REPO_ROOT, relative);
+    if (!fs.existsSync(absolute)) {
+      report("RUST-PHASE-TARGET-001", relative, 1, "phase 3 requires the reviewed mod provider crate manifest.");
+      continue;
+    }
+    const dependencies = cargoDeclaredDependencyNames(readText(absolute));
+    for (const dependency of dependencies) {
+      if (!MOD_PROVIDER_CRATE_ALLOWED_DEPENDENCIES.has(dependency)) {
+        report("RUST-PROVIDER-DEP-ALLOW-001", relative, 1, `mod provider dependency '${dependency}' is not in the exact reviewed allowlist.`);
+      }
+    }
+    for (const required of MOD_PROVIDER_CRATE_REQUIRED_DEPENDENCIES) {
+      if (!dependencies.includes(required)) {
+        report("RUST-PROVIDER-DEP-MISSING-001", relative, 1, `mod provider crate must declare dependency '${required}'.`);
+      }
+    }
+  }
+}
+
 const LOADER_API_FILES = [PROVIDER_API_SOURCE, "src-tauri/src/loader_api.rs", "src-tauri/src/loaders/provider_api.rs"];
 const LOADER_ADAPTER_FILES = ["src-tauri/src/loader_providers.rs", "src-tauri/src/loaders/providers.rs"];
 const LOADER_PROVIDER_TARGETS = [
@@ -1522,6 +1595,9 @@ function checkProviderTarget(phase, target, graph, report) {
       );
     }
   }
+  if (target.role.startsWith("mod-provider") && /\breqwest\s*::/.test(record.productionText)) {
+    report("RUST-PROVIDER-IO-001", record.relative, lineOf(record.productionText, record.productionText.search(/\breqwest\s*::/)), "forbidden provider code: direct reqwest path.");
+  }
   for (const [pattern, label] of FORBIDDEN_PROVIDER_CODE) {
     pattern.lastIndex = 0;
     let match;
@@ -1543,18 +1619,6 @@ function findRustFunctionSpans(text) {
   }
   return spans;
 }
-// Exact shared payload-mapper functions may tag DTO struct fields with source: ModSource::Variant.
-// They may not select providers; any other production ModSource:: reference fails below.
-const MODSOURCE_DTO_CONSTRUCTOR_FUNCTIONS = new Set([
-  "modrinth_search",
-  "modrinth_project_from_search",
-  "modrinth_version_from_value",
-  "modrinth_dependency_from_value",
-  "curseforge_search",
-  "curseforge_project_from_search",
-  "curseforge_version_from_value",
-  "curseforge_dependency_from_value",
-]);
 // Exact dispatch identifiers: `source`, or intentionally named `*_source`.
 // Deliberately does not match unrelated identifiers such as `resource`.
 const SOURCE_DISPATCH_IDENTIFIER = /\b(?:source|[A-Za-z0-9_]+_source)\b/;
@@ -1618,44 +1682,69 @@ export function findLoaderKindDispatchSites(text) {
   }
   return sites;
 }
-function checkModSourceBoundaries(graph, report) {
-  const adapterRelative = "src-tauri/src/mods/providers.rs";
-  const adapterRecord = graph.records.find((record) => record.relative === adapterRelative);
-  if (!adapterRecord) {
-    report("RUST-PHASE-TARGET-001", adapterRelative, 1, "the single ModSource adapter target is missing.");
+function checkProviderCompositionBoundaries(graph, report) {
+  const compositionRelative = "src-tauri/src/provider_composition.rs";
+  const composition = graph.records.find((record) => record.relative === compositionRelative);
+  if (!composition) {
+    report("RUST-PHASE-TARGET-001", compositionRelative, 1, "the explicit host mod provider composition target is missing.");
     return;
   }
-  const functionSpans = findRustFunctionSpans(adapterRecord.productionText);
-  const sourceBinding = functionSpans.find((span) => span.name === "source_binding");
-  const adapterMatchSites = findMatchSourceSites(adapterRecord.productionText);
-  if (!sourceBinding || adapterMatchSites.length !== 1 || adapterMatchSites[0].index < sourceBinding.start || adapterMatchSites[0].index >= sourceBinding.end) {
-    report("RUST-MODSOURCE-ADAPTER-001", adapterRelative, adapterMatchSites[0]?.line ?? 1, "expected exactly one match-source adapter inside the reviewed source_binding function.");
+  const production = composition.productionText;
+  for (const constructor of ["CurseForgeModProvider::new", "ModrinthModProvider::new"]) {
+    if (!production.includes(constructor)) {
+      report("RUST-PROVIDER-COMPOSITION-001", compositionRelative, 1, `host composition must register '${constructor}'.`);
+    }
+  }
+  const registryConstructions = (production.match(/\bProviderRegistry\s*::\s*new\s*\(/g) ?? []).length;
+  if (registryConstructions !== 1) {
+    report("RUST-PROVIDER-COMPOSITION-001", compositionRelative, 1, `host composition must construct the mod provider registry exactly once, found ${registryConstructions}.`);
   }
   for (const record of graph.records) {
-    if (record.relative === adapterRelative) continue;
-    for (const site of findModSourceDispatchSites(record.productionText)) {
-      report("RUST-MODSOURCE-DISPATCH-001", record.relative, site.line, `ModSource dispatch form '${site.kind}' is forbidden outside src-tauri/src/mods/providers.rs.`);
+    if (record.relative === compositionRelative) continue;
+    if (/\b(?:CurseForgeModProvider|ModrinthModProvider)\b|flint_mod_provider_(?:curseforge|modrinth)\b/.test(record.productionText)) {
+      report("RUST-PROVIDER-COMPOSITION-001", record.relative, 1, "concrete mod provider construction/imports must stay in src-tauri/src/provider_composition.rs.");
     }
-    const spans = findRustFunctionSpans(record.productionText);
-    const references = [...record.productionText.matchAll(/\bModSource\s*::\s*[A-Za-z_][A-Za-z0-9_]*/g)];
-    for (const reference of references) {
-      const containingFunction = spans.find((span) => reference.index >= span.start && reference.index < span.end);
-      const before = record.productionText.slice(Math.max(0, reference.index - 80), reference.index);
-      const isReviewedDtoTag =
-        containingFunction &&
-        MODSOURCE_DTO_CONSTRUCTOR_FUNCTIONS.has(containingFunction.name) &&
-        /source\s*:\s*(?:Some\s*\(\s*)?$/.test(before);
-      if (!isReviewedDtoTag) {
-        report(
-          "RUST-MODSOURCE-REFERENCE-001",
-          record.relative,
-          lineOf(record.productionText, reference.index),
-          "production ModSource:: reference outside the adapter is not an exact reviewed provider-DTO tag.",
-        );
-      }
+    if (record.productionText.includes("ModProvider") && /\bProviderRegistry\s*::\s*new\s*\(/.test(record.productionText)) {
+      report("RUST-PROVIDER-COMPOSITION-001", record.relative, 1, "the mod provider registry may only be constructed in src-tauri/src/provider_composition.rs.");
     }
   }
 }
+
+function checkModSourceBoundaries(graph, report) {
+  const bindingRelative = "src-tauri/src/mods.rs";
+  const bindingRecord = graph.records.find((record) => record.relative === bindingRelative);
+  if (!bindingRecord) {
+    report("RUST-PHASE-TARGET-001", bindingRelative, 1, "the sole ModSource-to-provider binding target is missing.");
+    return;
+  }
+  const sourceBinding = findRustFunctionSpans(bindingRecord.productionText)
+    .find((span) => span.name === "source_binding");
+  const bindingSites = findModSourceDispatchSites(bindingRecord.productionText);
+  const allowedSites = bindingSites.filter(
+    (site) => sourceBinding && site.index >= sourceBinding.start && site.index < sourceBinding.end,
+  );
+  const unexpectedBindingSites = bindingSites.filter((site) => !allowedSites.includes(site));
+  if (!sourceBinding || allowedSites.length !== 1 || unexpectedBindingSites.length > 0) {
+    report(
+      "RUST-MODSOURCE-ADAPTER-001",
+      bindingRelative,
+      sourceBinding?.line ?? 1,
+      "expected exactly one reviewed ModSource-to-provider binding inside source_binding and no other production ModSource dispatch.",
+    );
+  }
+  for (const record of graph.records) {
+    if (record.relative === bindingRelative) continue;
+    for (const site of findModSourceDispatchSites(record.productionText)) {
+      report(
+        "RUST-MODSOURCE-DISPATCH-001",
+        record.relative,
+        site.line,
+        `ModSource dispatch form '${site.kind}' is forbidden outside the sole source_binding in src-tauri/src/mods.rs.`,
+      );
+    }
+  }
+}
+
 export function requiredLoaderFiles(phase, report, exists = (file) => fs.existsSync(path.join(REPO_ROOT, file))) {
   if (phase < 2) return [];
   const apiFiles = LOADER_API_FILES.filter(exists);
@@ -1919,6 +2008,8 @@ function runRequestedPhase(phase) {
   if (!fs.existsSync(FRONTEND_ROOT)) report("ARCH-ROOT-001", "src", 1, "frontend source root is missing.");
   if (!fs.existsSync(RUST_SOURCE_ROOT)) report("ARCH-ROOT-001", "src-tauri/src", 1, "Rust source root is missing.");
   const graph = buildRustGraph(report);
+  checkModProviderCrateManifests(report);
+  checkProviderCompositionBoundaries(graph, report);
   for (const target of MOD_PROVIDER_TARGETS) {
     if (!fs.existsSync(path.join(REPO_ROOT, target.file))) {
       report("RUST-PHASE-TARGET-001", target.file, 1, `phase ${phase} requires the reviewed provider boundary target.`);

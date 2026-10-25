@@ -6,6 +6,7 @@ mod launch;
 mod loaders;
 mod models;
 mod mods;
+mod provider_composition;
 mod saves;
 mod settings;
 mod version;
@@ -222,6 +223,7 @@ async fn install_loader(
 #[tauri::command]
 async fn search_mods(
     runtime: tauri::State<'_, feature_host::HostRuntime>,
+    providers: tauri::State<'_, provider_composition::ModProviderState>,
     source: ModSource,
     query: String,
     game_version: String,
@@ -230,9 +232,19 @@ async fn search_mods(
     limit: u32,
 ) -> Result<ModSearchPage, String> {
     runtime.ensure_feature_ready(feature_host::FEATURE_MODS)?;
+    let registry = providers.registry()?;
     drop(runtime);
+    drop(providers);
     tokio::task::spawn_blocking(move || {
-        mods::search_mods_blocking(source, &query, &game_version, &loader, offset, limit)
+        mods::search_mods_blocking(
+            &registry,
+            source,
+            &query,
+            &game_version,
+            &loader,
+            offset,
+            limit,
+        )
     })
     .await
     .map_err(error::background_error)?
@@ -241,15 +253,24 @@ async fn search_mods(
 #[tauri::command]
 async fn list_mod_versions(
     runtime: tauri::State<'_, feature_host::HostRuntime>,
+    providers: tauri::State<'_, provider_composition::ModProviderState>,
     source: ModSource,
     project_id: String,
     game_version: String,
     loader: String,
 ) -> Result<Vec<ModVersionInfo>, String> {
     runtime.ensure_feature_ready(feature_host::FEATURE_MODS)?;
+    let registry = providers.registry()?;
     drop(runtime);
+    drop(providers);
     tokio::task::spawn_blocking(move || {
-        mods::list_mod_versions_blocking(source, &project_id, &game_version, &loader)
+        mods::list_mod_versions_blocking(
+            &registry,
+            source,
+            &project_id,
+            &game_version,
+            &loader,
+        )
     })
     .await
     .map_err(error::background_error)?
@@ -258,6 +279,7 @@ async fn list_mod_versions(
 #[tauri::command]
 async fn resolve_mod_dependencies(
     runtime: tauri::State<'_, feature_host::HostRuntime>,
+    providers: tauri::State<'_, provider_composition::ModProviderState>,
     source: ModSource,
     project_id: String,
     version_id: String,
@@ -265,9 +287,12 @@ async fn resolve_mod_dependencies(
     loader: String,
 ) -> Result<ModDependencyPlan, String> {
     runtime.ensure_feature_ready(feature_host::FEATURE_MODS)?;
+    let registry = providers.registry()?;
     drop(runtime);
+    drop(providers);
     tokio::task::spawn_blocking(move || {
         mods::resolve_mod_dependencies_blocking(
+            &registry,
             source,
             &project_id,
             &version_id,
@@ -282,6 +307,7 @@ async fn resolve_mod_dependencies(
 #[tauri::command]
 async fn install_mod(
     runtime: tauri::State<'_, feature_host::HostRuntime>,
+    providers: tauri::State<'_, provider_composition::ModProviderState>,
     app: tauri::AppHandle,
     game_dir: String,
     source: ModSource,
@@ -292,9 +318,12 @@ async fn install_mod(
     install_dependencies: bool,
 ) -> Result<ModInstallResult, String> {
     runtime.ensure_feature_ready(feature_host::FEATURE_MODS)?;
+    let registry = providers.registry()?;
     drop(runtime);
+    drop(providers);
     tokio::task::spawn_blocking(move || {
         mods::install_mod_blocking(
+            &registry,
             &app,
             &game_dir,
             source,
@@ -441,6 +470,9 @@ pub fn run() {
         .setup(|app| {
             if !app.manage(feature_host::initialize_host_runtime()) {
                 eprintln!("Host feature runtime state registration failed; commands remain gated.");
+            }
+            if !app.manage(provider_composition::ModProviderState::new()) {
+                eprintln!("Mod provider registry state registration failed; provider commands will be unavailable.");
             }
             Ok(())
         })

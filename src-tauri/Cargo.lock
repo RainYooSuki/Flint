@@ -1059,6 +1059,8 @@ dependencies = [
  "flate2",
  "flint-core",
  "flint-feature-api",
+ "flint-mod-provider-curseforge",
+ "flint-mod-provider-modrinth",
  "flint-provider-api",
  "md5",
  "regex",
@@ -1092,6 +1094,24 @@ dependencies = [
  "flint-core",
  "semver",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "flint-mod-provider-curseforge"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "flint-core",
+ "flint-provider-api",
+ "serde_json",
+]
+
+[[package]]
+name = "flint-mod-provider-modrinth"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "flint-core",
+ "flint-provider-api",
  "serde_json",
 ]
 

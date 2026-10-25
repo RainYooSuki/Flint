@@ -7,6 +7,9 @@ use std::{
 
 pub use flint_core::contract::{ApiVersion, ProviderRequirement};
 
+pub mod mods;
+pub use mods::*;
+
 /// A capability exposed by a provider. Selection keys are scoped by the
 /// capability ID and must be unique among providers exposing that capability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
