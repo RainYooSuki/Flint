@@ -389,7 +389,7 @@ mod tests {
     use super::*;
     use crate::test_support::{FakeJavaRunner, FakeNetworkPort, FakePathPort};
     use flint_core::ports::{
-        JavaRunner, NetworkPort, NoopLogger, NoopProgress, PathPort,
+        JavaRunner, NetworkPort, NoopLogger, NoopProgress,
     };
 
     #[test]

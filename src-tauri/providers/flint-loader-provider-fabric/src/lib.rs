@@ -134,7 +134,7 @@ mod tests {
         Cancellation, Deadline, NoopLogger, NoopProgress, ProgressSink, ProgressUpdate,
     };
     use flint_provider_api::test_support::{FakeJavaRunner, FakeNetworkPort, FakePathPort};
-    use flint_provider_api::{LoaderProvider as _, LoaderTimeouts};
+    use flint_provider_api::LoaderTimeouts;
     use serde_json::json;
     use std::{
         path::Path,

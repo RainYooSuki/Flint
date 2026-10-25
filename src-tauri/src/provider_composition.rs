@@ -147,7 +147,7 @@ impl ProviderRuntimeState {
     ) -> RegistryLookup {
         match &self.inner.mod_registry {
             Ok(registry) => registry_lookup(registry, requirement, unavailable),
-            Err(error) => RegistryLookup::RegistryError(error.clone()),
+            Err(error) => RegistryLookup::RegistryError { error: error.clone() },
         }
     }
 
@@ -158,7 +158,7 @@ impl ProviderRuntimeState {
     ) -> RegistryLookup {
         match &self.inner.loader_registry {
             Ok(registry) => registry_lookup(registry, requirement, unavailable),
-            Err(error) => RegistryLookup::RegistryError(error.clone()),
+            Err(error) => RegistryLookup::RegistryError { error: error.clone() },
         }
     }
 }
@@ -315,8 +315,6 @@ fn registry_lookup<P: Provider + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flint_feature_api::ProviderCatalog as _;
-    use flint_provider_api::Provider as _;
 
     #[test]
     fn requirements_select_their_exact_composed_provider() {

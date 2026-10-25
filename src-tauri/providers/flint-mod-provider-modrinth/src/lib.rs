@@ -437,7 +437,6 @@ fn optional_https_url(value: &str) -> Option<String> {
 mod tests {
     use super::*;
     use flint_core::ports::{Cancellation, Deadline, DownloadRequest, NoopLogger, NoopProgress};
-    use flint_provider_api::Provider as _;
     use serde_json::json;
     use std::{sync::Mutex, time::Duration};
 

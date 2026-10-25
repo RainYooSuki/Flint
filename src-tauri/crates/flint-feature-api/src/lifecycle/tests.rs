@@ -475,7 +475,7 @@ fn required_startup_failure_cleans_up_without_masking_the_original_failure() {
         cleanup_calls.fetch_add(1, Ordering::SeqCst);
         Err("core cleanup failed with token=hidden".to_string())
     }));
-    let mut catalog = TestProviderCatalog::new(&["provider.zeta", "provider.alpha"]);
+    let catalog = TestProviderCatalog::new(&["provider.zeta", "provider.alpha"]);
     let provider_shutdown_log = catalog.shut_down_providers.clone();
 
     let mut dependent = descriptor("flint.dependent", StartupPolicy::Optional);
@@ -891,7 +891,7 @@ fn provider_init_failure_forces_catalog_unavailability_before_feature_checks() {
 fn provider_absence_failure_and_ambiguity_block_features_without_leaking_ids() {
     let logs = RuntimeLogs::default();
     let core_calls = Arc::new(AtomicUsize::new(0));
-    let mut catalog = TestProviderCatalog::new(&["provider.bad", "provider.good"])
+    let catalog = TestProviderCatalog::new(&["provider.bad", "provider.good"])
         .with_capability("mods.failed", "provider.bad")
         .with_failed_init("provider.bad")
         .with_ambiguous_capability("mods.ambiguous");
@@ -1169,7 +1169,7 @@ fn required_runtime_failure_enters_runtime_failed_and_then_stops() {
 fn optional_only_provider_loss_degrades_and_preserves_required_features() {
     let logs = RuntimeLogs::default();
     let core_calls = Arc::new(AtomicUsize::new(0));
-    let mut catalog = TestProviderCatalog::new(&["provider.live"])
+    let catalog = TestProviderCatalog::new(&["provider.live"])
         .with_capability("mods.catalog", "provider.live");
     let provider_shutdown_log = catalog.shut_down_providers.clone();
 
@@ -1254,7 +1254,7 @@ fn optional_only_provider_loss_degrades_and_preserves_required_features() {
 fn provider_runtime_loss_fails_required_dependents_without_leaking_provider_ids() {
     let logs = RuntimeLogs::default();
     let core_calls = Arc::new(AtomicUsize::new(0));
-    let mut catalog = TestProviderCatalog::new(&["provider.live"])
+    let catalog = TestProviderCatalog::new(&["provider.live"])
         .with_capability("mods.catalog", "provider.live");
     let provider_shutdown_log = catalog.shut_down_providers.clone();
 
