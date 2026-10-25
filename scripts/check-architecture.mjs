@@ -19,7 +19,7 @@ const FRONTEND_ROOT = path.join(REPO_ROOT, "src");
 const RUST_SOURCE_ROOT = path.join(REPO_ROOT, "src-tauri", "src");
 const RUST_MANIFEST = path.join(REPO_ROOT, "src-tauri", "Cargo.toml");
 const PROVIDER_API_SOURCE = "src-tauri/crates/flint-provider-api/src/lib.rs";
-const FOUNDATION_WORKSPACE_MEMBERS = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"];
+const FOUNDATION_WORKSPACE_MEMBERS = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"];
 const COMPOSITION_ROOT = "src/app/composition.ts";
 const CONTRIBUTIONS_CONTRACT = "src/core/contributions.ts";
 const toPosix = (value) => value.split(path.sep).join("/");
@@ -991,20 +991,18 @@ function moduleParts(moduleId) {
 function moduleId(parts) {
   return parts.length === 0 ? "crate" : parts.join("::");
 }
-const RUST_MODULE_ALLOWLIST = new Set(["crate", "main", "auth", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "provider_composition", "saves", "settings", "version"]);
+const RUST_MODULE_ALLOWLIST = new Set(["crate", "main", "auth", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "provider_composition", "version"]);
 const RUST_MODULE_EDGE_ALLOWLIST = new Map(Object.entries({
-  crate: ["auth", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "provider_composition", "saves", "settings", "version"],
+  crate: ["auth", "feature_host", "install", "java", "launch", "loaders", "models", "mods", "provider_composition", "version"],
   main: [],
-  auth: ["models", "settings"],
+  auth: ["models"],
   feature_host: ["provider_composition"],
   install: ["models", "version"],
   java: ["models"],
-  launch: ["auth", "java", "models", "settings", "version"],
+  launch: ["auth", "java", "models", "version"],
   loaders: ["install", "java", "models", "paths", "version"],
   models: [],
-  mods: ["models", "settings"],
-  saves: ["models"],
-  settings: ["models"],
+  mods: ["models"],
   version: ["models"],
   provider_composition: [],
 }));
@@ -1441,7 +1439,7 @@ function checkHostCommandGates(report) {
 // Phase 1/2 provider boundaries and single ModSource mapping adapter
 // ---------------------------------------------------------------------------
 const HOST_PRIVATE_MODULES = new Set([
-  "auth", "feature_host", "install", "java", "launch", "provider_composition", "saves", "settings", "version",
+  "auth", "feature_host", "install", "java", "launch", "provider_composition", "version",
 ]);
 // Exact provider files/import roots. transitional entries are named and expire at phase 5.
 const providerTarget = (file, role, localTargets, transitional = {}, external = ["std", "semver", "flint_core"]) => ({
@@ -1537,6 +1535,119 @@ const LOADER_PROVIDER_CRATE_SPECS = [
     dependencies: ["flint-core", "flint-provider-api", "regex"],
   },
 ];
+const FEATURE_CRATE_SPECS = [
+  {
+    crateName: "flint-feature-settings",
+    manifest: "src-tauri/modules/flint-feature-settings/Cargo.toml",
+    source: "src-tauri/modules/flint-feature-settings/src/lib.rs",
+    dependencies: ["flint-core", "flint-feature-api", "serde", "serde_json"],
+  },
+  {
+    crateName: "flint-feature-saves",
+    manifest: "src-tauri/modules/flint-feature-saves/Cargo.toml",
+    source: "src-tauri/modules/flint-feature-saves/src/lib.rs",
+    dependencies: ["base64", "flate2", "flint-core", "flint-feature-api", "serde", "zip"],
+  },
+];
+export function reviewedFeatureCrateSpecs() {
+  return FEATURE_CRATE_SPECS.map((spec) => ({
+    crateName: spec.crateName,
+    manifest: spec.manifest,
+    source: spec.source,
+    dependencies: [...spec.dependencies].sort(),
+  }));
+}
+const FEATURE_LEAF_TARGETS = FEATURE_CRATE_SPECS.map((spec) =>
+  providerTarget(
+    spec.source,
+    "feature-leaf",
+    [],
+    {},
+    ["std", ...spec.dependencies.map((dependency) => dependency.replace(/-/g, "_"))],
+  ),
+);
+const FEATURE_TARGET_BY_SOURCE = new Map(FEATURE_LEAF_TARGETS.map((target) => [target.file, target]));
+export function reviewedFeatureTargets() {
+  return FEATURE_LEAF_TARGETS.map((target) => ({
+    file: target.file,
+    role: target.role,
+    localTargets: [...target.localTargets].sort(),
+    transitionalLocalTargets: [...target.transitionalLocalTargets.keys()].sort(),
+    externalRoots: [...target.externalRoots].sort(),
+  }));
+}
+export function evaluateFeatureDirectoryNames(names) {
+  const expected = FEATURE_CRATE_SPECS.map((spec) => spec.crateName).sort();
+  const actual = names.filter((name) => name.startsWith("flint-feature-")).sort();
+  const issues = [];
+  for (const name of expected) if (!actual.includes(name)) issues.push(`missing feature crate directory '${name}'.`);
+  for (const name of actual) if (!expected.includes(name)) issues.push(`unexpected feature crate directory '${name}'.`);
+  return issues;
+}
+export function evaluateFeatureCrateManifest(relative, manifestText) {
+  const spec = FEATURE_CRATE_SPECS.find((candidate) => candidate.manifest === relative);
+  if (!spec) return [{ line: 1, message: `unknown feature crate manifest target '${relative}'.` }];
+  const issues = [];
+  if (!new RegExp(`^\\s*name\\s*=\\s*"${spec.crateName}"\\s*$`, "m").test(manifestText)) {
+    issues.push({ line: 1, message: `feature crate must be named exactly '${spec.crateName}'.` });
+  }
+  if (!/^\s*version\.workspace\s*=\s*true\s*$/m.test(manifestText)) {
+    issues.push({ line: 1, message: "feature crate must inherit the workspace version." });
+  }
+  if (!/^\s*publish\s*=\s*false\s*$/m.test(manifestText)) {
+    issues.push({ line: 1, message: "feature crate must declare publish = false." });
+  }
+  const declared = cargoDeclaredDependencyNames(manifestText);
+  const expected = [...spec.dependencies].sort();
+  if (JSON.stringify(declared) !== JSON.stringify(expected)) {
+    issues.push({
+      line: 1,
+      message: `feature crate dependencies must be exactly ${JSON.stringify(expected)}, found ${JSON.stringify(declared)}.`,
+    });
+  }
+  return issues;
+}
+function checkFeatureCrateManifests(report) {
+  for (const spec of FEATURE_CRATE_SPECS) {
+    const absolutePath = path.join(REPO_ROOT, spec.manifest);
+    if (!fs.existsSync(absolutePath)) {
+      report("RUST-PHASE-TARGET-001", spec.manifest, 1, "the exact feature crate manifest is missing.");
+      continue;
+    }
+    for (const issue of evaluateFeatureCrateManifest(spec.manifest, readText(absolutePath))) {
+      report("RUST-FEATURE-DEP-ALLOW-001", spec.manifest, issue.line, issue.message);
+    }
+  }
+}
+export function evaluateHostFeatureDependencyDeclarations(manifestText) {
+  const issues = [];
+  for (const spec of FEATURE_CRATE_SPECS) {
+    const relativePath = spec.manifest
+      .replace(/^src-tauri\//, "")
+      .replace(/\/Cargo\.toml$/, "");
+    const declaration = `${spec.crateName} = { path = "${relativePath}" }`;
+    if (!manifestText.includes(declaration)) {
+      issues.push({ line: 1, message: `host manifest must declare feature path dependency '${declaration}'.` });
+    }
+  }
+  return issues;
+}
+export function evaluateFeatureLockEntries(lockText) {
+  const issues = [];
+  const host = /\[\[package\]\]\s*\r?\nname = "flint"\s*\r?\nversion = "([^"]+)"/.exec(lockText);
+  if (!host) return [{ line: 1, message: "Cargo.lock must contain the host package 'flint' with its workspace version." }];
+  const version = host[1];
+  for (const spec of FEATURE_CRATE_SPECS) {
+    const pattern = new RegExp(`\\[\\[package\\]\\]\\r?\\nname = "${spec.crateName}"\\r?\\nversion = "([^"]+)"`);
+    const match = pattern.exec(lockText);
+    if (!match) {
+      issues.push({ line: 1, message: `Cargo.lock must contain local package '${spec.crateName}'.` });
+    } else if (match[1] !== version) {
+      issues.push({ line: 1, message: `Cargo.lock package '${spec.crateName}' version '${match[1]}' does not match host workspace version '${version}'.` });
+    }
+  }
+  return issues;
+}
 export function evaluateLoaderProviderDirectoryNames(names) {
   const expected = LOADER_PROVIDER_CRATE_SPECS.map((spec) => spec.crateName).sort();
   const actual = names.filter((name) => name.startsWith("flint-loader-provider-")).sort();
@@ -2029,6 +2140,81 @@ function rustFilesUnder(relativeDirectory) {
   }
   return files.sort();
 }
+function checkFeatureTarget(phase, target, graph, report) {
+  let record = graph.records.find((candidate) => candidate.relative === target.file);
+  if (!record) {
+    const absolutePath = path.join(REPO_ROOT, target.file);
+    if (!fs.existsSync(absolutePath)) return;
+    try {
+      record = {
+        absolutePath,
+        relative: target.file,
+        moduleId: "crate",
+        productionText: prepareRustProductionSource(readText(absolutePath)),
+      };
+    } catch (error) {
+      report("RUST-LEX-001", target.file, 1, `cannot statically mask feature source: ${error.message}`);
+      return;
+    }
+  }
+  for (const declaration of extractRustUseDeclarations(record.productionText)) {
+    const root = firstUseRoot(declaration.payload);
+    if (!root) {
+      report("RUST-FEATURE-IMPORT-001", record.relative, declaration.line, "unparseable feature use declaration.");
+      continue;
+    }
+    if (root === "crate" || root === "super" || root === "self") {
+      report("RUST-FEATURE-IMPORT-001", record.relative, declaration.line, "feature crates may not import host/private crate modules.");
+      continue;
+    }
+    if (root === "tauri" || root.startsWith("tauri_")) {
+      report("RUST-FEATURE-IO-001", record.relative, declaration.line, "feature crates may not import Tauri.");
+      continue;
+    }
+    if (graph.moduleSet.has(root) || HOST_PRIVATE_MODULES.has(root)) {
+      report("RUST-FEATURE-IMPORT-001", record.relative, declaration.line, `feature crate imports host-private module '${root}'.`);
+      continue;
+    }
+    if (!target.externalRoots.has(root)) {
+      report("RUST-FEATURE-IMPORT-ALLOW-001", record.relative, declaration.line, `feature external crate root '${root}' is not in the exact reviewed allowlist (${[...target.externalRoots].sort().join(", ")}).`);
+    }
+  }
+  const tauriUse = /\btauri(?:_[A-Za-z0-9_]+)?\s*::/.exec(record.productionText);
+  if (tauriUse) {
+    report("RUST-FEATURE-IO-001", record.relative, lineOf(record.productionText, tauriUse.index), "feature crates may not use Tauri paths.");
+  }
+}
+function checkFeatureCrateGate(phase, graph, report) {
+  if (phase < 3) return;
+  const modulesRoot = path.join(REPO_ROOT, "src-tauri/modules");
+  if (fs.existsSync(modulesRoot)) {
+    const directories = fs
+      .readdirSync(modulesRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+    for (const issue of evaluateFeatureDirectoryNames(directories)) {
+      report("RUST-FEATURE-TARGET-001", "src-tauri/modules", 1, issue);
+    }
+  }
+  for (const spec of FEATURE_CRATE_SPECS) {
+    if (!fs.existsSync(path.join(REPO_ROOT, spec.source))) {
+      report("RUST-PHASE-TARGET-001", spec.source, 1, `phase ${phase} requires the exact feature leaf '${spec.crateName}'.`);
+      continue;
+    }
+    const target = FEATURE_TARGET_BY_SOURCE.get(spec.source);
+    if (!target) continue;
+    checkFeatureTarget(phase, target, graph, report);
+    for (const file of rustFilesUnder(path.dirname(spec.source))) {
+      if (file === spec.source) continue;
+      checkFeatureTarget(phase, { ...target, file }, graph, report);
+    }
+  }
+  for (const legacy of ["src-tauri/src/settings.rs", "src-tauri/src/saves.rs"]) {
+    if (fs.existsSync(path.join(REPO_ROOT, legacy))) {
+      report("RUST-FEATURE-LEGACY-001", legacy, 1, "settings/saves implementations must live only in their extracted feature crates.");
+    }
+  }
+}
 function checkLoaderProviderGate(phase, graph, report) {
   if (phase < 2) return;
   const files = requiredLoaderFiles(phase, report);
@@ -2107,7 +2293,11 @@ const CARGO_RULES = new Map([
   ["flint-provider-api", { layer: "provider-api", dependencies: new Set(["flint-core"]) }],
   ...FEATURE_CRATES.map((name) => [name, {
     layer: "feature",
-    dependencies: new Set(["flint-core", "flint-feature-api", "flint-provider-api"]),
+    dependencies: new Set(
+      FEATURE_CRATE_SPECS.some((spec) => spec.crateName === name)
+        ? ["flint-core", "flint-feature-api"]
+        : ["flint-core", "flint-feature-api", "flint-provider-api"],
+    ),
   }]),
   ...PROVIDER_CRATES.map((name) => [name, {
     layer: "provider",
@@ -2212,6 +2402,9 @@ function checkFoundationWorkspaceManifest(manifestText, report) {
   for (const issue of evaluateHostLoaderDependencyDeclarations(manifestText)) {
     report("RUST-CARGO-LOADER-DEP-001", "src-tauri/Cargo.toml", issue.line, issue.message);
   }
+  for (const issue of evaluateHostFeatureDependencyDeclarations(manifestText)) {
+    report("RUST-CARGO-FEATURE-DEP-001", "src-tauri/Cargo.toml", issue.line, issue.message);
+  }
 }
 function checkCargoGate(phase, report) {
   if (!fs.existsSync(RUST_MANIFEST)) {
@@ -2228,6 +2421,9 @@ function checkCargoGate(phase, report) {
       report("RUST-CARGO-LOCK-001", lockRelative, 1, "the single workspace lockfile is missing.");
     } else {
       for (const issue of evaluateLoaderProviderLockEntries(readText(lockPath))) {
+        report("RUST-CARGO-LOCK-001", lockRelative, issue.line, issue.message);
+      }
+      for (const issue of evaluateFeatureLockEntries(readText(lockPath))) {
         report("RUST-CARGO-LOCK-001", lockRelative, issue.line, issue.message);
       }
     }
@@ -2322,7 +2518,7 @@ function printReviewedAllowlists(phase) {
   for (const targets of RUST_MODULE_EDGE_ALLOWLIST.values()) edgeCount += targets.length;
   console.log(`[allowlist] exact reviewed Rust in-crate edges: ${edgeCount}; no directory wildcards.`);
   console.log(`[allowlist] host command gates: ${FEATURE_COMMAND_GATES.length} feature commands across ${new Set(FEATURE_COMMAND_GATES.map((gate) => gate.featureId)).size} features; ungated=${UNGATED_HOST_COMMANDS.join(",")}.`);
-  for (const target of [...MOD_PROVIDER_TARGETS, ...LOADER_PROVIDER_TARGETS]) {
+  for (const target of [...MOD_PROVIDER_TARGETS, ...LOADER_PROVIDER_TARGETS, ...FEATURE_LEAF_TARGETS]) {
     if (!fs.existsSync(path.join(REPO_ROOT, target.file))) continue;
     const local = [...target.localTargets].sort();
     const transitional = [...target.transitionalLocalTargets.keys()].sort();
@@ -2337,6 +2533,7 @@ function runRequestedPhase(phase) {
   const graph = buildRustGraph(report);
   checkModProviderCrateManifests(report);
   checkLoaderProviderCrateManifests(report);
+  checkFeatureCrateManifests(report);
   checkProviderCompositionBoundaries(graph, report);
   for (const target of MOD_PROVIDER_TARGETS) {
     if (!fs.existsSync(path.join(REPO_ROOT, target.file))) {
@@ -2347,6 +2544,7 @@ function runRequestedPhase(phase) {
   }
   checkModSourceBoundaries(graph, report);
   checkLoaderProviderGate(phase, graph, report);
+  checkFeatureCrateGate(phase, graph, report);
   checkFrontend(phase, report);
   checkCargoGate(phase, report);
   if (phase >= 3) checkHostCommandGates(report);

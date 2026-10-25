@@ -7,11 +7,11 @@ mod loaders;
 mod models;
 mod mods;
 mod provider_composition;
-mod saves;
-mod settings;
 mod version;
 
 pub(crate) use flint_core::{error, net, paths};
+pub(crate) use flint_feature_saves as saves;
+pub(crate) use flint_feature_settings as settings;
 
 use models::{
     AccountInfo, InstallResult, InstalledModInfo, InstanceInfo, JavaInfo, LaunchRequest,

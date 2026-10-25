@@ -13,7 +13,11 @@ import {
   collectHtmlInjectionSites,
   collectImportMetaMembers,
   collectUnsafeCodeSites,
+  evaluateFeatureCrateManifest,
+  evaluateFeatureDirectoryNames,
+  evaluateFeatureLockEntries,
   evaluateFrontendBoundary,
+  evaluateHostFeatureDependencyDeclarations,
   evaluateHostLoaderDependencyDeclarations,
   evaluateLoaderProviderComposition,
   evaluateLoaderProviderCrateManifest,
@@ -36,6 +40,8 @@ import {
   requiredLoaderFiles,
   resolveFrontendModule,
   reviewedFeatureCommandGates,
+  reviewedFeatureCrateSpecs,
+  reviewedFeatureTargets,
   reviewedHostRustModuleIds,
   reviewedLoaderProviderCrateSpecs,
   reviewedProviderTargets,
@@ -220,7 +226,7 @@ test("phase-3 workspace foundation parser recognizes the exact reviewed members"
     "",
     "[workspace]",
     'resolver = "2"',
-    'members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"]',
+    'members = [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"]',
     "",
     "[dependencies]",
     'flint-core = { path = "crates/flint-core" }',
@@ -229,7 +235,7 @@ test("phase-3 workspace foundation parser recognizes the exact reviewed members"
   assert.deepEqual(foundation, {
     present: true,
     resolver: "2",
-    members: [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"],
+    members: [".", "crates/flint-core", "crates/flint-feature-api", "crates/flint-provider-api", "modules/flint-feature-settings", "modules/flint-feature-saves", "providers/flint-mod-provider-curseforge", "providers/flint-mod-provider-modrinth", "providers/flint-loader-provider-fabric", "providers/flint-loader-provider-quilt", "providers/flint-loader-provider-forge", "providers/flint-loader-provider-neoforge", "providers/flint-loader-provider-liteloader", "providers/flint-loader-provider-optifine"],
   });
   assert.equal(foundation.members.includes("crates/flint-feature-api"), true);
   assert.equal(foundation.members.some((member) => member.includes("*")), false);
@@ -329,6 +335,112 @@ test("loader provider lock entries share the host workspace version", () => {
   );
 });
 
+test("first feature-crate wave uses exact settings/saves manifests, edges, directories, and locks", () => {
+  const specs = reviewedFeatureCrateSpecs();
+  assert.equal(specs.length, 2);
+  assert.deepEqual(
+    specs.map((spec) => spec.crateName),
+    ["flint-feature-settings", "flint-feature-saves"],
+  );
+  assert.deepEqual(
+    specs.find((spec) => spec.crateName === "flint-feature-settings").dependencies,
+    ["flint-core", "flint-feature-api", "serde", "serde_json"],
+  );
+  assert.deepEqual(
+    specs.find((spec) => spec.crateName === "flint-feature-saves").dependencies,
+    ["base64", "flate2", "flint-core", "flint-feature-api", "serde", "zip"],
+  );
+  for (const spec of specs) {
+    const manifest = [
+      "[package]",
+      `name = "${spec.crateName}"`,
+      "version.workspace = true",
+      "publish = false",
+      "",
+      "[dependencies]",
+      ...spec.dependencies.map((dependency) => `${dependency} = "1"`),
+      "",
+    ].join("\n");
+    assert.deepEqual(evaluateFeatureCrateManifest(spec.manifest, manifest), []);
+    const withExtraDependency = manifest.replace(
+      "[dependencies]\n",
+      '[dependencies]\nunexpected = "1"\n',
+    );
+    assert.equal(
+      evaluateFeatureCrateManifest(spec.manifest, withExtraDependency)
+        .some((issue) => issue.message.includes("dependencies must be exactly")),
+      true,
+    );
+    const wrongVersion = manifest.replace("version.workspace = true", 'version = "1.0.0"');
+    assert.equal(
+      evaluateFeatureCrateManifest(spec.manifest, wrongVersion)
+        .some((issue) => issue.message.includes("inherit the workspace version")),
+      true,
+    );
+    const wrongPublish = manifest.replace("publish = false", "publish = true");
+    assert.equal(
+      evaluateFeatureCrateManifest(spec.manifest, wrongPublish)
+        .some((issue) => issue.message.includes("publish = false")),
+      true,
+    );
+  }
+  assert.deepEqual(evaluateFeatureDirectoryNames(specs.map((spec) => spec.crateName)), []);
+  assert.deepEqual(
+    evaluateFeatureDirectoryNames([...specs.map((spec) => spec.crateName), "flint-feature-extra"]),
+    ["unexpected feature crate directory 'flint-feature-extra'."],
+  );
+  const declarations = specs.map((spec) => {
+    const relativePath = spec.manifest
+      .replace(/^src-tauri\//, "")
+      .replace(/\/Cargo\.toml$/, "");
+    return `${spec.crateName} = { path = "${relativePath}" }`;
+  }).join("\n");
+  assert.deepEqual(evaluateHostFeatureDependencyDeclarations(declarations), []);
+  assert.equal(
+    evaluateHostFeatureDependencyDeclarations(
+      declarations.replace("modules/flint-feature-saves", "modules/wrong-saves"),
+    ).length,
+    1,
+  );
+  const lock = [
+    "[[package]]",
+    'name = "flint"',
+    'version = "2026.10.1-d1cce64"',
+    "",
+    ...specs.flatMap((spec) => [
+      "[[package]]",
+      `name = "${spec.crateName}"`,
+      'version = "2026.10.1-d1cce64"',
+      "",
+    ]),
+  ].join("\n");
+  assert.deepEqual(evaluateFeatureLockEntries(lock), []);
+  assert.equal(
+    evaluateFeatureLockEntries(
+      lock.replace(
+        'name = "flint-feature-settings"\nversion = "2026.10.1-d1cce64"',
+        'name = "flint-feature-settings"\nversion = "0.0.0"',
+      ),
+    ).length,
+    1,
+  );
+  const targets = reviewedFeatureTargets();
+  assert.equal(targets.length, 2);
+  for (const target of targets) {
+    assert.equal(target.role, "feature-leaf");
+    assert.deepEqual(target.localTargets, []);
+    assert.equal(target.externalRoots.includes("tauri"), false);
+  }
+  assert.deepEqual(
+    targets.find((target) => target.file.includes("flint-feature-settings")).externalRoots,
+    ["flint_core", "flint_feature_api", "serde", "serde_json", "std"],
+  );
+  assert.deepEqual(
+    targets.find((target) => target.file.includes("flint-feature-saves")).externalRoots,
+    ["base64", "flate2", "flint_core", "flint_feature_api", "serde", "std", "zip"],
+  );
+});
+
 test("loader provider composition requires six leaf descriptors, keys, constructors, and one registry", () => {
   const descriptors = [
     "FABRIC_LOADER_DESCRIPTOR",
@@ -424,6 +536,8 @@ test("host command gate map covers exactly the 28 feature commands and reviewed 
   assert.equal(reviewedHostRustModuleIds().includes("error"), false);
   assert.equal(reviewedHostRustModuleIds().includes("net"), false);
   assert.equal(reviewedHostRustModuleIds().includes("paths"), false);
+  assert.equal(reviewedHostRustModuleIds().includes("settings"), false);
+  assert.equal(reviewedHostRustModuleIds().includes("saves"), false);
 });
 
 test("host command gate audit requires exact feature ownership, managed state, and one handler per command", () => {

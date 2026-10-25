@@ -1,0 +1,16 @@
+[package]
+name = "flint-feature-saves"
+version.workspace = true
+description = "Saves feature implementation for Flint"
+authors = ["Flint Contributors"]
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+[dependencies]
+flint-core = { path = "../../crates/flint-core" }
+flint-feature-api = { path = "../../crates/flint-feature-api" }
+serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
+flate2 = "1"
+zip = { version = "=2.2.2", default-features = false, features = ["deflate"] }

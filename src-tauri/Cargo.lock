@@ -1059,6 +1059,8 @@ dependencies = [
  "flate2",
  "flint-core",
  "flint-feature-api",
+ "flint-feature-saves",
+ "flint-feature-settings",
  "flint-loader-provider-fabric",
  "flint-loader-provider-forge",
  "flint-loader-provider-liteloader",
@@ -1104,6 +1106,27 @@ dependencies = [
  "serde_json",
 ]
 
+[[package]]
+name = "flint-feature-saves"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "flint-core",
+ "flint-feature-api",
+ "serde",
+ "zip",
+]
+
+[[package]]
+name = "flint-feature-settings"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "flint-core",
+ "flint-feature-api",
+ "serde",
+ "serde_json",
+]
 [[package]]
 name = "flint-loader-provider-fabric"
 version = "2026.10.1-d1cce64"

@@ -1,5 +1,41 @@
-use crate::models::LauncherSettings;
-use crate::paths::settings_path;
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LauncherSettings {
+    pub game_dir: String,
+    pub java_path: String,
+    pub username: String,
+    pub min_memory_mb: u32,
+    pub max_memory_mb: u32,
+    pub jvm_args: String,
+    pub game_args: String,
+    pub width: u32,
+    pub height: u32,
+    #[serde(default)]
+    pub microsoft_client_id: String,
+    #[serde(default)]
+    pub curseforge_api_key: String,
+}
+
+impl Default for LauncherSettings {
+    fn default() -> Self {
+        Self {
+            game_dir: default_game_dir().display().to_string(),
+            java_path: String::new(),
+            username: "Player".to_string(),
+            min_memory_mb: 1024,
+            max_memory_mb: 4096,
+            jvm_args: String::new(),
+            game_args: String::new(),
+            width: 854,
+            height: 480,
+            microsoft_client_id: String::new(),
+            curseforge_api_key: String::new(),
+        }
+    }
+}
+
+use flint_core::paths::{default_game_dir, settings_path};
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{self, Write},

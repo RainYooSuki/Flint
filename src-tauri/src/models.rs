@@ -10,41 +10,8 @@ pub struct LauncherInfo {
     pub settings_path: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct LauncherSettings {
-    pub game_dir: String,
-    pub java_path: String,
-    pub username: String,
-    pub min_memory_mb: u32,
-    pub max_memory_mb: u32,
-    pub jvm_args: String,
-    pub game_args: String,
-    pub width: u32,
-    pub height: u32,
-    #[serde(default)]
-    pub microsoft_client_id: String,
-    #[serde(default)]
-    pub curseforge_api_key: String,
-}
-
-impl Default for LauncherSettings {
-    fn default() -> Self {
-        Self {
-            game_dir: crate::paths::default_game_dir().display().to_string(),
-            java_path: String::new(),
-            username: "Player".to_string(),
-            min_memory_mb: 1024,
-            max_memory_mb: 4096,
-            jvm_args: String::new(),
-            game_args: String::new(),
-            width: 854,
-            height: 480,
-            microsoft_client_id: String::new(),
-            curseforge_api_key: String::new(),
-        }
-    }
-}
+pub use flint_feature_saves::{SaveInfo, SaveTransferResult};
+pub use flint_feature_settings::LauncherSettings;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -353,27 +320,6 @@ pub struct ModInstallResult {
     pub dependencies: Vec<InstalledModInfo>,
     pub skipped: Vec<String>,
     pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveInfo {
-    pub folder_name: String,
-    pub display_name: String,
-    pub path: String,
-    pub icon_data_url: Option<String>,
-    pub last_played: Option<i64>,
-    pub size_bytes: u64,
-    pub game_mode: Option<String>,
-    pub hardcore: bool,
-    pub version_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveTransferResult {
-    pub path: String,
-    pub save: Option<SaveInfo>,
 }
 
 #[cfg(test)]

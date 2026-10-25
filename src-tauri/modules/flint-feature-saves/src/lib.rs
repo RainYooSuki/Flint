@@ -1,9 +1,9 @@
-use crate::{
-    models::{SaveInfo, SaveTransferResult},
+use base64::{engine::general_purpose::STANDARD, Engine};
+use flint_core::{
     net,
     paths::{normalize_relative_metadata_path, resolve_game_dir, safe_join},
 };
-use base64::{engine::general_purpose::STANDARD, Engine};
+use serde::{Deserialize, Serialize};
 use flate2::read::GzDecoder;
 use std::{
     collections::{HashMap, HashSet},
@@ -22,6 +22,27 @@ const MAX_IMPORT_ENTRIES: usize = 100_000;
 const MAX_IMPORT_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMPORT_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_ARCHIVE_FILES: usize = 100_000;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveInfo {
+    pub folder_name: String,
+    pub display_name: String,
+    pub path: String,
+    pub icon_data_url: Option<String>,
+    pub last_played: Option<i64>,
+    pub size_bytes: u64,
+    pub game_mode: Option<String>,
+    pub hardcore: bool,
+    pub version_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveTransferResult {
+    pub path: String,
+    pub save: Option<SaveInfo>,
+}
 
 pub fn list_saves_blocking(game_dir: &str) -> Result<Vec<SaveInfo>, String> {
     let saves_dir = resolve_game_dir(game_dir).join("saves");
