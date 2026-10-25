@@ -464,7 +464,7 @@ export function collectImportMetaTauriLoadingSites(sourceFile) {
       let meta = null;
       if (ts.isPropertyAccessExpression(expression)) meta = expression.expression;
       else if (ts.isElementAccessExpression(expression)) meta = expression.expression;
-      if (ts.isMetaProperty(meta) && meta.keywordToken === ts.SyntaxKind.ImportKeyword && meta.name.text === "meta") {
+      if (meta !== null && ts.isMetaProperty(meta) && meta.keywordToken === ts.SyntaxKind.ImportKeyword && meta.name.text === "meta") {
         const tauriArgument = node.arguments.find(
           (argument) => ts.isStringLiteralLike(argument) && isTauriPackageSpecifier(argument.text),
         );
