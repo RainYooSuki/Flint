@@ -1203,7 +1203,14 @@ mod tests {
         encoder.finish().expect("finish sample level.dat")
     }
 
+    fn ensure_fixture_parent(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("zip fixture directory");
+        }
+    }
+
     fn write_import_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        ensure_fixture_parent(path);
         let file = fs::File::create(path).expect("import zip file");
         let mut writer = ZipWriter::new(file);
         for (name, data) in entries {
@@ -1216,16 +1223,29 @@ mod tests {
     }
 
     fn write_symlink_import_zip(path: &Path, name: &str) {
+        ensure_fixture_parent(path);
         let file = fs::File::create(path).expect("symlink zip file");
         let mut writer = ZipWriter::new(file);
         writer
-            .start_file(
-                name,
-                SimpleFileOptions::default().unix_permissions(0o120777),
-            )
+            .start_file(name, SimpleFileOptions::default())
             .expect("symlink zip entry");
         writer.write_all(b"../outside").expect("symlink target");
         writer.finish().expect("finish symlink zip");
+        mark_central_directory_symlink(path);
+    }
+
+    fn mark_central_directory_symlink(path: &Path) {
+        let mut bytes = fs::read(path).expect("read zip for symlink patch");
+        let signature = [0x50_u8, 0x4b, 0x01, 0x02];
+        let position = bytes
+            .windows(signature.len())
+            .position(|window| window == &signature[..])
+            .expect("zip central directory signature");
+        bytes[position + 4..position + 6].copy_from_slice(&0x031e_u16.to_le_bytes());
+        let external_attributes = (0o120777_u32 << 16) | 0x20;
+        bytes[position + 38..position + 42]
+            .copy_from_slice(&external_attributes.to_le_bytes());
+        fs::write(path, bytes).expect("write patched symlink zip");
     }
 
     fn patch_zip_uncompressed_size(path: &Path, uncompressed_size: u32) {
@@ -1375,6 +1395,19 @@ mod tests {
         let game_dir = root.join("game");
         let archive_path = root.join("symlink.zip");
         write_symlink_import_zip(&archive_path, "World/link");
+        {
+            let fixture_file = fs::File::open(&archive_path).expect("open symlink fixture");
+            let mut fixture_archive =
+                ZipArchive::new(fixture_file).expect("symlink fixture archive");
+            let fixture_entry = fixture_archive.by_index(0).expect("symlink fixture entry");
+            assert!(
+                fixture_entry
+                    .unix_mode()
+                    .map(|mode| mode & 0o170000 == 0o120000)
+                    .unwrap_or(false),
+                "symlink fixture must encode a Unix symlink mode"
+            );
+        }
         let error = import_save_blocking(
             &game_dir.display().to_string(),
             &archive_path.display().to_string(),
