@@ -1,4 +1,4 @@
-use crate::models::JavaInfo;
+use crate::JavaInfo;
 use std::{
     collections::HashSet,
     env, fs,

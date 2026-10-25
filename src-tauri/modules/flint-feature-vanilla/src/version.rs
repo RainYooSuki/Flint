@@ -1,8 +1,6 @@
-use crate::{
-    models::InstanceInfo,
-    paths::{
-        component_is_safe, normalize_relative_metadata_path, path_dedup_key, resolve_game_dir,
-    },
+use crate::InstanceInfo;
+use flint_core::paths::{
+    component_is_safe, normalize_relative_metadata_path, path_dedup_key, resolve_game_dir,
 };
 use regex::Regex;
 use serde_json::Value;

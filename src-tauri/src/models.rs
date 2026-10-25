@@ -13,53 +13,12 @@ pub struct LauncherInfo {
 pub use flint_feature_saves::{SaveInfo, SaveTransferResult};
 pub use flint_feature_settings::LauncherSettings;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct InstanceInfo {
-    pub id: String,
-    pub name: String,
-    pub version_type: String,
-    pub loader: String,
-    pub game_version: String,
-    pub path: String,
-    pub has_client_jar: bool,
-    pub last_played: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct JavaInfo {
-    pub path: String,
-    pub version: String,
-    pub major: u32,
-    pub architecture: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoteVersion {
-    pub id: String,
-    pub version_type: String,
-    pub release_time: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct InstallProgress {
-    pub stage: String,
-    pub completed: u64,
-    pub total: u64,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct InstallResult {
-    pub version_id: String,
-    pub files_written: u64,
-    pub bytes_downloaded: u64,
-    pub install_path: String,
-}
+pub use flint_feature_accounts::{
+    AccountInfo, AccountType, LoginStatus, MicrosoftDeviceCode, MicrosoftLoginPoll,
+};
+pub use flint_feature_vanilla::{
+    InstallProgress, InstallResult, InstanceInfo, JavaInfo, RemoteVersion,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -84,52 +43,6 @@ pub struct LaunchResult {
     pub log_path: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum AccountType {
-    Offline,
-    Microsoft,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum LoginStatus {
-    Pending,
-    Success,
-    Error,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountInfo {
-    pub id: String,
-    pub username: String,
-    pub uuid: Option<String>,
-    pub account_type: AccountType,
-    pub active: bool,
-    pub skin_url: Option<String>,
-    pub expires_at: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct MicrosoftDeviceCode {
-    pub device_code: String,
-    pub user_code: String,
-    pub verification_uri: String,
-    pub expires_in: u64,
-    pub interval: u64,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct MicrosoftLoginPoll {
-    pub status: LoginStatus,
-    pub message: String,
-    pub account: Option<AccountInfo>,
-    pub slow_down: bool,
-}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]

@@ -1,9 +1,55 @@
-use crate::{
-    models::{AccountInfo, AccountType, LoginStatus, MicrosoftDeviceCode, MicrosoftLoginPoll},
-    net, paths, settings,
-};
-use reqwest::{blocking::Client, StatusCode};
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AccountType {
+    Offline,
+    Microsoft,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LoginStatus {
+    Pending,
+    Success,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountInfo {
+    pub id: String,
+    pub username: String,
+    pub uuid: Option<String>,
+    pub account_type: AccountType,
+    pub active: bool,
+    pub skin_url: Option<String>,
+    pub expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MicrosoftDeviceCode {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub expires_in: u64,
+    pub interval: u64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MicrosoftLoginPoll {
+    pub status: LoginStatus,
+    pub message: String,
+    pub account: Option<AccountInfo>,
+    pub slow_down: bool,
+}
+
+use flint_core::{net, paths};
+use flint_feature_settings as settings;
+use reqwest::{blocking::Client, StatusCode};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,

@@ -1,17 +1,17 @@
-mod auth;
 mod feature_host;
 mod install;
-mod java;
 mod launch;
 mod loaders;
 mod models;
 mod mods;
 mod provider_composition;
-mod version;
 
 pub(crate) use flint_core::{error, net, paths};
+pub(crate) use flint_feature_accounts as auth;
 pub(crate) use flint_feature_saves as saves;
 pub(crate) use flint_feature_settings as settings;
+pub(crate) use flint_feature_vanilla as vanilla;
+pub(crate) use flint_feature_vanilla::{java, version};
 
 use models::{
     AccountInfo, InstallResult, InstalledModInfo, InstanceInfo, JavaInfo, LaunchRequest,

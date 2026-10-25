@@ -1058,9 +1058,11 @@ dependencies = [
  "dirs 5.0.1",
  "flate2",
  "flint-core",
+ "flint-feature-accounts",
  "flint-feature-api",
  "flint-feature-saves",
  "flint-feature-settings",
+ "flint-feature-vanilla",
  "flint-loader-provider-fabric",
  "flint-loader-provider-forge",
  "flint-loader-provider-liteloader",
@@ -1107,6 +1109,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "flint-feature-accounts"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "flint-core",
+ "flint-feature-api",
+ "flint-feature-settings",
+ "reqwest 0.12.12",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "flint-feature-saves"
 version = "2026.10.1-d1cce64"
 dependencies = [
@@ -1127,6 +1141,20 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "flint-feature-vanilla"
+version = "2026.10.1-d1cce64"
+dependencies = [
+ "flint-core",
+ "flint-feature-api",
+ "regex",
+ "reqwest 0.12.12",
+ "serde",
+ "serde_json",
+ "sha1",
+]
+
 [[package]]
 name = "flint-loader-provider-fabric"
 version = "2026.10.1-d1cce64"
