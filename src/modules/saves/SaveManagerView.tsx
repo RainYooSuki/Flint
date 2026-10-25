@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { api } from "../../api";
 import { Icon } from "../../components/Icon";
+import type { HostDialogs } from "../../core/platform/hostServices";
+import { useRequestGeneration } from "../../core/requests/useRequestGeneration";
 import type { InstanceInfo, NoticeKind, SaveInfo, SaveTransferResult } from "../../types";
 import { formatBytes, formatUnixMilliseconds, gameModeLabel, toErrorMessage } from "../../utils";
 
@@ -12,6 +13,7 @@ interface SaveManagerViewProps {
   selectedInstance: InstanceInfo | null;
   onOpenPath: (path: string, label: string) => void;
   onNotify: (kind: NoticeKind, message: string) => void;
+  dialogs: HostDialogs;
 }
 
 export function SaveManagerView({
@@ -20,7 +22,8 @@ export function SaveManagerView({
   gameDirLabel,
   selectedInstance,
   onOpenPath,
-  onNotify
+  onNotify,
+  dialogs
 }: SaveManagerViewProps) {
   const [saves, setSaves] = useState<SaveInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -34,28 +37,27 @@ export function SaveManagerView({
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
-  const requestIdRef = useRef(0);
+  const requests = useRequestGeneration();
   const renameInputRef = useRef<HTMLInputElement>(null);
   const renameDialogRef = useRef<HTMLElement>(null);
 
   const loadSaves = useCallback(async (announce = false) => {
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
+    const requestId = requests.next();
     setLoading(true);
     setError(null);
     setActionError(null);
     try {
       const next = await api.listSaves(gameDir);
-      if (requestId !== requestIdRef.current) return;
+      if (!requests.isCurrent(requestId)) return;
       setSaves(next);
       if (announce) onNotify("success", `已刷新存档，共 ${next.length} 个。`);
     } catch (loadError) {
-      if (requestId !== requestIdRef.current) return;
+      if (!requests.isCurrent(requestId)) return;
       setError(toErrorMessage(loadError));
     } finally {
-      if (requestId === requestIdRef.current) setLoading(false);
+      if (requests.isCurrent(requestId)) setLoading(false);
     }
-  }, [gameDir, onNotify]);
+  }, [gameDir, onNotify, requests]);
 
   useEffect(() => {
     void loadSaves();
@@ -115,12 +117,12 @@ export function SaveManagerView({
   async function exportSave(save: SaveInfo) {
     if (busyFolder) return;
     try {
-      const destination = await saveDialog({
+      const destination = await dialogs.saveFile({
         title: "导出 Minecraft 存档",
         defaultPath: `${save.displayName || save.folderName}.zip`,
         filters: [{ name: "ZIP 存档", extensions: ["zip"] }]
       });
-      if (typeof destination !== "string") return;
+      if (destination === null) return;
       setBusyFolder(`export:${save.folderName}`);
       setActionError(null);
       const result = await api.exportSave(gameDir, save.folderName, destination);
@@ -136,13 +138,11 @@ export function SaveManagerView({
   async function importSave() {
     if (importing) return;
     try {
-      const archivePath = await openDialog({
+      const archivePath = await dialogs.pickFile({
         title: "导入 Minecraft 存档 ZIP",
-        multiple: false,
-        directory: false,
         filters: [{ name: "ZIP 存档", extensions: ["zip"] }]
       });
-      if (typeof archivePath !== "string") return;
+      if (archivePath === null) return;
       if (!window.confirm("导入到当前游戏目录？导入会创建独立副本，不会覆盖现有存档。")) return;
       setImporting(true);
       setActionError(null);

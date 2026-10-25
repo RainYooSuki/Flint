@@ -369,9 +369,6 @@ impl<'a> LoaderInstallContext<'a> {
     }
 }
 
-/// Transitional name for the provider-neutral install context.
-pub type LoaderProviderContext<'a> = LoaderInstallContext<'a>;
-
 /// Object-safe, provider-neutral loader implementation contract.
 pub trait LoaderProvider: Provider + Send + Sync {
     fn list_versions(

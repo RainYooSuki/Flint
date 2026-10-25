@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
-import { openPath as openSystemPath } from "@tauri-apps/plugin-opener";
 import { api, subscribeFeatureUnavailable } from "../api";
 import { Icon } from "../components/Icon";
 import { TitleBar } from "../components/TitleBar";
@@ -16,10 +13,12 @@ import {
 } from "../core/availability";
 import type { AvailabilityDiagnostic } from "../core/availability";
 import { ContributionBoundary } from "../core/ContributionBoundary";
+import { useHostEvent } from "../core/events/useHostEvent";
+import type { HostServices } from "../core/platform/hostServices";
+import { useRequestGeneration } from "../core/requests/useRequestGeneration";
 import type {
   AccountInfo,
   HostAvailabilitySnapshot,
-  InstallProgress,
   InstallResult,
   InstallRuntime,
   InstanceInfo,
@@ -40,10 +39,14 @@ import {
   validateUsername
 } from "../utils";
 import { AppSidebar } from "./AppSidebar";
-import { AccountDialogSurface, frontendRegistry } from "./composition";
+import { frontendRegistry } from "./composition";
 
 const STARTING_AVAILABILITY_REFRESH_INTERVAL_MS = 2_000;
 const STARTING_AVAILABILITY_REFRESH_LIMIT = 5;
+
+interface AppProps {
+  readonly services: HostServices;
+}
 
 interface AvailabilitySurfaceProps {
   title: string;
@@ -95,7 +98,7 @@ function AvailabilitySurface({
   );
 }
 
-export default function App() {
+export default function App({ services }: AppProps) {
   const [activePageId, setActivePageId] = useState("");
   const [availabilitySnapshot, setAvailabilitySnapshot] = useState<HostAvailabilitySnapshot | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = useState(true);
@@ -142,11 +145,11 @@ export default function App() {
   const [accountDialogOpen, setAccountDialogOpen] = useState(false);
 
   const noticeIdRef = useRef(0);
-  const availabilityRequestIdRef = useRef(0);
   const contentRef = useRef<HTMLElement>(null);
-  const instancesRequestIdRef = useRef(0);
-  const accountsRequestIdRef = useRef(0);
   const settingsRef = useRef<LauncherSettings | null>(null);
+  const availabilityRequests = useRequestGeneration();
+  const instancesRequests = useRequestGeneration();
+  const accountsRequests = useRequestGeneration();
 
   const pushNotice = useCallback((kind: NoticeKind, text: string) => {
     noticeIdRef.current += 1;
@@ -154,22 +157,21 @@ export default function App() {
   }, []);
 
   const refreshAvailability = useCallback(async (): Promise<void> => {
-    const requestId = availabilityRequestIdRef.current + 1;
-    availabilityRequestIdRef.current = requestId;
+    const requestId = availabilityRequests.next();
     setAvailabilityLoading(true);
     setAvailabilityError(null);
     try {
       const snapshot = await api.getHostAvailability();
-      if (requestId !== availabilityRequestIdRef.current) return;
+      if (!availabilityRequests.isCurrent(requestId)) return;
       setAvailabilitySnapshot(snapshot);
     } catch (error) {
-      if (requestId !== availabilityRequestIdRef.current) return;
+      if (!availabilityRequests.isCurrent(requestId)) return;
       setAvailabilitySnapshot(null);
       setAvailabilityError(sanitizeAvailabilityReason(toErrorMessage(error)));
     } finally {
-      if (requestId === availabilityRequestIdRef.current) setAvailabilityLoading(false);
+      if (availabilityRequests.isCurrent(requestId)) setAvailabilityLoading(false);
     }
-  }, []);
+  }, [availabilityRequests]);
 
   useEffect(() => {
     void refreshAvailability();
@@ -181,11 +183,11 @@ export default function App() {
     });
     window.addEventListener("focus", handleFocus);
     return () => {
-      availabilityRequestIdRef.current += 1;
+      availabilityRequests.invalidate();
       window.removeEventListener("focus", handleFocus);
       unsubscribe();
     };
-  }, [refreshAvailability]);
+  }, [refreshAvailability, availabilityRequests]);
 
   const retryAvailability = useCallback(() => {
     void refreshAvailability();
@@ -219,13 +221,12 @@ export default function App() {
   }, [availability.hostState, refreshAvailability]);
 
   const refreshInstances = useCallback(async (gameDir: string, announce = false): Promise<InstanceInfo[] | null> => {
-    const requestId = instancesRequestIdRef.current + 1;
-    instancesRequestIdRef.current = requestId;
+    const requestId = instancesRequests.next();
     setInstancesLoading(true);
     setInstancesError(null);
     try {
       const next = await api.listInstances(gameDir);
-      if (requestId !== instancesRequestIdRef.current) return null;
+      if (!instancesRequests.isCurrent(requestId)) return null;
       setInstances(next);
       setSelectedId((current) => (
         next.some((instance) => instance.id === current) ? current : next[0]?.id ?? ""
@@ -233,45 +234,44 @@ export default function App() {
       if (announce) pushNotice("success", `本地版本扫描完成，共发现 ${next.length} 个版本。`);
       return next;
     } catch (error) {
-      if (requestId !== instancesRequestIdRef.current) return null;
+      if (!instancesRequests.isCurrent(requestId)) return null;
       const message = toErrorMessage(error);
       setInstancesError(message);
       if (announce) pushNotice("error", `本地版本扫描失败：${message}`);
       return null;
     } finally {
-      if (requestId === instancesRequestIdRef.current) setInstancesLoading(false);
+      if (instancesRequests.isCurrent(requestId)) setInstancesLoading(false);
     }
-  }, [pushNotice]);
+  }, [instancesRequests, pushNotice]);
 
   const refreshAccounts = useCallback(async (announce = false): Promise<void> => {
-    const requestId = accountsRequestIdRef.current + 1;
-    accountsRequestIdRef.current = requestId;
+    const requestId = accountsRequests.next();
     setAccountsLoading(true);
     setAccountsError(null);
     try {
       const next = await api.listAccounts();
-      if (requestId !== accountsRequestIdRef.current) return;
+      if (!accountsRequests.isCurrent(requestId)) return;
       setAccounts(next);
       if (announce) {
         const active = next.find((account) => account.active);
         pushNotice("success", active ? `账户已刷新：${active.username}。` : "账户列表已刷新。");
       }
     } catch (error) {
-      if (requestId !== accountsRequestIdRef.current) return;
+      if (!accountsRequests.isCurrent(requestId)) return;
       const message = toErrorMessage(error);
       setAccountsError(message);
       if (announce) pushNotice("error", `账户列表读取失败：${message}`);
     } finally {
-      if (requestId === accountsRequestIdRef.current) setAccountsLoading(false);
+      if (accountsRequests.isCurrent(requestId)) setAccountsLoading(false);
     }
-  }, [pushNotice]);
+  }, [accountsRequests, pushNotice]);
 
   const applyAccounts = useCallback((next: AccountInfo[]) => {
-    accountsRequestIdRef.current += 1;
+    accountsRequests.invalidate();
     setAccounts(next);
     setAccountsError(null);
     setAccountsLoading(false);
-  }, []);
+  }, [accountsRequests]);
 
   useEffect(() => {
     void refreshAccounts();
@@ -323,19 +323,18 @@ export default function App() {
       }
       setJavaLoading(false);
 
-      const instancesRequestId = instancesRequestIdRef.current + 1;
-      instancesRequestIdRef.current = instancesRequestId;
+      const instancesRequestId = instancesRequests.next();
       setInstancesError(null);
       try {
         const next = await api.listInstances(gameDir);
-        if (cancelled || instancesRequestId !== instancesRequestIdRef.current) return;
+        if (cancelled || !instancesRequests.isCurrent(instancesRequestId)) return;
         setInstances(next);
         setSelectedId(next[0]?.id ?? "");
       } catch (error) {
-        if (cancelled || instancesRequestId !== instancesRequestIdRef.current) return;
+        if (cancelled || !instancesRequests.isCurrent(instancesRequestId)) return;
         setInstancesError(toErrorMessage(error));
       } finally {
-        if (!cancelled && instancesRequestId === instancesRequestIdRef.current) {
+        if (!cancelled && instancesRequests.isCurrent(instancesRequestId)) {
           setInstancesLoading(false);
         }
       }
@@ -357,32 +356,16 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [instancesRequests]);
 
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
-
-    void listen<InstallProgress>("flint://install-progress", (event) => {
-      if (cancelled) return;
-      setInstallRuntime((current) => current ? { ...current, progress: event.payload } : current);
-    })
-      .then((removeListener) => {
-        if (cancelled) {
-          removeListener();
-        } else {
-          unlisten = removeListener;
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setProgressListenerError(toErrorMessage(error));
-      });
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
+  useHostEvent(
+    services.events,
+    "installProgress",
+    (progress) => {
+      setInstallRuntime((current) => current ? { ...current, progress } : current);
+    },
+    (error) => setProgressListenerError(toErrorMessage(error))
+  );
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -464,35 +447,27 @@ export default function App() {
 
   const pickGameDir = useCallback(async () => {
     try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: "选择 Minecraft 游戏目录"
-      });
-      if (typeof selected === "string") {
+      const selected = await services.dialogs.pickDirectory("选择 Minecraft 游戏目录");
+      if (selected !== null) {
         setSettingsDraft((current) => current ? { ...current, gameDir: selected } : current);
         pushNotice("info", "游戏目录已填入设置表单，保存后生效。");
       }
     } catch (error) {
       pushNotice("error", `无法打开目录选择器：${toErrorMessage(error)}`);
     }
-  }, [pushNotice]);
+  }, [pushNotice, services.dialogs]);
 
   const pickJava = useCallback(async () => {
     try {
-      const selected = await open({
-        directory: false,
-        multiple: false,
-        title: "选择 Java 可执行文件"
-      });
-      if (typeof selected === "string") {
+      const selected = await services.dialogs.pickFile({ title: "选择 Java 可执行文件" });
+      if (selected !== null) {
         setSettingsDraft((current) => current ? { ...current, javaPath: selected } : current);
         pushNotice("info", "Java 路径已填入设置表单，保存后生效。");
       }
     } catch (error) {
       pushNotice("error", `无法打开 Java 文件选择器：${toErrorMessage(error)}`);
     }
-  }, [pushNotice]);
+  }, [pushNotice, services.dialogs]);
 
   const scanJava = useCallback(async () => {
     setJavaLoading(true);
@@ -666,14 +641,15 @@ export default function App() {
       return;
     }
     try {
-      await openSystemPath(path);
+      await services.opener.openPath(path);
     } catch (error) {
       pushNotice("error", `无法打开${label}：${toErrorMessage(error)}`);
     }
-  }, [pushNotice]);
+  }, [pushNotice, services.opener]);
 
   const pageContext: AppPageContext = {
     navigateToPage: navigate,
+    services,
     hostState: availability.hostState,
     featureStates: availability.featureStates,
     settingsSections: availableRegistry.settingsSections,
@@ -710,6 +686,7 @@ export default function App() {
     accounts,
     accountsLoading,
     accountsError,
+    accountDialogOpen,
     onLaunch: () => { void launchSelected(); },
     onSelectInstance: (id) => setSelectedId(id),
     onRefreshInstances: refreshLocalVersions,
@@ -797,6 +774,7 @@ export default function App() {
       <a className="skip-link" href="#main-content">跳到主要内容</a>
       <TitleBar
         context={titlebarContext}
+        windowService={services.window}
         onError={(message) => pushNotice("error", message)}
       />
 
@@ -840,9 +818,15 @@ export default function App() {
         </div>
       </div>
 
-      {accountDialogOpen && accountsAvailable ? (
-        <AccountDialogSurface context={pageContext} />
-      ) : null}
+      {availableRegistry.overlays.map((overlay) => {
+        if (overlay.visible && !overlay.visible(pageContext)) return null;
+        const Overlay = overlay.component;
+        return (
+          <ContributionBoundary key={overlay.id} contributionId={overlay.id}>
+            <Overlay context={pageContext} />
+          </ContributionBoundary>
+        );
+      })}
 
       {notice ? (
         <div className={`toast toast-${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>

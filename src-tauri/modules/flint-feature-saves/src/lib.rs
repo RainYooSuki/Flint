@@ -2,6 +2,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use flint_core::{
     net,
     paths::{normalize_relative_metadata_path, resolve_game_dir, safe_join},
+    ports::{ArchiveEntry, ArchiveLimits, PathPort, SafeWorkspace},
 };
 use serde::{Deserialize, Serialize};
 use flate2::read::GzDecoder;
@@ -19,6 +20,7 @@ const MAX_NBT_TAGS: usize = 1_000_000;
 const MAX_NBT_ARRAY_ITEMS: usize = 16_000_000;
 const MAX_ICON_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_IMPORT_ENTRIES: usize = 100_000;
+const MAX_IMPORT_PATH_BYTES: usize = 4_096;
 const MAX_IMPORT_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_IMPORT_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_ARCHIVE_FILES: usize = 100_000;
@@ -147,6 +149,22 @@ pub fn export_save_blocking(
 }
 
 pub fn import_save_blocking(game_dir: &str, archive_path: &str) -> Result<SaveInfo, String> {
+    import_save_blocking_with_limits(game_dir, archive_path, import_archive_limits())
+}
+
+fn import_archive_limits() -> ArchiveLimits {
+    ArchiveLimits {
+        max_entries: MAX_IMPORT_ENTRIES,
+        max_path_bytes: MAX_IMPORT_PATH_BYTES,
+        max_uncompressed_bytes: MAX_IMPORT_TOTAL_BYTES,
+    }
+}
+
+fn import_save_blocking_with_limits(
+    game_dir: &str,
+    archive_path: &str,
+    limits: ArchiveLimits,
+) -> Result<SaveInfo, String> {
     if archive_path.trim().is_empty() {
         return Err("Choose a save ZIP archive to import.".to_string());
     }
@@ -168,10 +186,7 @@ pub fn import_save_blocking(game_dir: &str, archive_path: &str) -> Result<SaveIn
     })?;
     let mut archive = ZipArchive::new(file)
         .map_err(|error| format!("Save archive is not a valid ZIP file: {error}"))?;
-    if archive.len() > MAX_IMPORT_ENTRIES {
-        return Err("Save archive contains too many entries.".to_string());
-    }
-    let entries = collect_import_entries(&mut archive)?;
+    let entries = collect_import_entries(&mut archive, &limits)?;
     let layout = determine_import_layout(&entries, &archive_path)?;
     let desired_name = unique_save_folder_name(&saves_dir, &layout.folder_name)?;
     let temp_name = format!(".{desired_name}.import-{}", net::nonce());
@@ -188,6 +203,7 @@ pub fn import_save_blocking(game_dir: &str, archive_path: &str) -> Result<SaveIn
 
     let extraction_result = (|| -> Result<(), String> {
         let mut total_written = 0u64;
+        let max_file_bytes = MAX_IMPORT_FILE_BYTES.min(limits.max_uncompressed_bytes);
         for entry in &entries {
             if entry.is_dir || entry.ignored {
                 continue;
@@ -211,23 +227,33 @@ pub fn import_save_blocking(game_dir: &str, archive_path: &str) -> Result<SaveIn
             let mut zip_file = archive
                 .by_index(entry.index)
                 .map_err(|error| format!("Cannot read save archive entry: {error}"))?;
+            let declared_size = zip_file.size();
+            let remaining_total = limits
+                .max_uncompressed_bytes
+                .saturating_sub(total_written);
+            let read_limit = max_file_bytes.min(remaining_total).saturating_add(1);
             let mut output = fs::File::create(&target).map_err(|error| {
                 format!("Cannot create save file ({}): {error}", target.display())
             })?;
             let written = io::copy(
-                &mut zip_file.by_ref().take(MAX_IMPORT_FILE_BYTES + 1),
+                &mut zip_file.by_ref().take(read_limit),
                 &mut output,
             )
             .map_err(|error| format!("Cannot extract save file ({}): {error}", target.display()))?;
-            if written > MAX_IMPORT_FILE_BYTES {
+            if written > max_file_bytes {
                 return Err("A save archive entry exceeds the maximum file size.".to_string());
+            }
+            if written > remaining_total {
+                return Err("Save archive exceeds the extraction size limit.".to_string());
+            }
+            if written != declared_size {
+                return Err(format!(
+                    "Save archive entry size changed while extracting: {relative}"
+                ));
             }
             total_written = total_written
                 .checked_add(written)
                 .ok_or_else(|| "Save archive is too large.".to_string())?;
-            if total_written > MAX_IMPORT_TOTAL_BYTES {
-                return Err("Save archive exceeds the extraction size limit.".to_string());
-            }
         }
         if !is_regular_file(&temp_path.join("level.dat")) {
             return Err("The imported archive does not contain a level.dat file.".to_string());
@@ -745,57 +771,82 @@ impl ImportLayout {
     }
 }
 
-fn collect_import_entries(archive: &mut ZipArchive<fs::File>) -> Result<Vec<ImportEntry>, String> {
-    let mut entries = Vec::with_capacity(archive.len());
-    let mut seen = HashSet::new();
-    let mut total_bytes = 0u64;
+fn collect_import_entries(
+    archive: &mut ZipArchive<fs::File>,
+    limits: &ArchiveLimits,
+) -> Result<Vec<ImportEntry>, String> {
+    struct RawImportEntry {
+        index: usize,
+        name: String,
+        is_dir: bool,
+        uncompressed_size: u64,
+        is_symlink: bool,
+    }
+
+    if archive.len() > limits.max_entries {
+        return Err(format!(
+            "Archive contains {} entries, limit {}.",
+            archive.len(),
+            limits.max_entries
+        ));
+    }
+    let mut raw_entries = Vec::new();
+    let mut archive_entries = Vec::new();
     for index in 0..archive.len() {
         let entry = archive
             .by_index(index)
             .map_err(|error| format!("Cannot inspect save archive entry: {error}"))?;
-        if entry.unix_mode().map(is_zip_symlink_mode).unwrap_or(false) {
-            return Err("Save archives containing symbolic links are not supported.".to_string());
-        }
-        if entry.enclosed_name().is_none() {
-            return Err("Save archive contains a path traversal entry.".to_string());
-        }
         let raw_name = entry.name().replace('\\', "/");
         let is_dir = entry.is_dir() || raw_name.ends_with('/');
         let trimmed = raw_name.trim_end_matches('/');
         if trimmed.is_empty() {
             continue;
         }
-        let normalized = normalize_relative_metadata_path(trimmed)
-            .ok_or_else(|| "Save archive contains an unsafe path.".to_string())?;
-        let duplicate_key = normalized.to_ascii_lowercase();
-        if !seen.insert(duplicate_key) {
+        let is_symlink = entry.unix_mode().map(is_zip_symlink_mode).unwrap_or(false);
+        let uncompressed_size = entry.size();
+        archive_entries.push(ArchiveEntry {
+            relative_path: trimmed.to_string(),
+            uncompressed_size,
+            is_directory: is_dir,
+            is_symlink,
+        });
+        raw_entries.push(RawImportEntry {
+            index,
+            name: trimmed.to_string(),
+            is_dir,
+            uncompressed_size,
+            is_symlink,
+        });
+    }
+    if raw_entries.is_empty() {
+        return Err("Save archive is empty.".to_string());
+    }
+
+    SafeWorkspace.validate_archive_entries(&archive_entries, limits)?;
+
+    let mut entries = Vec::new();
+    for raw in raw_entries {
+        if raw.is_symlink {
             return Err(format!(
-                "Save archive contains a duplicate path: {normalized}"
+                "Save archives containing symbolic links are not supported: {}",
+                raw.name
             ));
         }
-        let size = entry.size();
-        if size > MAX_IMPORT_FILE_BYTES {
+        let normalized = normalize_relative_metadata_path(&raw.name)
+            .ok_or_else(|| "Save archive contains an unsafe path.".to_string())?;
+        if raw.uncompressed_size > MAX_IMPORT_FILE_BYTES {
             return Err(format!("Save archive entry is too large: {normalized}"));
-        }
-        total_bytes = total_bytes
-            .checked_add(size)
-            .ok_or_else(|| "Save archive size overflow.".to_string())?;
-        if total_bytes > MAX_IMPORT_TOTAL_BYTES {
-            return Err("Save archive exceeds the extraction size limit.".to_string());
         }
         let ignored = normalized == "__MACOSX"
             || normalized.starts_with("__MACOSX/")
             || normalized == ".DS_Store"
             || normalized.ends_with("/.DS_Store");
         entries.push(ImportEntry {
-            index,
+            index: raw.index,
             normalized_name: normalized,
-            is_dir,
+            is_dir: raw.is_dir,
             ignored,
         });
-    }
-    if entries.is_empty() {
-        return Err("Save archive is empty.".to_string());
     }
     Ok(entries)
 }
@@ -1144,6 +1195,76 @@ mod tests {
         encoder.finish().expect("finish level.dat");
     }
 
+    fn level_dat_bytes() -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(&sample_level_nbt())
+            .expect("compress sample level.dat");
+        encoder.finish().expect("finish sample level.dat")
+    }
+
+    fn write_import_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = fs::File::create(path).expect("import zip file");
+        let mut writer = ZipWriter::new(file);
+        for (name, data) in entries {
+            writer
+                .start_file(*name, SimpleFileOptions::default())
+                .expect("zip entry");
+            writer.write_all(data).expect("zip data");
+        }
+        writer.finish().expect("finish import zip");
+    }
+
+    fn write_symlink_import_zip(path: &Path, name: &str) {
+        let file = fs::File::create(path).expect("symlink zip file");
+        let mut writer = ZipWriter::new(file);
+        writer
+            .start_file(
+                name,
+                SimpleFileOptions::default().unix_permissions(0o120777),
+            )
+            .expect("symlink zip entry");
+        writer.write_all(b"../outside").expect("symlink target");
+        writer.finish().expect("finish symlink zip");
+    }
+
+    fn patch_zip_uncompressed_size(path: &Path, uncompressed_size: u32) {
+        let mut bytes = fs::read(path).expect("read zip for patch");
+        let signatures: [([u8; 4], usize); 2] = [
+            ([0x50, 0x4b, 0x03, 0x04], 22usize),
+            ([0x50, 0x4b, 0x01, 0x02], 24usize),
+        ];
+        let mut patched = 0;
+        for (signature, offset) in signatures {
+            let position = bytes
+                .windows(signature.len())
+                .position(|window| window == &signature[..])
+                .expect("zip signature");
+            let field = position + offset;
+            bytes[field..field + 4]
+                .copy_from_slice(&uncompressed_size.to_le_bytes());
+            patched += 1;
+        }
+        assert_eq!(patched, 2, "one local and one central header");
+        fs::write(path, bytes).expect("write patched zip");
+    }
+
+    fn import_temp_dirs(game_dir: &Path) -> Vec<PathBuf> {
+        let saves_dir = game_dir.join("saves");
+        let Ok(entries) = fs::read_dir(saves_dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".import-")
+            })
+            .map(|entry| entry.path())
+            .collect()
+    }
     fn temp_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "flint-{label}-{}-{}",
@@ -1237,15 +1358,177 @@ mod tests {
         writer.write_all(b"bad").expect("zip data");
         writer.finish().expect("finish zip");
 
-        let result = import_save_blocking(
+        let error = import_save_blocking(
             &game_dir.display().to_string(),
             &archive_path.display().to_string(),
-        );
-        assert!(result.is_err());
+        )
+        .expect_err("traversal must be rejected by the core archive policy");
+        assert!(error.contains("Unsafe archive entry path"));
         assert!(!root.join("escape").join("level.dat").exists());
+        assert!(import_temp_dirs(&game_dir).is_empty());
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn rejects_symlink_entries_before_extraction() {
+        let root = temp_root("save-symlink");
+        let game_dir = root.join("game");
+        let archive_path = root.join("symlink.zip");
+        write_symlink_import_zip(&archive_path, "World/link");
+        let error = import_save_blocking(
+            &game_dir.display().to_string(),
+            &archive_path.display().to_string(),
+        )
+        .expect_err("symlink entry must fail closed");
+        assert!(error.to_ascii_lowercase().contains("symlink"));
+        assert!(import_temp_dirs(&game_dir).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_duplicate_and_case_alias_entries_before_extraction() {
+        let root = temp_root("save-duplicate");
+        let game_dir = root.join("game");
+        let archive_path = root.join("duplicate.zip");
+        let level = level_dat_bytes();
+        write_import_zip(
+            &archive_path,
+            &[
+                ("World/level.dat", level.as_slice()),
+                ("World/Data.bin", b"one"),
+                ("World/data.BIN", b"two"),
+            ],
+        );
+        let error = import_save_blocking(
+            &game_dir.display().to_string(),
+            &archive_path.display().to_string(),
+        )
+        .expect_err("case alias duplicate must fail closed");
+        assert!(error.contains("duplicate entry path"));
+        assert!(import_temp_dirs(&game_dir).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn injected_archive_limits_reject_entry_and_size_overflows() {
+        let root = temp_root("save-limits");
+        let game_dir = root.join("game");
+        let archive_path = root.join("limits.zip");
+        let level = level_dat_bytes();
+        write_import_zip(
+            &archive_path,
+            &[
+                ("World/level.dat", level.as_slice()),
+                ("World/region.bin", b"region"),
+            ],
+        );
+
+        let entry_error = import_save_blocking_with_limits(
+            &game_dir.display().to_string(),
+            &archive_path.display().to_string(),
+            ArchiveLimits {
+                max_entries: 1,
+                max_path_bytes: MAX_IMPORT_PATH_BYTES,
+                max_uncompressed_bytes: MAX_IMPORT_TOTAL_BYTES,
+            },
+        )
+        .expect_err("entry-count limit must fail closed");
+        assert_eq!(entry_error, "Archive contains 2 entries, limit 1.");
+        assert!(!game_dir.join("saves").join("World").exists());
+        assert!(import_temp_dirs(&game_dir).is_empty());
+
+        let size_error = import_save_blocking_with_limits(
+            &game_dir.display().to_string(),
+            &archive_path.display().to_string(),
+            ArchiveLimits {
+                max_entries: MAX_IMPORT_ENTRIES,
+                max_path_bytes: MAX_IMPORT_PATH_BYTES,
+                max_uncompressed_bytes: 1,
+            },
+        )
+        .expect_err("declared-size limit must fail closed");
+        assert!(size_error.contains("uncompressed data exceeds"));
+        assert!(import_temp_dirs(&game_dir).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn entry_limit_rejects_before_path_validation_or_temp_creation() {
+        let root = temp_root("save-early-entry-limit");
+        let game_dir = root.join("game");
+        let archive_path = root.join("early-limit.zip");
+        let level = level_dat_bytes();
+        write_import_zip(
+            &archive_path,
+            &[
+                ("../escape/level.dat", b"bad"),
+                ("World/level.dat", level.as_slice()),
+            ],
+        );
+        let error = import_save_blocking_with_limits(
+            &game_dir.display().to_string(),
+            &archive_path.display().to_string(),
+            ArchiveLimits {
+                max_entries: 1,
+                max_path_bytes: MAX_IMPORT_PATH_BYTES,
+                max_uncompressed_bytes: MAX_IMPORT_TOTAL_BYTES,
+            },
+        )
+        .expect_err("entry-count limit must reject before collection/path validation");
+        assert_eq!(error, "Archive contains 2 entries, limit 1.");
+        assert!(!root.join("escape").exists());
+        assert!(!game_dir.join("saves").join("World").exists());
+        assert!(import_temp_dirs(&game_dir).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn declared_smaller_than_actual_expansion_fails_and_cleans_temporary_directory() {
+        let root = temp_root("save-expansion");
+        let game_dir = root.join("game");
+        let archive_path = root.join("expanded.zip");
+        let level = level_dat_bytes();
+        write_import_zip(
+            &archive_path,
+            &[("World/level.dat", level.as_slice())],
+        );
+        patch_zip_uncompressed_size(&archive_path, 1);
+        let error = import_save_blocking(
+            &game_dir.display().to_string(),
+            &archive_path.display().to_string(),
+        )
+        .expect_err("declared/actual size mismatch must fail closed");
+        assert!(
+            error.contains("size changed")
+                || error.contains("Cannot extract save file")
+                || error.contains("level.dat")
+        );
+        assert!(import_temp_dirs(&game_dir).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extraction_failure_cleans_temporary_import_directory() {
+        let root = temp_root("save-cleanup");
+        let game_dir = root.join("game");
+        let archive_path = root.join("cleanup.zip");
+        let level = level_dat_bytes();
+        write_import_zip(
+            &archive_path,
+            &[
+                ("World/level.dat", level.as_slice()),
+                ("World/blocked", b"file"),
+                ("World/blocked/child.bin", b"child"),
+            ],
+        );
+        let error = import_save_blocking(
+            &game_dir.display().to_string(),
+            &archive_path.display().to_string(),
+        )
+        .expect_err("file/directory collision must fail after partial extraction");
+        assert!(error.contains("Cannot create save directory"));
+        assert!(import_temp_dirs(&game_dir).is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn validates_save_folder_names() {
         assert!(validate_save_folder_name("My World").is_ok());

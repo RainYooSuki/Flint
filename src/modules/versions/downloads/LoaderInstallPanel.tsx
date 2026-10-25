@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../../../api";
 import { Icon } from "../../../components/Icon";
+import type { HostEvents } from "../../../core/events/hostEvents";
+import { useHostEvent } from "../../../core/events/useHostEvent";
+import { useRequestGeneration } from "../../../core/requests/useRequestGeneration";
 import type {
   InstanceInfo,
   LauncherSettings,
@@ -16,7 +18,7 @@ import type {
 import {
   LOADER_KINDS,
   formatDateTime,
-  loaderKindFromValue,
+  parseLoaderKind,
   loaderKindLabel,
   progressPercent,
   toErrorMessage
@@ -37,6 +39,7 @@ interface LoaderInstallPanelProps {
   onOpenPath: (path: string, label: string) => void;
   onNotify: (kind: NoticeKind, message: string) => void;
   onBusyChange: (busy: boolean) => void;
+  events: HostEvents;
 }
 
 export function LoaderInstallPanel({
@@ -53,7 +56,8 @@ export function LoaderInstallPanel({
   onGoSettings,
   onOpenPath,
   onNotify,
-  onBusyChange
+  onBusyChange,
+  events
 }: LoaderInstallPanelProps) {
   const [loaderKind, setLoaderKind] = useState<LoaderKind>("fabric");
   const [gameVersion, setGameVersion] = useState("");
@@ -66,7 +70,7 @@ export function LoaderInstallPanel({
   const [installResult, setInstallResult] = useState<LoaderInstallResult | null>(null);
   const [listenerError, setListenerError] = useState<string | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
-  const requestIdRef = useRef(0);
+  const requests = useRequestGeneration();
 
   const releaseVersions = useMemo(() => {
     const ids = new Set<string>();
@@ -78,42 +82,30 @@ export function LoaderInstallPanel({
   }, [remoteVersions, selectedInstance?.gameVersion]);
 
   useEffect(() => {
-    const instanceLoader = selectedInstance ? loaderKindFromValue(selectedInstance.loader) : null;
+    const instanceLoader = selectedInstance ? parseLoaderKind(selectedInstance.loader) : null;
     if (instanceLoader) setLoaderKind(instanceLoader);
     if (selectedInstance?.gameVersion) setGameVersion(selectedInstance.gameVersion);
-    requestIdRef.current += 1;
+    requests.invalidate();
     setLoaderVersions([]);
     setLoaderVersionsLoading(false);
     setSelectedLoaderVersion("");
     setInstallResult(null);
     setInstallProgress(null);
-  }, [selectedInstance?.id, selectedInstance?.gameVersion, selectedInstance?.loader]);
+  }, [selectedInstance?.id, selectedInstance?.gameVersion, selectedInstance?.loader, requests]);
 
   useEffect(() => {
     if (!gameVersion && releaseVersions.length > 0) setGameVersion(releaseVersions[0]);
   }, [gameVersion, releaseVersions]);
 
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
-    void listen<LoaderInstallProgress>("flint://loader-install-progress", (event) => {
-      if (!cancelled) setInstallProgress(event.payload);
-    })
-      .then((removeListener) => {
-        if (cancelled) removeListener();
-        else unlisten = removeListener;
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setListenerError(toErrorMessage(error));
-      });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
+  useHostEvent(
+    events,
+    "loaderInstallProgress",
+    (progress) => setInstallProgress(progress),
+    (error) => setListenerError(toErrorMessage(error))
+  );
 
   function resetInstallState() {
-    requestIdRef.current += 1;
+    requests.invalidate();
     setLoaderVersions([]);
     setLoaderVersionsLoading(false);
     setSelectedLoaderVersion("");
@@ -128,26 +120,25 @@ export function LoaderInstallPanel({
       setLoaderVersionsError("请先选择 Minecraft 版本。");
       return;
     }
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
+    const requestId = requests.next();
     setLoaderVersionsLoading(true);
     setLoaderVersionsError(null);
     setInstallProgress(null);
     setInstallResult(null);
     try {
       const versions = await api.listLoaderVersions(loaderKind, gameVersion);
-      if (requestId !== requestIdRef.current) return;
+      if (!requests.isCurrent(requestId)) return;
       setLoaderVersions(versions);
       const preferred = versions.find((version) => version.recommended) ?? versions[0] ?? null;
       setSelectedLoaderVersion(preferred?.version ?? "");
       if (versions.length === 0) setLoaderVersionsError("该版本没有可用的加载器版本。");
     } catch (error) {
-      if (requestId !== requestIdRef.current) return;
+      if (!requests.isCurrent(requestId)) return;
       setLoaderVersions([]);
       setSelectedLoaderVersion("");
       setLoaderVersionsError(toErrorMessage(error));
     } finally {
-      if (requestId === requestIdRef.current) setLoaderVersionsLoading(false);
+      if (requests.isCurrent(requestId)) setLoaderVersionsLoading(false);
     }
   }
 

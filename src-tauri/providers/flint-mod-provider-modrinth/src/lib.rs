@@ -528,6 +528,53 @@ mod tests {
     }
 
     #[test]
+    fn deadline_and_pre_cancelled_cancellation_fail_before_network_io() {
+        let request = || ModSearchRequest {
+            query: "sodium".to_string(),
+            game_version: "1.20.1".to_string(),
+            loader: "fabric".to_string(),
+            offset: 0,
+            limit: 20,
+        };
+        let progress = NoopProgress;
+        let logger = NoopLogger;
+
+        let deadline_network = FakeNetwork::new(json!({"hits": [], "total_hits": 0}));
+        let deadline_context = ModProviderContext::new(
+            &deadline_network,
+            None,
+            &progress,
+            &logger,
+            Duration::from_secs(45),
+            Deadline::after(Duration::ZERO),
+            Cancellation::new(),
+        );
+        let error = ModrinthModProvider::new()
+            .search(&deadline_context, &request())
+            .expect_err("deadline must fail");
+        assert_eq!(error, "Operation deadline exceeded.");
+        assert!(deadline_network.requests.lock().unwrap().is_empty());
+
+        let cancelled_network = FakeNetwork::new(json!({"hits": [], "total_hits": 0}));
+        let cancellation = Cancellation::new();
+        cancellation.cancel();
+        let cancelled_context = ModProviderContext::new(
+            &cancelled_network,
+            None,
+            &progress,
+            &logger,
+            Duration::from_secs(45),
+            Deadline::after(Duration::from_secs(30)),
+            cancellation,
+        );
+        let error = ModrinthModProvider::new()
+            .search(&cancelled_context, &request())
+            .expect_err("cancellation must fail");
+        assert_eq!(error, "Operation was cancelled.");
+        assert!(cancelled_network.requests.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn preserves_transport_and_body_limit_error_wording() {
         let progress = NoopProgress;
         let logger = NoopLogger;

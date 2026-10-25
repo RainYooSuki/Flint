@@ -23,6 +23,7 @@ function VersionsPage({ context }: PageComponentProps) {
       loadersAvailable={context.featureStates["flint.loaders"] === "ready"}
       modsAvailable={context.featureStates["flint.mods"] === "ready"}
       instanceActions={context.instanceActions}
+      events={context.services.events}
       onRefreshInstances={context.onRefreshInstances}
       onSelectInstance={context.onSelectInstance}
       onFetchRemote={context.onFetchRemote}
@@ -61,7 +62,8 @@ export const versionsFeature: FeatureDescriptor = {
       }
     ],
     settingsSections: [],
-    instanceActions: []
+    instanceActions: [],
+    overlays: []
   }
 };
 

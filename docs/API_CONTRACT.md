@@ -16,7 +16,7 @@ Flint is a Tauri v2 launcher. This file documents the base launcher commands; ac
 | `install_version` | `gameDir: string`, `versionId: string` | `InstallResult` |
 | `launch_instance` | `request: LaunchRequest` | `LaunchResult` |
 
-`install_version` emits `flint://install-progress` events with an `InstallProgress` payload. A failed install returns an error string; the version directory may be safely retried.
+`install_version` emits `flint://install-progress` events with the unchanged `InstallProgress` payload shape. Event names and payload fields are compatibility surface; provider-influenced progress text is redacted, control-normalized, and bounded before display. A failed install returns an error string; the version directory may be safely retried.
 
 ## Host availability and command gating
 
@@ -57,7 +57,7 @@ Rust serializes this shape as `flint_feature_api::FeatureAvailabilitySnapshot`; 
 
 - The snapshot contains exactly one entry for each of the seven backend feature IDs: `flint.settings`, `flint.accounts`, `flint.vanilla`, `flint.launch`, `flint.loaders`, `flint.mods`, and `flint.saves`.
 - Command ownership is fixed: `load_settings`/`save_settings` -> `flint.settings`; account commands -> `flint.accounts`; `list_instances`, `scan_java`, `fetch_remote_versions`, and `install_version` -> `flint.vanilla`; `launch_instance` -> `flint.launch`; loader commands -> `flint.loaders`; mod commands -> `flint.mods`; save commands -> `flint.saves`.
-- `features` is lexicographically sorted by `featureId`, and `revision` increases for host/feature lifecycle-state or failure changes. Reasons and `lastFailure` are sanitized and never include provider IDs or secrets.
+- `features` is lexicographically sorted by `featureId`, and `revision` increases for host/feature lifecycle-state or failure changes. Reasons and `lastFailure` are sanitized and bounded and never include provider IDs, credentials, raw URLs, or unsafe paths.
 - A feature command succeeds only when `hostState` is `ready` or `degraded` and the owning feature state is `ready`. Otherwise it returns before I/O with `Feature '<featureId>' is unavailable: <reason>` and performs no fallback or partial work.
 - A startup failure leaves all feature commands gated and returns a valid snapshot with `hostState: "startup_failed"`. Normal application exit performs idempotent reverse-order feature/provider shutdown.
 
@@ -150,6 +150,6 @@ interface LaunchResult {
 - Modern platform/OS rules in libraries are honoured, duplicate classpath entries are removed, and native jars are extracted to a per-instance `natives` directory.
 - Legacy `launchwrapper`/`minecraftArguments` versions remain launchable where their files exist.
 - Install downloads Mojang's version metadata, client jar, declared libraries, asset index and asset objects into the selected game directory. It must use the Mojang `resources.download.minecraft.net` object layout.
-- Launch output is redirected to a log file; `logPath` points at that file. Linux and macOS use `:` in classpaths, Windows uses `;`.
+- Launch output is redirected to a log file; `logPath` points at that file. `LaunchResult.command` is a display string with access tokens redacted; the launched process still receives the internal command arguments. Linux and macOS use `:` in classpaths, Windows uses `;`.
 - All user-facing backend errors are concise English or Chinese strings suitable for display; no panic on malformed local files.
 - Unit tests cover pure helpers and must not access the network.

@@ -8,7 +8,8 @@
  * only `#[cfg(test)] mod ... { ... }` scopes are removed. Production inline
  * modules are intentionally scanned. Phase 4 adds Cargo metadata for workspace,
  * package, and dependency truth plus all-workspace source/typed-port gates;
- * Phase 5 remains a strict future phase.
+ * Phase 5 is the active strict gate: exact Tauri adapters, zero waivers, shared
+ * provider runtime state, typed overlays, and production shim bans.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -383,31 +384,390 @@ export function collectHtmlInjectionSites(sourceFile) {
   return sites;
 }
 const REVIEWED_IMPORT_META_MEMBERS = new Set([]);
-const PHASE3_PACKAGE_ALLOWLIST = new Set(["react", "react-dom", "@tauri-apps/api", "@tauri-apps/plugin-dialog", "@tauri-apps/plugin-opener"]);
+const FRONTEND_EXTERNAL_PACKAGE_ALLOWLIST = new Set(["react", "react-dom"]);
 const DYNAMIC_CHUNK_ALLOWLIST = new Set([]);
-export const TAURI_TRANSITIONAL_WAIVERS = [
-  { file: "src/api.ts", specifiers: ["@tauri-apps/api/core"], owner: "shared-api-transport", removeByPhase: 5, removal: "Move invoke behind the reviewed typed API transport boundary." },
-  { file: "src/app/App.tsx", specifiers: ["@tauri-apps/api/event", "@tauri-apps/plugin-dialog", "@tauri-apps/plugin-opener"], owner: "app-shell-adapters", removeByPhase: 5, removal: "Move shell event/dialog/opener calls behind typed clients and adapters." },
-  { file: "src/modules/accounts/AccountDialog.tsx", specifiers: ["@tauri-apps/plugin-opener"], owner: "accounts-feature", removeByPhase: 5, removal: "Route link opening through the reviewed shared opener contract." },
-  { file: "src/modules/saves/SaveManagerView.tsx", specifiers: ["@tauri-apps/plugin-dialog"], owner: "saves-feature", removeByPhase: 5, removal: "Route save dialogs through a typed shared dialog contract." },
-  { file: "src/modules/versions/downloads/LoaderInstallPanel.tsx", specifiers: ["@tauri-apps/api/event"], owner: "versions-downloads-feature", removeByPhase: 5, removal: "Consume progress through the typed shared event client." },
-  { file: "src/modules/versions/downloads/ModDiscoveryPanel.tsx", specifiers: ["@tauri-apps/api/event"], owner: "versions-downloads-feature", removeByPhase: 5, removal: "Consume progress through the typed shared event client." },
-  { file: "src/components/TitleBar.tsx", specifiers: ["@tauri-apps/api/window"], owner: "shared-window-chrome-adapter", removeByPhase: 5, removal: "Relocate window chrome to the reviewed host/shell adapter." },
-];
+const PHASE5_TAURI_ADAPTER_ALLOWLIST = new Map([
+  ["src/core/api/tauriInvoke.ts", "@tauri-apps/api/core"],
+  ["src/core/events/tauriEvents.ts", "@tauri-apps/api/event"],
+  ["src/core/platform/tauriDialogs.ts", "@tauri-apps/plugin-dialog"],
+  ["src/core/platform/tauriOpener.ts", "@tauri-apps/plugin-opener"],
+  ["src/core/platform/tauriWindow.ts", "@tauri-apps/api/window"],
+]);
+const PHASE5_CONCRETE_TAURI_ADAPTER_IMPORTERS = new Map([
+  ["src/core/api/tauriInvoke.ts", new Set(["src/api.ts"])],
+  ["src/core/events/tauriEvents.ts", new Set(["src/core/platform/tauriServices.ts"])],
+  ["src/core/platform/tauriDialogs.ts", new Set(["src/core/platform/tauriServices.ts"])],
+  ["src/core/platform/tauriOpener.ts", new Set(["src/core/platform/tauriServices.ts"])],
+  ["src/core/platform/tauriWindow.ts", new Set(["src/core/platform/tauriServices.ts"])],
+  ["src/core/platform/tauriServices.ts", new Set(["src/main.tsx"])],
+]);
 const policyViolation = (rule, message) => ({ rule, message });
-export function classifyTauriImport(phase, fileRelative, specifier) {
-  if (specifier !== "@tauri-apps" && !specifier.startsWith("@tauri-apps/")) return null;
-  const waiver = TAURI_TRANSITIONAL_WAIVERS.find((candidate) => candidate.file === fileRelative);
-  if (!waiver) {
-    return policyViolation("FE-TAURI-DIRECT-001", `direct Tauri import '${specifier}' is outside the exact transitional allowlist.`);
+export function isTauriPackageSpecifier(specifier) {
+  return specifier === "@tauri-apps" || specifier.startsWith("@tauri-apps/");
+}
+export function reviewedTauriAdapterAllowlist() {
+  return [...PHASE5_TAURI_ADAPTER_ALLOWLIST.entries()]
+    .map(([file, specifier]) => ({ file, specifier }))
+    .sort((left, right) => left.file.localeCompare(right.file));
+}
+export function isReviewedTauriAdapterImport(fileRelative, specifier) {
+  return PHASE5_TAURI_ADAPTER_ALLOWLIST.get(toPosix(fileRelative)) === specifier;
+}
+export function classifyTauriImport(_phase, fileRelative, specifier) {
+  if (!isTauriPackageSpecifier(specifier)) return null;
+  const expectedSpecifier = PHASE5_TAURI_ADAPTER_ALLOWLIST.get(toPosix(fileRelative));
+  if (!expectedSpecifier) {
+    return policyViolation("FE-TAURI-DIRECT-001", `direct Tauri import '${specifier}' is outside the exact Phase 5 adapter allowlist.`);
   }
-  if (phase >= waiver.removeByPhase) {
-    return policyViolation("FE-TAURI-DIRECT-001", `Tauri waiver for '${waiver.file}' expired at phase ${waiver.removeByPhase}: ${waiver.removal}`);
-  }
-  if (!waiver.specifiers.includes(specifier)) {
-    return policyViolation("FE-TAURI-DIRECT-001", `specifier '${specifier}' is not one of the exact reviewed specifiers for ${waiver.file}.`);
+  if (specifier !== expectedSpecifier) {
+    return policyViolation("FE-TAURI-DIRECT-001", `Tauri adapter '${fileRelative}' permits only '${expectedSpecifier}', not '${specifier}'.`);
   }
   return null;
+}
+export function evaluateTauriReferencePolicy(sourceRelative, specifier, referenceKind) {
+  const issues = [];
+  const direct = classifyTauriImport(5, sourceRelative, specifier);
+  if (direct) issues.push(direct);
+  if (isTauriPackageSpecifier(specifier) && referenceKind !== "static") {
+    issues.push(policyViolation("FE-TAURI-DYNAMIC-001", `Tauri package '${specifier}' may be loaded only through a static import in its exact reviewed adapter file; dynamic, require, re-export, and import.meta loading are forbidden.`));
+  }
+  return issues;
+}
+export function evaluatePhase5TauriAdapterImport(sourceRelative, targetRelative) {
+  const importers = PHASE5_CONCRETE_TAURI_ADAPTER_IMPORTERS.get(toPosix(targetRelative));
+  if (!importers) return null;
+  if (importers.has(toPosix(sourceRelative))) return null;
+  return policyViolation("FE-TAURI-ADAPTER-IMPORT-001", `concrete Tauri adapter '${targetRelative}' may be imported only from ${[...importers].sort().join(", ")}, not '${sourceRelative}'.`);
+}
+const PHASE5_HOST_SERVICES_FACTORY = "createTauriHostServices";
+const PHASE5_HOST_SERVICES_SOURCE = "src/core/platform/tauriServices.ts";
+export function evaluatePhase5HostServicesFactorySource(sourceRelative, sourceText) {
+  const file = toPosix(sourceRelative);
+  if (file === PHASE5_HOST_SERVICES_SOURCE || file === "src/main.tsx") return [];
+  const issues = [];
+  const pattern = new RegExp(`\\b${PHASE5_HOST_SERVICES_FACTORY}\\b`, "g");
+  let match;
+  while ((match = pattern.exec(sourceText)) !== null) {
+    issues.push({
+      rule: "FE-TAURI-HOST-SERVICES-001",
+      line: lineOf(sourceText, match.index),
+      message: `only src/main.tsx may import or call ${PHASE5_HOST_SERVICES_FACTORY}; features receive HostServices contracts.`,
+    });
+  }
+  return issues;
+}
+export function collectImportMetaTauriLoadingSites(sourceFile) {
+  const sites = [];
+  function visit(node) {
+    if (ts.isCallExpression(node)) {
+      const expression = node.expression;
+      let meta = null;
+      if (ts.isPropertyAccessExpression(expression)) meta = expression.expression;
+      else if (ts.isElementAccessExpression(expression)) meta = expression.expression;
+      if (ts.isMetaProperty(meta) && meta.keywordToken === ts.SyntaxKind.ImportKeyword && meta.name.text === "meta") {
+        const tauriArgument = node.arguments.find(
+          (argument) => ts.isStringLiteralLike(argument) && isTauriPackageSpecifier(argument.text),
+        );
+        if (tauriArgument) {
+          sites.push({
+            kind: ts.isPropertyAccessExpression(expression) ? expression.name.text : "element-access",
+            specifier: tauriArgument.text,
+            line: nodeLine(sourceFile, node),
+          });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  return sites;
+}
+const PHASE5_SHARED_SHIM_PATTERN = /\b(?:TAURI_TRANSITIONAL_WAIVERS|transitionalLocalTargets|providerTargetAllowed|removeByPhase|HostProviderCatalog)\b/g;
+const PHASE5_FRONTEND_SHIM_PATTERN = /\b(?:AccountDialogSurface|loaderKindFromValue|neo_forge|neo-forge|lite_loader|lite-loader)\b/g;
+const PHASE5_RUST_SHIM_PATTERN = /\b(?:LoaderProviderContext|normalize_loader|neo_forge|neo-forge|lite_loader|lite-loader|LoaderBinding\s*\.\s*display_name)\b/g;
+const PHASE5_LOADER_BINDING_DISPLAY_NAME_PATTERN = /\bdisplay_name\s*:/g;
+export function evaluatePhase5ProductionShimTokens(relativePath, sourceText) {
+  const file = toPosix(relativePath);
+  const issues = [];
+  const scan = (pattern, rule, message) => {
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(sourceText)) !== null) {
+      issues.push({ rule, line: lineOf(sourceText, match.index), message: `${message} Remove '${match[0]}'.` });
+    }
+  };
+  scan(PHASE5_SHARED_SHIM_PATTERN, "ARCH-PHASE5-SHIM-001", "Phase 5 production shims and transitional policy names are forbidden.");
+  if (file.endsWith(".ts") || file.endsWith(".tsx")) {
+    scan(PHASE5_FRONTEND_SHIM_PATTERN, "FE-PHASE5-SHIM-001", "legacy frontend special-case dispatch is forbidden.");
+  }
+  if (file.endsWith(".rs")) {
+    scan(PHASE5_RUST_SHIM_PATTERN, "RUST-PHASE5-SHIM-001", "legacy Rust provider dispatch aliases are forbidden.");
+    if (file === "src-tauri/modules/flint-feature-loaders/src/lib.rs") {
+      scan(PHASE5_LOADER_BINDING_DISPLAY_NAME_PATTERN, "RUST-PHASE5-SHIM-001", "LoaderBinding display-only metadata is forbidden; use provider descriptors and exact requirement/provider-ID bindings.");
+    }
+  }
+  return issues;
+}
+const PHASE5_FRONTEND_FEATURE_SOURCES = [
+  "src/modules/about/index.tsx",
+  "src/modules/accounts/index.tsx",
+  "src/modules/launch/index.tsx",
+  "src/modules/saves/index.tsx",
+  "src/modules/settings/index.tsx",
+  "src/modules/versions/index.tsx",
+];
+const PHASE5_STALE_REQUEST_SOURCES = [
+  "src/app/App.tsx",
+  "src/modules/saves/SaveManagerView.tsx",
+  "src/modules/versions/downloads/LoaderInstallPanel.tsx",
+  "src/modules/versions/downloads/ModDiscoveryPanel.tsx",
+];
+export function evaluateOverlayContributionContract(sourceText) {
+  const issues = [];
+  const add = (message, index = 0) => issues.push({ rule: "FE-PHASE5-OVERLAY-001", line: lineOf(sourceText, index), message });
+  const interfaceBody = (name) => {
+    const match = new RegExp(`\\bexport\\s+interface\\s+${name}\\s*\\{([\\s\\S]*?)\\}`).exec(sourceText);
+    return match ? match[1] : null;
+  };
+  const overlayBody = interfaceBody("OverlayContribution");
+  if (!overlayBody) {
+    add("typed OverlayContribution interface is required.");
+  } else {
+    const required = [
+      [/readonly\s+id\s*:\s*string\s*;/, "OverlayContribution.id must be a string."],
+      [/readonly\s+featureId\s*:\s*string\s*;/, "OverlayContribution.featureId must be a string."],
+      [/readonly\s+order\s*:\s*number\s*;/, "OverlayContribution.order must be a number."],
+      [/readonly\s+component\s*:\s*PageComponent\s*;/, "OverlayContribution.component must be a PageComponent."],
+      [/readonly\s+visible\?\s*:\s*\(\s*context\s*:\s*AppPageContext\s*\)\s*=>\s*boolean\s*;/, "OverlayContribution.visible must be an optional AppPageContext predicate."],
+    ];
+    for (const [pattern, message] of required) if (!pattern.test(overlayBody)) add(message);
+  }
+  for (const interfaceName of ["FeatureContributions", "FrontendContributionRegistry"]) {
+    const body = interfaceBody(interfaceName);
+    if (!body) {
+      add(`${interfaceName} must declare the overlay contribution slot.`);
+    } else if (!/readonly\s+overlays\s*:\s*readonly\s+OverlayContribution\[\]\s*;/.test(body)) {
+      add(`${interfaceName}.overlays must be readonly OverlayContribution[].`);
+    }
+  }
+  if (!/Array\.isArray\s*\(\s*feature\.contributions\.overlays\s*\)/.test(sourceText)) {
+    add("overlay contribution arrays must be validated at descriptor construction.");
+  }
+  if (!/assertFunction\s*\(\s*overlay\.component\s*,/.test(sourceText) || !/assertFunction\s*\(\s*overlay\.visible\s*,/.test(sourceText)) {
+    add("overlay component and optional visible selector must be function-validated.");
+  }
+  if (!/freezeOrderedContributions\s*\(\s*feature\.contributions\.overlays\s*\)/.test(sourceText) ||
+      !/orderedFeatures\.flatMap\s*\(\s*\(feature\)\s*=>\s*feature\.contributions\.overlays\s*\)/.test(sourceText)) {
+    add("overlays must be frozen, ordered, and emitted by buildContributionRegistry.");
+  }
+  return issues;
+}
+export function evaluateExactLoaderKindParser(sourceText) {
+  const issues = [];
+  const add = (message, index = 0) => issues.push({ rule: "FE-LOADER-PARSER-001", line: lineOf(sourceText, index), message });
+  const canonicalLoaderKinds = ["fabric", "forge", "neoforge", "quilt", "liteloader", "optifine"];
+  const loaderKindsDeclaration = /\bexport\s+const\s+LOADER_KINDS\b[^=]*=\s*\[([\s\S]*?)\]\s*(?:as\s+const\s*)?;/.exec(sourceText);
+  if (!loaderKindsDeclaration) {
+    add("LOADER_KINDS must be an exported exact array declaration of six canonical string literals in reviewed order.");
+  } else {
+    const loaderKindsBody = loaderKindsDeclaration[1];
+    const loaderKinds = [...loaderKindsBody.matchAll(/(["'])([^"']*)\1/g)].map((match) => match[2]);
+    const loaderKindsRemainder = loaderKindsBody.replace(/(["'])([^"']*)\1/g, "").replace(/,/g, "").trim();
+    if (
+      loaderKindsRemainder !== "" ||
+      loaderKinds.length !== canonicalLoaderKinds.length ||
+      loaderKinds.some((kind, index) => kind !== canonicalLoaderKinds[index])
+    ) {
+      add(
+        "LOADER_KINDS must contain exactly [" + canonicalLoaderKinds.join(", ") + "] in reviewed order, with no extra or alias literals; found [" + loaderKinds.join(", ") + "].",
+        loaderKindsDeclaration.index,
+      );
+    }
+  }
+  const declaration = /\bexport\s+function\s+parseLoaderKind\s*\([^)]*\)\s*:\s*LoaderKind\s*\|\s*null\s*\{/.exec(sourceText);
+  if (!declaration) {
+    add("src/utils.ts must export parseLoaderKind(value): LoaderKind | null.");
+    return issues;
+  }
+  const openBrace = sourceText.indexOf("{", declaration.index);
+  const closeBrace = findMatchingBrace(sourceText, openBrace);
+  if (closeBrace === -1) {
+    add("parseLoaderKind body is not statically parseable.");
+    return issues;
+  }
+  const body = sourceText.slice(openBrace + 1, closeBrace);
+  if (!/\.trim\s*\(\s*\)/.test(body) || !/\.toLowerCase\s*\(\s*\)/.test(body)) {
+    add("parseLoaderKind must trim and lowercase the input before exact matching.");
+  }
+  if (!/\bvanilla\b/.test(body) || !/\breturn\s+null\b/.test(body)) {
+    add("parseLoaderKind must return null for vanilla or unknown values.");
+  }
+  if (!/(?:\b[A-Za-z_][A-Za-z0-9_]*\s*===\s*normalized\b|\bnormalized\s*===\s*[A-Za-z_][A-Za-z0-9_]*\b)/.test(body)) {
+    add("parseLoaderKind must use an exact canonical comparison, not prefix/substring matching.");
+  }
+  if (/\.(?:includes|startsWith|endsWith|indexOf|lastIndexOf|search|substring|substr|slice|match|matchAll|test|replace|replaceAll|split|charAt|charCodeAt|codePointAt)\s*\(/.test(body) || /\bnew\s+RegExp\b/.test(body)) {
+    add("parseLoaderKind may not use includes, substring or prefix, regex, replace, or split helpers.");
+  }
+  if (/\b(?:neo[_-]forge|lite[_-]loader|fabric-loader|forge-loader|quilt-loader|optifine-loader|liteloader2|optifine-hd)\b/.test(body)) {
+    add("parseLoaderKind may not accept legacy loader aliases.");
+  }
+  if (/\bloaderKindFromValue\b/.test(sourceText)) {
+    add("the legacy loaderKindFromValue fuzzy parser is forbidden; use parseLoaderKind.");
+  }
+  return issues;
+}
+function addPhase5FrontendIssue(issues, file, rule, message, line = 1) {
+  issues.push({ file, rule, line, message });
+}
+function requirePhase5FrontendNeedle(issues, sources, file, pattern, rule, message) {
+  const sourceText = sources.get(file);
+  if (!sourceText) {
+    addPhase5FrontendIssue(issues, file, rule, `required Phase 5 frontend source '${file}' is missing.`);
+    return;
+  }
+  if (!pattern.test(sourceText)) addPhase5FrontendIssue(issues, file, rule, message);
+}
+export function evaluatePhase5FrontendContractSources(sources) {
+  const issues = [];
+  const sourceMap = new Map((sources ?? []).map((source) => [toPosix(source.relativePath), source.sourceText]));
+  for (const adapter of reviewedTauriAdapterAllowlist()) {
+    if (!sourceMap.has(adapter.file)) {
+      addPhase5FrontendIssue(issues, adapter.file, "FE-TAURI-ADAPTER-IMPORT-001", `required Phase 5 Tauri adapter '${adapter.file}' is missing.`);
+    }
+  }
+  const contributionsText = sourceMap.get("src/core/contributions.ts");
+  if (contributionsText) {
+    for (const issue of evaluateOverlayContributionContract(contributionsText)) {
+      addPhase5FrontendIssue(issues, "src/core/contributions.ts", issue.rule, issue.message, issue.line);
+    }
+  } else {
+    addPhase5FrontendIssue(issues, "src/core/contributions.ts", "FE-PHASE5-OVERLAY-001", "typed overlay contribution source is missing.");
+  }
+  const utilsText = sourceMap.get("src/utils.ts");
+  if (utilsText) {
+    for (const issue of evaluateExactLoaderKindParser(utilsText)) {
+      addPhase5FrontendIssue(issues, "src/utils.ts", issue.rule, issue.message, issue.line);
+    }
+  } else {
+    addPhase5FrontendIssue(issues, "src/utils.ts", "FE-LOADER-PARSER-001", "exact loader parser source is missing.");
+  }
+  requirePhase5FrontendNeedle(issues, sourceMap, "src/core/app-context.ts", /readonly\s+services\s*:\s*HostServices\s*;/, "FE-HOST-SERVICES-001", "AppPageContext must expose typed HostServices.");
+  requirePhase5FrontendNeedle(issues, sourceMap, "src/core/app-context.ts", /readonly\s+accountDialogOpen\s*:\s*boolean\s*;/, "FE-PHASE5-OVERLAY-001", "AppPageContext must expose accountDialogOpen for the accounts overlay.");
+  requirePhase5FrontendNeedle(issues, sourceMap, "src/core/availability.ts", /registry\.overlays\.filter\s*\(\s*\(overlay\)\s*=>\s*activeFeatureIds\.has\s*\(\s*overlay\.featureId\s*\)\s*\)/, "FE-PHASE5-OVERLAY-001", "availability filtering must retain overlays only for active features.");
+  requirePhase5FrontendNeedle(issues, sourceMap, "src/app/App.tsx", /availableRegistry\.overlays\.map\s*\(/, "FE-PHASE5-OVERLAY-001", "App must render registry overlays, not a special account surface.");
+  requirePhase5FrontendNeedle(issues, sourceMap, "src/app/App.tsx", /overlay\.visible\s*&&\s*!\s*overlay\.visible\s*\(\s*pageContext\s*\)/, "FE-PHASE5-OVERLAY-001", "App must honor overlay visibility predicates.");
+  requirePhase5FrontendNeedle(issues, sourceMap, "src/app/App.tsx", /availableRegistry\.overlays\.map[\s\S]*?<ContributionBoundary[\s\S]*?<Overlay\s+context=\{pageContext\}/, "FE-PHASE5-OVERLAY-001", "App must render each overlay component through ContributionBoundary.");
+  requirePhase5FrontendNeedle(issues, sourceMap, "src/main.tsx", /import\s*\{\s*createTauriHostServices\s*\}\s*from\s*["']\.\/core\/platform\/tauriServices["']/, "FE-TAURI-HOST-SERVICES-001", "main.tsx must be the single createTauriHostServices composition entry.");
+  requirePhase5FrontendNeedle(issues, sourceMap, "src/main.tsx", /createTauriHostServices\s*\(\s*\)/, "FE-TAURI-HOST-SERVICES-001", "main.tsx must create the typed HostServices instance exactly once.");
+  requirePhase5FrontendNeedle(issues, sourceMap, "src/api.ts", /\btauriInvoke\b/, "FE-TAURI-ADAPTER-IMPORT-001", "api.ts must route invoke through the reviewed tauriInvoke adapter only.");
+  const accountsText = sourceMap.get("src/modules/accounts/index.tsx") ?? "";
+  const accountOverlayId = "flint.accounts.overlay.account-dialog";
+  if ((accountsText.match(new RegExp(accountOverlayId.replace(/\./g, "\\."), "g")) ?? []).length !== 1) {
+    addPhase5FrontendIssue(issues, "src/modules/accounts/index.tsx", "FE-PHASE5-OVERLAY-001", `accounts must register exactly one overlay '${accountOverlayId}'.`);
+  }
+  if (!/visible\s*:\s*\(\s*context\s*:\s*AppPageContext\s*\)\s*=>\s*context\.accountDialogOpen/.test(accountsText)) {
+    addPhase5FrontendIssue(issues, "src/modules/accounts/index.tsx", "FE-PHASE5-OVERLAY-001", "accounts overlay visibility must follow AppPageContext.accountDialogOpen.");
+  }
+  for (const file of PHASE5_FRONTEND_FEATURE_SOURCES) {
+    requirePhase5FrontendNeedle(issues, sourceMap, file, /\boverlays\s*:/, "FE-PHASE5-OVERLAY-001", "every feature descriptor must declare the overlays contribution slot.");
+  }
+  for (const file of ["src/modules/versions/downloads/LoaderInstallPanel.tsx", "src/modules/versions/downloads/ModDiscoveryPanel.tsx"]) {
+    requirePhase5FrontendNeedle(issues, sourceMap, file, /\bparseLoaderKind\b/, "FE-LOADER-PARSER-001", "loader UI must use the exact parseLoaderKind helper.");
+  }
+  for (const file of PHASE5_STALE_REQUEST_SOURCES) {
+    requirePhase5FrontendNeedle(issues, sourceMap, file, /\buseRequestGeneration\b/, "FE-STALE-REQUEST-001", "shared useRequestGeneration must guard stale async work.");
+    requirePhase5FrontendNeedle(issues, sourceMap, file, /\.isCurrent\s*\(/, "FE-STALE-REQUEST-001", "async completion must check request generation before committing state.");
+  }
+  return issues;
+}
+const CONCRETE_PROVIDER_CONSTRUCTION_PATTERN = /\b(?:CurseForgeModProvider|ModrinthModProvider|FabricLoaderProvider|ForgeLoaderProvider|LiteLoaderProvider|NeoForgeLoaderProvider|OptiFineProvider|QuiltLoaderProvider)\s*::\s*new\s*\(/g;
+const PROVIDER_COMPOSITION_SOURCE = "src-tauri/src/provider_composition.rs";
+const HOST_LIB_SOURCE = "src-tauri/src/lib.rs";
+export function evaluatePhase5ProviderRuntimeSources(sources) {
+  const issues = [];
+  const entries = (sources ?? []).map((source) => ({
+    relativePath: toPosix(source.relativePath ?? source.relative),
+    productionText: source.productionText,
+  }));
+  for (const entry of entries) {
+    for (const issue of evaluatePhase5ProductionShimTokens(entry.relativePath, entry.productionText)) {
+      issues.push({ ...issue, file: entry.relativePath });
+    }
+  }
+  const stateMatches = entries.flatMap((entry) =>
+    [...entry.productionText.matchAll(/\bstruct\s+ProviderRuntimeState\b/g)]
+      .map((match) => ({ file: entry.relativePath, index: match.index, text: match[0] })),
+  );
+  if (stateMatches.length !== 1 || stateMatches[0]?.file !== PROVIDER_COMPOSITION_SOURCE) {
+    issues.push({
+      rule: "RUST-PROVIDER-RUNTIME-001",
+      file: stateMatches[0]?.file ?? PROVIDER_COMPOSITION_SOURCE,
+      line: stateMatches[0] ? lineOf(entries.find((entry) => entry.relativePath === stateMatches[0].file)?.productionText ?? "", stateMatches[0].index) : 1,
+      message: "Phase 5 requires exactly one shared ProviderRuntimeState declaration in provider_composition.rs.",
+    });
+  }
+  const catalogImplementations = [];
+  for (const entry of entries) {
+    for (const match of entry.productionText.matchAll(/\bimpl\s+ProviderCatalog\s+for\s+([A-Za-z_][A-Za-z0-9_]*)/g)) {
+      catalogImplementations.push({ typeName: match[1], file: entry.relativePath, index: match.index, text: entry.productionText });
+    }
+  }
+  if (
+    catalogImplementations.length !== 1 ||
+    catalogImplementations[0]?.typeName !== "ProviderRuntimeState" ||
+    catalogImplementations[0]?.file !== PROVIDER_COMPOSITION_SOURCE
+  ) {
+    issues.push({
+      rule: "RUST-PROVIDER-RUNTIME-001",
+      file: catalogImplementations[0]?.file ?? PROVIDER_COMPOSITION_SOURCE,
+      line: catalogImplementations[0] ? lineOf(catalogImplementations[0].text, catalogImplementations[0].index) : 1,
+      message: "Only the shared ProviderRuntimeState in provider_composition.rs may implement ProviderCatalog.",
+    });
+  }
+  const initializations = entries.flatMap((entry) =>
+    [...entry.productionText.matchAll(/\bProviderRuntimeState\s*::\s*new\s*\(/g)]
+      .map((match) => ({ file: entry.relativePath, index: match.index, text: entry.productionText })),
+  );
+  if (initializations.length !== 1 || initializations[0]?.file !== HOST_LIB_SOURCE) {
+    issues.push({
+      rule: "RUST-PROVIDER-RUNTIME-001",
+      file: initializations[0]?.file ?? HOST_LIB_SOURCE,
+      line: initializations[0] ? lineOf(initializations[0].text, initializations[0].index) : 1,
+      message: "Host startup must create exactly one shared ProviderRuntimeState in src-tauri/src/lib.rs.",
+    });
+  }
+  const hostLib = entries.find((entry) => entry.relativePath === HOST_LIB_SOURCE);
+  if (!hostLib || !/\binitialize_host_runtime\s*\(\s*provider_runtime\s*\)/.test(hostLib.productionText)) {
+    issues.push({
+      rule: "RUST-PROVIDER-RUNTIME-001",
+      file: HOST_LIB_SOURCE,
+      line: 1,
+      message: "feature_host must receive the same ProviderRuntimeState used by provider commands.",
+    });
+  }
+  for (const entry of entries) {
+    if (entry.relativePath === PROVIDER_COMPOSITION_SOURCE) continue;
+    CONCRETE_PROVIDER_CONSTRUCTION_PATTERN.lastIndex = 0;
+    let constructorMatch;
+    while ((constructorMatch = CONCRETE_PROVIDER_CONSTRUCTION_PATTERN.exec(entry.productionText)) !== null) {
+      issues.push({
+        rule: "RUST-PROVIDER-COMPOSITION-001",
+        file: entry.relativePath,
+        line: lineOf(entry.productionText, constructorMatch.index),
+        message: "concrete provider construction is allowed only in provider_composition.rs.",
+      });
+    }
+    const registryConstruction = /\bProviderRegistry\s*::\s*new\s*\(/.exec(entry.productionText);
+    if (registryConstruction) {
+      issues.push({
+        rule: "RUST-PROVIDER-COMPOSITION-001",
+        file: entry.relativePath,
+        line: lineOf(entry.productionText, registryConstruction.index),
+        message: "provider registry construction is allowed only in provider_composition.rs.",
+      });
+    }
+  }
+  return issues;
 }
 export function frontendFeature(relativePath) {
   const match = /^src\/modules\/([^/]+)(?:\/|$)/.exec(relativePath);
@@ -442,6 +802,10 @@ export function evaluateFrontendBoundary(phase, sourceRelative, targetRelative, 
   const targetFeature = frontendFeature(targetRelative);
   const targetIsModule = targetRelative.startsWith("src/modules/");
   const sourceIsComposition = sourceRelative === COMPOSITION_ROOT;
+  if (phase >= 5) {
+    const tauriAdapterBoundary = evaluatePhase5TauriAdapterImport(sourceRelative, targetRelative);
+    if (tauriAdapterBoundary) return tauriAdapterBoundary;
+  }
   if (isSharedFrontendSource(sourceRelative) && (targetRelative.startsWith("src/app/") || targetIsModule)) {
     return policyViolation("FE-CORE-SHARED-IMPORT-001", `core/shared code must not import app or feature module '${targetRelative}'.`);
   }
@@ -537,8 +901,9 @@ export function validateFrontendModuleReference({
     report("FE-IMPORT-SPECIFIER-001", sourceRelative, reference.line, `module specifier '${specifier}' uses query/hash resolution that is not reviewed.`);
     return;
   }
-  const tauriViolation = classifyTauriImport(phase, sourceRelative, specifier);
-  if (tauriViolation) report(tauriViolation.rule, sourceRelative, reference.line, tauriViolation.message);
+  for (const issue of evaluateTauriReferencePolicy(sourceRelative, specifier, reference.kind)) {
+    report(issue.rule, sourceRelative, reference.line, issue.message);
+  }
   if (reference.kind === "dynamic" && !isRelativeSpecifier(specifier)) {
     report("FE-DYNAMIC-IMPORT-002", sourceRelative, reference.line, `dynamic import '${specifier}' must be a literal relative local chunk; package/alias/remote contribution loaders are forbidden.`);
     return;
@@ -573,8 +938,12 @@ export function validateFrontendModuleReference({
         report("FE-TAURI-DIRECT-001", sourceRelative, reference.line, `Tauri package '${packageRoot}' is reached through alias '${specifier}'; only exact reviewed direct imports are allowed.`);
       }
     }
-    if (phase >= 3 && !PHASE3_PACKAGE_ALLOWLIST.has(packageRoot)) {
-      report("FE-EXTERNAL-PACKAGE-001", sourceRelative, reference.line, `external package '${packageRoot}' is not in the reviewed phase-3 package allowlist.`);
+    if (
+      phase >= 3 &&
+      !FRONTEND_EXTERNAL_PACKAGE_ALLOWLIST.has(packageRoot) &&
+      !isReviewedTauriAdapterImport(sourceRelative, specifier)
+    ) {
+      report("FE-EXTERNAL-PACKAGE-001", sourceRelative, reference.line, `external package '${packageRoot}' is not in the reviewed frontend package allowlist.`);
     }
     return;
   }
@@ -619,6 +988,17 @@ function checkFrontend(phase, report) {
         report("FE-IMPORT-META-001", sourceRelative, meta.line, `unreviewed import.meta member '${meta.member ?? "<whole>"}'; import.meta.glob, globEager, and arbitrary contribution loading are forbidden.`);
       }
     }
+    for (const site of collectImportMetaTauriLoadingSites(sourceFile)) {
+      report("FE-TAURI-DYNAMIC-001", sourceRelative, site.line, `import.meta.${site.kind}('${site.specifier}') is forbidden; Tauri packages are static-imported only by their exact reviewed adapters.`);
+    }
+    if (phase >= 5) {
+      for (const issue of evaluatePhase5HostServicesFactorySource(sourceRelative, sourceFile.getFullText())) {
+        report(issue.rule, sourceRelative, issue.line, issue.message);
+      }
+      for (const issue of evaluatePhase5ProductionShimTokens(sourceRelative, sourceFile.getFullText())) {
+        report(issue.rule, sourceRelative, issue.line, issue.message);
+      }
+    }
     for (const site of collectHtmlInjectionSites(sourceFile)) {
       report("FE-HTML-INJECTION-001", sourceRelative, site.line, `HTML injection sink '${site.sink}' is forbidden.`);
     }
@@ -627,6 +1007,15 @@ function checkFrontend(phase, report) {
         ? "FE-FUNCTION-CONSTRUCTOR-001"
         : "FE-EVAL-001";
       report(rule, sourceRelative, site.line, `dynamic code evaluation via '${site.kind}' is forbidden.`);
+    }
+  }
+  if (phase >= 5) {
+    const phase5Sources = [...parsedFiles.entries()].map(([absolutePath, sourceFile]) => ({
+      relativePath: relFromRepo(absolutePath),
+      sourceText: sourceFile.getFullText(),
+    }));
+    for (const issue of evaluatePhase5FrontendContractSources(phase5Sources)) {
+      report(issue.rule, issue.file, issue.line, issue.message);
     }
   }
   if (phase >= 3) checkPhase3Contributions(parsedFiles, compilerOptions, report);
@@ -1452,25 +1841,23 @@ const FEATURE_PRIVATE_MODULE_NAMES = new Set([
   "version",
   "launch",
 ]);
-// Exact provider files/import roots. transitional entries are named and expire at phase 5.
-const providerTarget = (file, role, localTargets, transitional = {}, external = ["std", "semver", "flint_core"]) => ({
-  file, role, localTargets: new Set(localTargets), transitionalLocalTargets: new Map(Object.entries(transitional)), externalRoots: new Set(external),
+// Exact provider files/import roots; there are no transitional provider imports at Phase 5.
+const providerTarget = (file, role, localTargets, external = ["std", "semver", "flint_core"]) => ({
+  file, role, localTargets: new Set(localTargets), externalRoots: new Set(external),
 });
 const MOD_PROVIDER_TARGETS = [
   providerTarget(PROVIDER_API_SOURCE, "mod-provider-api", ["loaders", "mods"]),
-  providerTarget("src-tauri/crates/flint-provider-api/src/mods.rs", "mod-provider-api", [], {}, ["std", "flint_core"]),
+  providerTarget("src-tauri/crates/flint-provider-api/src/mods.rs", "mod-provider-api", [], ["std", "flint_core"]),
   providerTarget(
     "src-tauri/providers/flint-mod-provider-curseforge/src/lib.rs",
     "mod-provider-leaf",
     [],
-    {},
     ["std", "serde_json", "flint_core", "flint_provider_api"],
   ),
   providerTarget(
     "src-tauri/providers/flint-mod-provider-modrinth/src/lib.rs",
     "mod-provider-leaf",
     [],
-    {},
     ["std", "serde_json", "flint_core", "flint_provider_api"],
   ),
 ];
@@ -1619,7 +2006,6 @@ const FEATURE_LEAF_TARGETS = FEATURE_CRATE_SPECS.map((spec) =>
     spec.source,
     "feature-leaf",
     spec.localModules,
-    {},
     ["std", ...spec.dependencies.map((dependency) => dependency.replace(/-/g, "_"))],
   ),
 );
@@ -1629,7 +2015,6 @@ export function reviewedFeatureTargets() {
     file: target.file,
     role: target.role,
     localTargets: [...target.localTargets].sort(),
-    transitionalLocalTargets: [...target.transitionalLocalTargets.keys()].sort(),
     externalRoots: [...target.externalRoots].sort(),
   }));
 }
@@ -1797,7 +2182,6 @@ const LOADER_PROVIDER_TARGETS = [
       file,
       "loader-provider-api",
       file === PROVIDER_API_SOURCE ? ["loaders", "mods"] : [],
-      {},
       file === PROVIDER_API_SOURCE ? ["std", "semver", "flint_core"] : ["std", "flint_core"],
     ),
   ),
@@ -1806,7 +2190,6 @@ const LOADER_PROVIDER_TARGETS = [
       file,
       "loader-provider-adapter",
       ["models"],
-      {},
       ["std", "tauri", "flint_feature_loaders", "flint_provider_api"],
     ),
   ),
@@ -1815,7 +2198,6 @@ const LOADER_PROVIDER_TARGETS = [
       spec.source,
       "loader-provider-leaf",
       [],
-      {},
       ["std", ...spec.dependencies.map((dependency) => dependency.replace(/-/g, "_"))],
     ),
   ),
@@ -1895,7 +2277,6 @@ export function reviewedProviderTargets() {
     file: target.file,
     role: target.role,
     localTargets: [...target.localTargets].sort(),
-    transitionalLocalTargets: [...target.transitionalLocalTargets.keys()].sort(),
     externalRoots: [...target.externalRoots].sort(),
   }));
 }
@@ -2073,11 +2454,7 @@ export function evaluateFoundationCrateSource(crateName, sourceText) {
   }
   return issues;
 }
-function providerTargetAllowed(phase, target, localTarget) {
-  if (target.localTargets.has(localTarget)) return true;
-  const waiver = target.transitionalLocalTargets.get(localTarget);
-  return Boolean(waiver && phase < waiver.removeByPhase);
-}
+
 function forbiddenProviderUse(payload, targets) {
   const root = firstUseRoot(payload);
   if (!root) return "unparseable use declaration";
@@ -2088,7 +2465,7 @@ function forbiddenProviderUse(payload, targets) {
   if ([...targets].some((target) => HOST_PRIVATE_MODULES.has(target))) return "host-private module import";
   return null;
 }
-function checkProviderTarget(phase, target, graph, report) {
+function checkProviderTarget(target, graph, report) {
   let record = graph.records.find((candidate) => candidate.relative === target.file);
   if (!record) {
     const absolutePath = path.join(REPO_ROOT, target.file);
@@ -2129,16 +2506,8 @@ function checkProviderTarget(phase, target, graph, report) {
     }
   }
   for (const localTarget of localTargets) {
-    if (!providerTargetAllowed(phase, target, localTarget)) {
-      const waiver = target.transitionalLocalTargets.get(localTarget);
-      report(
-        "RUST-PROVIDER-IMPORT-ALLOW-001",
-        record.relative,
-        1,
-        waiver && phase >= waiver.removeByPhase
-          ? `provider local import '${localTarget}' waiver expired at phase ${waiver.removeByPhase}: ${waiver.removal}`
-          : `provider local import '${localTarget}' is not in the exact reviewed allowlist.`,
-      );
+    if (!target.localTargets.has(localTarget)) {
+      report("RUST-PROVIDER-IMPORT-ALLOW-001", record.relative, 1, `provider local import '${localTarget}' is not in the exact reviewed allowlist.`);
     }
   }
   if (
@@ -2247,14 +2616,6 @@ const LOADER_PROVIDER_CONSTRUCTORS = [
   "OptiFineProvider::new",
   "QuiltLoaderProvider::new",
 ];
-const LOADER_PROVIDER_DESCRIPTOR_ALIASES = [
-  "FABRIC_LOADER_DESCRIPTOR",
-  "FORGE_LOADER_DESCRIPTOR",
-  "LITELOADER_LOADER_DESCRIPTOR",
-  "NEOFORGE_LOADER_DESCRIPTOR",
-  "OPTIFINE_LOADER_DESCRIPTOR",
-  "QUILT_LOADER_DESCRIPTOR",
-];
 const LOADER_PROVIDER_SELECTION_KEY_NAMES = [
   "FABRIC_SELECTION_KEY",
   "FORGE_SELECTION_KEY",
@@ -2266,30 +2627,39 @@ const LOADER_PROVIDER_SELECTION_KEY_NAMES = [
 export function evaluateLoaderProviderComposition(text) {
   const issues = [];
   const spans = findRustFunctionSpans(text);
-  const descriptorSpan = spans.find((span) => span.name === "loader_provider_descriptors");
+
   const requirementSpan = spans.find((span) => span.name === "loader_provider_requirements");
   const registrySpan = spans.find((span) => span.name === "build_loader_provider_registry");
-  const stateDeclarations = (text.match(/\bstruct\s+LoaderProviderState\b/g) ?? []).length;
-  if (stateDeclarations !== 1 || !text.includes("pub struct LoaderProviderState")) {
-    issues.push({ line: 1, message: "loader provider composition must expose exactly one LoaderProviderState." });
+  const stateDeclarations = (text.match(/\bstruct\s+ProviderRuntimeState\b/g) ?? []).length;
+  if (stateDeclarations !== 1 || !text.includes("struct ProviderRuntimeState")) {
+    issues.push({ line: 1, message: "provider composition must expose exactly one shared ProviderRuntimeState." });
   }
-  if (!text.includes("Arc<ProviderRegistry<dyn LoaderProvider>>")) {
-    issues.push({ line: 1, message: "LoaderProviderState must own an Arc<ProviderRegistry<dyn LoaderProvider>>." });
+  for (const registryType of ["ProviderRegistry<dyn ModProvider>", "ProviderRegistry<dyn LoaderProvider>"]) {
+    if (!text.includes(registryType)) {
+      issues.push({ line: 1, message: `ProviderRuntimeState must own actual ${registryType} truth.` });
+    }
   }
-  for (const descriptor of LOADER_PROVIDER_DESCRIPTOR_ALIASES) {
-    if (!text.includes(descriptor)) issues.push({ line: 1, message: `loader provider composition must expose leaf descriptor '${descriptor}'.` });
+  if (!/\bmod_registry\s*:/.test(text) || !/\bloader_registry\s*:/.test(text)) {
+    issues.push({ line: 1, message: "ProviderRuntimeState must retain actual mod_registry and loader_registry fields." });
+  }
+  const catalogImplementation = /\bimpl\s+ProviderCatalog\s+for\s+ProviderRuntimeState\s*\{/.exec(text);
+  if (!catalogImplementation) {
+    issues.push({ line: 1, message: "ProviderRuntimeState must implement the shared feature ProviderCatalog." });
+  } else {
+    const openBrace = text.indexOf("{", catalogImplementation.index);
+    const closeBrace = findMatchingBrace(text, openBrace);
+    const catalogBody = closeBrace === -1 ? "" : text.slice(openBrace + 1, closeBrace);
+    if (!/\bfn\s+initialize\s*\(/.test(catalogBody) || !/\bprovider_is_known\s*\(/.test(catalogBody)) {
+      issues.push({ line: lineOf(text, catalogImplementation.index), message: "ProviderRuntimeState initialize must consult the actual shared provider registries." });
+    }
+    if (!/\bfn\s+shutdown\s*\(/.test(catalogBody) || !/\bmark_unavailable\s*\(/.test(catalogBody)) {
+      issues.push({ line: lineOf(text, catalogImplementation.index), message: "ProviderRuntimeState shutdown must update the shared provider lifecycle truth." });
+    }
   }
   for (const key of LOADER_PROVIDER_SELECTION_KEY_NAMES) {
     if (!text.includes(key)) issues.push({ line: 1, message: `loader provider composition must declare requirement key '${key}'.` });
   }
-  if (!descriptorSpan) {
-    issues.push({ line: 1, message: "loader provider composition must define loader_provider_descriptors()." });
-  } else {
-    const block = text.slice(descriptorSpan.start, descriptorSpan.end);
-    for (const descriptor of LOADER_PROVIDER_DESCRIPTOR_ALIASES) {
-      if (!block.includes(descriptor)) issues.push({ line: descriptorSpan.line, message: `loader_provider_descriptors() must use leaf descriptor '${descriptor}'.` });
-    }
-  }
+
   if (!requirementSpan) {
     issues.push({ line: 1, message: "loader provider composition must define loader_provider_requirements()." });
   } else {
@@ -2578,7 +2948,7 @@ function checkLoaderProviderGate(phase, graph, report) {
     }
   }
   const targets = LOADER_PROVIDER_TARGETS.filter((target) => files.includes(target.file));
-  for (const target of targets) checkProviderTarget(phase, target, graph, report);
+  for (const target of targets) checkProviderTarget(target, graph, report);
   for (const spec of LOADER_PROVIDER_CRATE_SPECS) {
     if (!fs.existsSync(path.join(REPO_ROOT, spec.source))) {
       report("RUST-PHASE-TARGET-001", spec.source, 1, `phase ${phase} requires the exact loader provider leaf '${spec.crateName}'.`);
@@ -2586,10 +2956,10 @@ function checkLoaderProviderGate(phase, graph, report) {
     }
     const target = LOADER_PROVIDER_TARGET_BY_SOURCE.get(spec.source);
     if (target) {
-      checkProviderTarget(phase, target, graph, report);
+      checkProviderTarget(target, graph, report);
       for (const file of rustFilesUnder(path.dirname(spec.source))) {
         if (file === spec.source) continue;
-        checkProviderTarget(phase, { ...target, file }, graph, report);
+        checkProviderTarget({ ...target, file }, graph, report);
       }
     }
   }
@@ -2618,8 +2988,7 @@ function checkLoaderProviderGate(phase, graph, report) {
       : "";
     const hasBindingFields =
       /\brequirement\s*:/.test(bindingBlock) &&
-      /\bprovider_id\s*:/.test(bindingBlock) &&
-      /\bdisplay_name\s*:/.test(bindingBlock);
+      /\bprovider_id\s*:/.test(bindingBlock);
     if (!binding || outside.length > 0 || variants.length !== 6 || !hasBindingFields) {
       report(
         "RUST-LOADER-ADAPTER-001",
@@ -3363,14 +3732,9 @@ function checkCargoGate(phase, report) {
 // Entry point
 // ---------------------------------------------------------------------------
 function printReviewedAllowlists(phase) {
-  const activeTauri = TAURI_TRANSITIONAL_WAIVERS.filter((waiver) => phase < waiver.removeByPhase);
-  if (activeTauri.length === 0) {
-    console.log("[allowlist] direct @tauri-apps imports: none (phase-5 strict).");
-  } else {
-    console.log("[allowlist] transitional direct @tauri-apps imports (exact file + exact specifier):");
-    for (const waiver of activeTauri) {
-      console.log(`  - ${waiver.file} :: ${waiver.specifiers.join(", ")} | owner=${waiver.owner} | remove-by=phase ${waiver.removeByPhase} | ${waiver.removal}`);
-    }
+  console.log("[allowlist] exact Phase 5 Tauri adapter imports (file + specifier):");
+  for (const adapter of reviewedTauriAdapterAllowlist()) {
+    console.log(`  - ${adapter.file} :: ${adapter.specifier}`);
   }
   console.log(`[allowlist] Rust module IDs: ${[...RUST_MODULE_ALLOWLIST].sort().join(", ")}`);
   let edgeCount = 0;
@@ -3380,12 +3744,11 @@ function printReviewedAllowlists(phase) {
   for (const target of [...MOD_PROVIDER_TARGETS, ...LOADER_PROVIDER_TARGETS, ...FEATURE_LEAF_TARGETS]) {
     if (!fs.existsSync(path.join(REPO_ROOT, target.file))) continue;
     const local = [...target.localTargets].sort();
-    const transitional = [...target.transitionalLocalTargets.keys()].sort();
-    console.log(`[allowlist] ${target.file} (${target.role}) local={${local.join(", ")}} transitional={${transitional.join(", ")}} external={${[...target.externalRoots].sort().join(", ")}}`);
+    console.log(`[allowlist] ${target.file} (${target.role}) local={${local.join(", ")}} external={${[...target.externalRoots].sort().join(", ")}}`);
   }
   if (phase >= 4) {
     const sourceRoots = reviewedWorkspaceCrateSpecs().map((spec) => spec.sourceRoot);
-    console.log(`[allowlist] phase-4 workspace source roots (${sourceRoots.length}): ${sourceRoots.join(", ")}`);
+    console.log(`[allowlist] workspace source roots (${sourceRoots.length}): ${sourceRoots.join(", ")}`);
     const externalRules = reviewedExternalDependencyRules();
     console.log(`[allowlist] exact external Cargo dependency rules cover ${externalRules.length} workspace packages; all normal/build/dev kinds are kind-specific.`);
   }
@@ -3405,7 +3768,7 @@ function runRequestedPhase(phase) {
     if (!fs.existsSync(path.join(REPO_ROOT, target.file))) {
       report("RUST-PHASE-TARGET-001", target.file, 1, `phase ${phase} requires the reviewed provider boundary target.`);
     } else {
-      checkProviderTarget(phase, target, graph, report);
+      checkProviderTarget(target, graph, report);
     }
   }
   checkModSourceBoundaries(graph, report);
@@ -3415,14 +3778,19 @@ function runRequestedPhase(phase) {
   checkCargoGate(phase, report);
   if (phase >= 3) checkHostCommandGates(report);
   if (phase >= 4) checkPhase4WorkspaceSourceGate(workspaceSources, report);
+  if (phase >= 5) {
+    for (const issue of evaluatePhase5ProviderRuntimeSources(workspaceSources)) {
+      report(issue.rule, issue.file, issue.line, issue.message);
+    }
+  }
   printReviewedAllowlists(phase);
   if (phase >= 3) console.log("[scope] phase-3 contribution checks are static manifest/import/registry-shape checks; runtime duplicate and navigation-target validation is not executed.");
   if (phase >= 5) {
-    console.log("[scope] phase-5 strict waiver expiry is applied; Phase 5 hardening acceptance is not claimed by this invocation.");
+    console.log("[scope] phase-5 strict gate is active: exactly five Tauri adapter file/specifier pairs, zero temporary or transitional provider targets, one shared ProviderRuntimeState, typed overlay registry filtering, exact loader parsing, and production shim bans are enforced.");
   } else if (phase >= 4) {
-    console.log("[scope] phase-4 workspace/Cargo/typed-port gate is active: cargo metadata supplies package/dependency truth, all 19 production source roots are scanned, and Phase 5 remains pending and is not evaluated.");
+    console.log("[scope] phase-4 workspace/Cargo/typed-port gate is active; phase-5 strict Tauri/provider/shim/overlay checks are not evaluated at this lower phase.");
   } else {
-    console.log(`[scope] phases ${phase + 1}-4 are not evaluated in this invocation; the requested phase still fails on any absent mandatory target. Phase 5 remains pending.`);
+    console.log(`[scope] phases ${phase + 1}-5 are not evaluated in this invocation; the requested phase still fails on any absent mandatory target.`);
   }
   if (violations.length > 0) {
     violations.sort((left, right) =>
@@ -3446,7 +3814,7 @@ export function main(argv = process.argv.slice(2)) {
   } catch (error) {
     if (error instanceof CliError) {
       console.error(`[CLI-ARG-001] ${error.message}`);
-      console.error("Usage: node scripts/check-architecture.mjs [--phase <1..5>] (release gate: --phase 4; --phase 5 is reserved for future checks)");
+      console.error("Usage: node scripts/check-architecture.mjs [--phase <1..5>] (strict release gate: --phase 5)");
       return 2;
     }
     console.error(`[ARCH-CHECK-001] architecture checker failed closed: ${error.message}`);

@@ -1385,6 +1385,38 @@ pub fn redact_installer_log(text: &str) -> String {
         .into_owned()
 }
 
+pub const MAX_PROGRESS_MESSAGE_CHARS: usize = 512;
+
+/// Sanitizes provider-produced progress text before it becomes a user-visible event payload.
+///
+/// Reuses installer-log credential/URL redaction, normalizes control characters and other
+/// whitespace, and bounds the result so provider output cannot inject terminal controls or
+/// produce unbounded event payloads.
+pub fn sanitize_progress_message(text: &str) -> String {
+    let redacted = redact_installer_log(text);
+    let normalized = redacted
+        .chars()
+        .map(|character| {
+            if character.is_control() || character.is_whitespace() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let normalized = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= MAX_PROGRESS_MESSAGE_CHARS {
+        normalized
+    } else {
+        let mut bounded = normalized
+            .chars()
+            .take(MAX_PROGRESS_MESSAGE_CHARS.saturating_sub(3))
+            .collect::<String>();
+        bounded.push_str("...");
+        bounded
+    }
+}
+
 fn installer_log_bytes(output: &ProcessOutput) -> Vec<u8> {
     let stdout = redact_installer_log(&String::from_utf8_lossy(&output.stdout));
     let stderr = redact_installer_log(&String::from_utf8_lossy(&output.stderr));
@@ -1881,6 +1913,26 @@ mod tests {
         assert!(log.contains("stderr:"));
         assert!(log.contains("\r\n"));
         assert!(log.len() <= MAX_INSTALLER_LOG_BYTES);
+    }
+
+    #[test]
+    fn progress_messages_redact_secrets_urls_and_controls_and_are_bounded() {
+        let message = sanitize_progress_message(
+            "Downloading https://example.com/file?token=url-secret\nAuthorization: Bearer bearer-secret\tapi_key=api-secret\u{0007}",
+        );
+        for secret in ["url-secret", "bearer-secret", "api-secret"] {
+            assert!(!message.contains(secret), "progress secret leaked: {message}");
+        }
+        assert!(!message.chars().any(char::is_control));
+        assert!(message.contains("[redacted-url]"));
+        assert!(message.contains("Downloading"));
+
+        let bounded = sanitize_progress_message(&"x".repeat(MAX_PROGRESS_MESSAGE_CHARS + 32));
+        assert_eq!(
+            bounded.chars().count(),
+            MAX_PROGRESS_MESSAGE_CHARS
+        );
+        assert!(bounded.ends_with("..."));
     }
 
     #[test]

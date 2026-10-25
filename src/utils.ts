@@ -177,13 +177,10 @@ export function isLoaderKind(value: string): value is LoaderKind {
   return (LOADER_KINDS as string[]).includes(value.trim().toLowerCase());
 }
 
-export function loaderKindFromValue(value: string): LoaderKind | null {
+export function parseLoaderKind(value: string): LoaderKind | null {
   const normalized = value.trim().toLowerCase();
   if (!normalized || normalized === "vanilla" || normalized === "原版") return null;
-  const exact = LOADER_KINDS.find((kind) => normalized === kind);
-  if (exact) return exact;
-  const ordered = [...LOADER_KINDS].sort((left, right) => right.length - left.length);
-  return ordered.find((kind) => normalized.includes(kind)) ?? null;
+  return LOADER_KINDS.find((kind) => kind === normalized) ?? null;
 }
 
 export function loaderKindLabel(value: LoaderKind): string {

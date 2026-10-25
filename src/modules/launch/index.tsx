@@ -66,7 +66,8 @@ export const launchFeature: FeatureDescriptor = {
           context.navigateToPage(PAGE_ID);
         }
       }
-    ]
+    ],
+    overlays: []
   }
 };
 

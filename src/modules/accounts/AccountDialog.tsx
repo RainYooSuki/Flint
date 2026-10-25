@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { api } from "../../api";
 import { Icon } from "../../components/Icon";
+import type { HostOpener } from "../../core/platform/hostServices";
 import type { AccountInfo, MicrosoftDeviceCode, NoticeKind } from "../../types";
 import { formatUnixSeconds, toErrorMessage } from "../../utils";
 
@@ -15,6 +15,7 @@ interface AccountDialogProps {
   onAccountsChanged: (accounts: AccountInfo[]) => void;
   onRefreshAccounts: () => Promise<void>;
   onNotify: (kind: NoticeKind, message: string) => void;
+  opener: HostOpener;
 }
 
 export function AccountDialog({
@@ -26,7 +27,8 @@ export function AccountDialog({
   onOpenSettings,
   onAccountsChanged,
   onRefreshAccounts,
-  onNotify
+  onNotify,
+  opener
 }: AccountDialogProps) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -219,7 +221,7 @@ export function AccountDialog({
   async function openVerificationPage() {
     if (!deviceFlow) return;
     try {
-      await openUrl(deviceFlow.verificationUri);
+      await opener.openUrl(deviceFlow.verificationUri);
     } catch (error) {
       if (mountedRef.current) setLoginError(`无法打开验证页面：${toErrorMessage(error)}`);
     }

@@ -1,10 +1,12 @@
+import type { AppPageContext } from "../../core/app-context";
 import type { FeatureDescriptor, PageComponentProps } from "../../core/contributions";
 import { AccountDialog } from "./AccountDialog";
 
 const FEATURE_ID = "flint.accounts";
 const SETTINGS_PAGE_ID = "flint.settings.page.settings";
+const ACCOUNT_OVERLAY_ID = "flint.accounts.overlay.account-dialog";
 
-export function AccountDialogSurface({ context }: PageComponentProps) {
+function AccountDialogOverlay({ context }: PageComponentProps) {
   return (
     <AccountDialog
       accounts={context.accounts}
@@ -19,6 +21,7 @@ export function AccountDialogSurface({ context }: PageComponentProps) {
       onAccountsChanged={context.onAccountsChanged}
       onRefreshAccounts={context.onRefreshAccounts}
       onNotify={context.onNotify}
+      opener={context.services.opener}
     />
   );
 }
@@ -32,7 +35,16 @@ export const accountsFeature: FeatureDescriptor = {
     pages: [],
     navigation: [],
     settingsSections: [],
-    instanceActions: []
+    instanceActions: [],
+    overlays: [
+      {
+        id: ACCOUNT_OVERLAY_ID,
+        featureId: FEATURE_ID,
+        order: 10,
+        component: AccountDialogOverlay,
+        visible: (context: AppPageContext) => context.accountDialogOpen
+      }
+    ]
   }
 };
 

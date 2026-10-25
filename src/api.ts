@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { tauriInvoke } from "./core/api/tauriInvoke";
 import type {
   AccountInfo,
   HostAvailabilitySnapshot,
@@ -46,7 +46,7 @@ export function subscribeFeatureUnavailable(listener: FeatureUnavailableListener
 
 async function invokeWithAvailabilityRefresh<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   try {
-    return await invoke<T>(command, args);
+    return await tauriInvoke<T>(command, args);
   } catch (error) {
     if (isUnavailableFeatureError(error)) {
       for (const listener of [...featureUnavailableListeners]) {
@@ -67,7 +67,7 @@ export const api = {
   },
 
   getHostAvailability(): Promise<HostAvailabilitySnapshot> {
-    return invoke<HostAvailabilitySnapshot>("get_host_availability");
+    return tauriInvoke<HostAvailabilitySnapshot>("get_host_availability");
   },
 
   loadSettings(): Promise<LauncherSettings> {

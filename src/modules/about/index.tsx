@@ -48,7 +48,8 @@ export const aboutFeature: FeatureDescriptor = {
       }
     ],
     settingsSections: [],
-    instanceActions: []
+    instanceActions: [],
+    overlays: []
   }
 };
 

@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useEffect, useState } from "react";
 import { api } from "../../../api";
 import { Icon } from "../../../components/Icon";
+import type { HostEvents } from "../../../core/events/hostEvents";
+import { useHostEvent } from "../../../core/events/useHostEvent";
+import { useRequestGeneration } from "../../../core/requests/useRequestGeneration";
 import type {
   InstanceInfo,
   ModDependencyPlan,
@@ -13,7 +15,7 @@ import type {
   NoticeKind
 } from "../../../types";
 import {
-  loaderKindFromValue,
+  parseLoaderKind,
   loaderKindLabel,
   progressPercent,
   toErrorMessage
@@ -37,6 +39,7 @@ interface ModDiscoveryPanelProps {
   onGoLocal: () => void;
   onNotify: (kind: NoticeKind, message: string) => void;
   onBusyChange: (busy: boolean) => void;
+  events: HostEvents;
 }
 
 export function ModDiscoveryPanel({
@@ -47,7 +50,8 @@ export function ModDiscoveryPanel({
   onGoSettings,
   onGoLocal,
   onNotify,
-  onBusyChange
+  onBusyChange,
+  events
 }: ModDiscoveryPanelProps) {
   const [source, setSource] = useState<ModSource>("modrinth");
   const [query, setQuery] = useState("");
@@ -71,38 +75,26 @@ export function ModDiscoveryPanel({
   const [installResult, setInstallResult] = useState<ModInstallResult | null>(null);
   const [listenerError, setListenerError] = useState<string | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
-  const projectRequestRef = useRef(0);
-  const planRequestRef = useRef(0);
-  const searchRequestRef = useRef(0);
+  const projectRequests = useRequestGeneration();
+  const planRequests = useRequestGeneration();
+  const searchRequests = useRequestGeneration();
 
   const gameVersion = selectedInstance?.gameVersion?.trim() ?? "";
-  const detectedLoader = selectedInstance ? loaderKindFromValue(selectedInstance.loader) : null;
+  const detectedLoader = selectedInstance ? parseLoaderKind(selectedInstance.loader) : null;
   const modLoader = detectedLoader && ["fabric", "forge", "neoforge", "quilt"].includes(detectedLoader) ? detectedLoader : null;
   const contextReady = Boolean(gameVersion && modLoader);
   const providerReady = source === "modrinth" || Boolean(curseforgeApiKey.trim());
 
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
-    void listen<ModInstallProgress>("flint://mod-install-progress", (event) => {
-      if (!cancelled) setInstallProgress(event.payload);
-    })
-      .then((removeListener) => {
-        if (cancelled) removeListener();
-        else unlisten = removeListener;
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setListenerError(toErrorMessage(error));
-      });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
+  useHostEvent(
+    events,
+    "modInstallProgress",
+    (progress) => setInstallProgress(progress),
+    (error) => setListenerError(toErrorMessage(error))
+  );
 
   function resetProjectState() {
-    projectRequestRef.current += 1;
-    planRequestRef.current += 1;
+    projectRequests.invalidate();
+    planRequests.invalidate();
     setSelectedProject(null);
     setVersions([]);
     setSelectedVersion(null);
@@ -119,31 +111,30 @@ export function ModDiscoveryPanel({
 
   async function searchMods(nextOffset: number) {
     if (!contextReady || !modLoader || !providerReady) return;
-    const requestId = searchRequestRef.current + 1;
-    searchRequestRef.current = requestId;
+    const requestId = searchRequests.next();
     setSearchLoading(true);
     setSearchError(null);
     setSearched(true);
     resetProjectState();
     try {
       const page = await api.searchMods(source, query.trim(), gameVersion, modLoader, nextOffset, PAGE_SIZE);
-      if (requestId !== searchRequestRef.current) return;
+      if (!searchRequests.isCurrent(requestId)) return;
       setResults(page.hits);
       setTotal(page.total);
       setOffset(page.offset);
     } catch (error) {
-      if (requestId !== searchRequestRef.current) return;
+      if (!searchRequests.isCurrent(requestId)) return;
       setResults([]);
       setTotal(0);
       setOffset(nextOffset);
       setSearchError(toErrorMessage(error));
     } finally {
-      if (requestId === searchRequestRef.current) setSearchLoading(false);
+      if (searchRequests.isCurrent(requestId)) setSearchLoading(false);
     }
   }
 
   function changeSource(nextSource: ModSource) {
-    searchRequestRef.current += 1;
+    searchRequests.invalidate();
     setSource(nextSource);
     setResults([]);
     setSearched(false);
@@ -155,8 +146,7 @@ export function ModDiscoveryPanel({
   }
 
   async function resolvePlan(project: ModProject, version: ModVersionInfo) {    if (!modLoader) return;
-    const requestId = planRequestRef.current + 1;
-    planRequestRef.current = requestId;
+    const requestId = planRequests.next();
     setPlanLoading(true);
     setPlanError(null);
     setPlan(null);
@@ -165,21 +155,20 @@ export function ModDiscoveryPanel({
     setInstallResult(null);
     try {
       const resolved = await api.resolveModDependencies(source, project.id, version.id, gameVersion, modLoader);
-      if (requestId !== planRequestRef.current) return;
+      if (!planRequests.isCurrent(requestId)) return;
       setPlan(resolved);
     } catch (error) {
-      if (requestId !== planRequestRef.current) return;
+      if (!planRequests.isCurrent(requestId)) return;
       setPlanError(toErrorMessage(error));
     } finally {
-      if (requestId === planRequestRef.current) setPlanLoading(false);
+      if (planRequests.isCurrent(requestId)) setPlanLoading(false);
     }
   }
 
   async function openProject(project: ModProject) {
     if (!contextReady || !modLoader) return;
-    const requestId = projectRequestRef.current + 1;
-    projectRequestRef.current = requestId;
-    planRequestRef.current += 1;
+    const requestId = projectRequests.next();
+    planRequests.invalidate();
     setSelectedProject(project);
     setVersions([]);
     setSelectedVersion(null);
@@ -192,15 +181,15 @@ export function ModDiscoveryPanel({
     setInstallResult(null);
     try {
       const nextVersions = await api.listModVersions(source, project.id, gameVersion, modLoader);
-      if (requestId !== projectRequestRef.current) return;
+      if (!projectRequests.isCurrent(requestId)) return;
       setVersions(nextVersions);
       const first = nextVersions[0] ?? null;
       setSelectedVersion(first);
       if (first) await resolvePlan(project, first);
     } catch (error) {
-      if (requestId === projectRequestRef.current) setVersionsError(toErrorMessage(error));
+      if (projectRequests.isCurrent(requestId)) setVersionsError(toErrorMessage(error));
     } finally {
-      if (requestId === projectRequestRef.current) setVersionsLoading(false);
+      if (projectRequests.isCurrent(requestId)) setVersionsLoading(false);
     }
   }
 

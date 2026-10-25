@@ -1,19 +1,14 @@
-use std::{
-    collections::BTreeSet,
-    sync::{Mutex, MutexGuard},
-};
+use std::sync::{Mutex, MutexGuard};
 
+use crate::provider_composition::ProviderRuntimeState;
 use flint_feature_api::{
     ApiVersion, FeatureAvailability, FeatureAvailabilitySnapshot, FeatureDescriptor, FeatureHealth,
     FeatureId, FeatureInitContext, FeatureInitError, FeatureInitializer, FeatureRegistration,
     FeatureRegistry, FeatureRequirement, FeatureRuntime, FeatureState, HostState,
-    LifecycleCoordinator, ProviderAvailability, ProviderCatalog, ProviderRequirement,
-    StartupPolicy, Version, VersionReq,
+    LifecycleCoordinator, ProviderRequirement, StartupPolicy, Version, VersionReq,
 };
-use flint_provider_api::{Provider, ProviderDescriptor, ProviderRegistry, ProviderSelectionError};
 
 const FEATURE_API_VERSION: ApiVersion = ApiVersion::new(1, 0);
-const PROVIDER_API_VERSION: ApiVersion = ApiVersion::new(1, 0);
 const FEATURE_VERSION_REQUIREMENT: &str = "^1.0.0";
 
 pub(crate) const FEATURE_SETTINGS: &str = "flint.settings";
@@ -139,107 +134,6 @@ fn build_feature_registry() -> Result<FeatureRegistry, String> {
 
     FeatureRegistry::new(FEATURE_API_VERSION, registrations)
         .map_err(|error| format!("invalid host feature registry: {error}"))
-}
-
-#[derive(Clone, Copy)]
-struct MetadataProvider {
-    descriptor: ProviderDescriptor,
-}
-
-impl Provider for MetadataProvider {
-    fn descriptor(&self) -> ProviderDescriptor {
-        self.descriptor
-    }
-}
-
-struct HostProviderCatalog {
-    descriptors: Vec<ProviderDescriptor>,
-    unavailable: BTreeSet<String>,
-}
-
-impl HostProviderCatalog {
-    fn new(mut descriptors: Vec<ProviderDescriptor>) -> Result<Self, String> {
-        descriptors.sort_by_key(|descriptor| descriptor.id);
-        let providers: Vec<Box<MetadataProvider>> = descriptors
-            .iter()
-            .copied()
-            .map(|descriptor| Box::new(MetadataProvider { descriptor }))
-            .collect();
-        let _validated: ProviderRegistry<MetadataProvider> =
-            ProviderRegistry::new(providers, PROVIDER_API_VERSION)
-                .map_err(|error| format!("invalid host provider catalog: {error}"))?;
-        Ok(Self {
-            descriptors,
-            unavailable: BTreeSet::new(),
-        })
-    }
-
-    fn available_registry(&self) -> Result<ProviderRegistry<MetadataProvider>, String> {
-        let mut providers: Vec<Box<MetadataProvider>> = Vec::new();
-        for descriptor in &self.descriptors {
-            if self.unavailable.contains(descriptor.id) {
-                continue;
-            }
-            providers.push(Box::new(MetadataProvider {
-                descriptor: *descriptor,
-            }));
-        }
-        ProviderRegistry::new(providers, PROVIDER_API_VERSION)
-            .map_err(|error| format!("host provider catalog is invalid: {error}"))
-    }
-}
-
-impl ProviderCatalog for HostProviderCatalog {
-    fn provider_ids(&self) -> Vec<String> {
-        self.descriptors
-            .iter()
-            .map(|descriptor| descriptor.id.to_string())
-            .collect()
-    }
-
-    fn availability(&self, requirement: &ProviderRequirement) -> ProviderAvailability {
-        let registry = match self.available_registry() {
-            Ok(registry) => registry,
-            Err(_) => {
-                return ProviderAvailability::Unavailable {
-                    reason: "provider catalog is invalid".to_string(),
-                }
-            }
-        };
-        match registry.select(requirement) {
-            Ok(_) => ProviderAvailability::Available,
-            Err(ProviderSelectionError::Ambiguous { provider_ids, .. }) => {
-                ProviderAvailability::Ambiguous { provider_ids }
-            }
-            Err(ProviderSelectionError::Unavailable { .. }) => ProviderAvailability::Unavailable {
-                reason: "no provider matches the requirement".to_string(),
-            },
-            Err(ProviderSelectionError::InvalidProviderVersionRequirement { .. }) => {
-                ProviderAvailability::Unavailable {
-                    reason: "invalid provider version requirement".to_string(),
-                }
-            }
-        }
-    }
-
-    fn initialize(&mut self, _provider_id: &str) -> Result<(), String> {
-        // Current host providers are stateless operation adapters with no startup resource.
-        Ok(())
-    }
-
-    fn shutdown(&mut self, _provider_id: &str) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn mark_unavailable(&mut self, provider_id: &str, _reason: &str) {
-        self.unavailable.insert(provider_id.to_string());
-    }
-}
-
-fn build_provider_catalog() -> Result<HostProviderCatalog, String> {
-    let mut descriptors = crate::provider_composition::mod_provider_descriptors();
-    descriptors.extend(crate::provider_composition::loader_provider_descriptors());
-    HostProviderCatalog::new(descriptors)
 }
 
 fn startup_failed_snapshot() -> FeatureAvailabilitySnapshot {
@@ -421,7 +315,8 @@ impl HostRuntime {
     }
 }
 
-pub(crate) fn initialize_host_runtime() -> HostRuntime {
+/// Starts feature lifecycle against the same shared provider runtime held by Tauri state.
+pub(crate) fn initialize_host_runtime(provider_runtime: ProviderRuntimeState) -> HostRuntime {
     let registry = match build_feature_registry() {
         Ok(registry) => registry,
         Err(error) => {
@@ -429,15 +324,8 @@ pub(crate) fn initialize_host_runtime() -> HostRuntime {
             return HostRuntime::startup_failed();
         }
     };
-    let catalog = match build_provider_catalog() {
-        Ok(catalog) => catalog,
-        Err(error) => {
-            eprintln!("Host provider catalog composition failed: {error}");
-            return HostRuntime::startup_failed();
-        }
-    };
 
-    let mut coordinator = LifecycleCoordinator::new(registry, Box::new(catalog), None);
+    let mut coordinator = LifecycleCoordinator::new(registry, Box::new(provider_runtime), None);
     if let Err(error) = coordinator.start() {
         eprintln!("Host feature lifecycle startup failed: {error}");
         return HostRuntime::startup_failed();
@@ -448,7 +336,7 @@ pub(crate) fn initialize_host_runtime() -> HostRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flint_feature_api::ProviderCatalog as _;
+    use flint_feature_api::{ProviderAvailability, ProviderCatalog as _, StartupOutcome};
 
     fn provider_requirement(selection_key: &str) -> ProviderRequirement {
         crate::provider_composition::loader_provider_requirements()
@@ -464,6 +352,44 @@ mod tests {
             .descriptor(&FeatureId::new(id).expect("test feature ID"))
             .expect("registered feature")
             .clone()
+    }
+
+    fn feature_state(snapshot: &FeatureAvailabilitySnapshot, feature_id: &str) -> FeatureState {
+        snapshot
+            .features
+            .iter()
+            .find(|feature| feature.feature_id == feature_id)
+            .map(|feature| feature.state)
+            .expect("registered feature in snapshot")
+    }
+
+    fn required_provider_feature_registry() -> FeatureRegistry {
+        const PROVIDER_FEATURE: &str = "flint.phase5-provider";
+        const DEPENDENT_FEATURE: &str = "flint.phase5-dependent";
+        FeatureRegistry::new(
+            FEATURE_API_VERSION,
+            vec![
+                registration(
+                    feature_descriptor(
+                        PROVIDER_FEATURE,
+                        StartupPolicy::Required,
+                        &[],
+                        crate::provider_composition::mod_provider_requirements(),
+                    )
+                    .expect("provider-backed feature descriptor"),
+                ),
+                registration(
+                    feature_descriptor(
+                        DEPENDENT_FEATURE,
+                        StartupPolicy::Required,
+                        &[PROVIDER_FEATURE],
+                        Vec::new(),
+                    )
+                    .expect("dependent feature descriptor"),
+                ),
+            ],
+        )
+        .expect("required provider feature registry")
     }
 
     #[test]
@@ -557,8 +483,8 @@ mod tests {
     }
 
     #[test]
-    fn provider_catalog_uses_real_provider_metadata_and_selects_every_requirement() {
-        let mut catalog = build_provider_catalog().expect("host provider catalog");
+    fn shared_provider_runtime_selects_every_requirement_from_actual_registries() {
+        let mut catalog = ProviderRuntimeState::new();
         let provider_ids = catalog.provider_ids();
         assert_eq!(
             provider_ids
@@ -601,8 +527,48 @@ mod tests {
     }
 
     #[test]
+    fn registry_failure_keeps_optional_provider_features_unready_and_gated() {
+        let runtime = initialize_host_runtime(crate::provider_composition::test_support::construction_failure_for_test());
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.host_state, HostState::Degraded);
+        assert_eq!(
+            feature_state(&snapshot, FEATURE_MODS),
+            FeatureState::BlockedDependency
+        );
+        assert_eq!(
+            feature_state(&snapshot, FEATURE_LOADERS),
+            FeatureState::BlockedDependency
+        );
+        assert!(runtime.ensure_feature_ready(FEATURE_MODS).is_err());
+        assert!(runtime.ensure_feature_ready(FEATURE_LOADERS).is_err());
+        assert!(runtime.ensure_feature_ready(FEATURE_SETTINGS).is_ok());
+    }
+
+    #[test]
+    fn actual_registry_failure_fails_required_provider_feature_startup() {
+        let mut coordinator = LifecycleCoordinator::new(
+            required_provider_feature_registry(),
+            Box::new(crate::provider_composition::test_support::construction_failure_for_test()),
+            None,
+        );
+        assert_eq!(
+            coordinator.start().expect("startup result"),
+            StartupOutcome::StartupFailed
+        );
+        let snapshot = coordinator.snapshot();
+        assert_eq!(snapshot.host_state, HostState::StartupFailed);
+        assert_ne!(
+            feature_state(&snapshot, "flint.phase5-provider"),
+            FeatureState::Ready
+        );
+        assert_eq!(
+            feature_state(&snapshot, "flint.phase5-dependent"),
+            FeatureState::BlockedDependency
+        );
+    }
+    #[test]
     fn shutdown_publishes_stopping_and_gates_before_teardown_completes() {
-        let runtime = initialize_host_runtime();
+        let runtime = initialize_host_runtime(ProviderRuntimeState::new());
         assert!(runtime.ensure_feature_ready(FEATURE_SETTINGS).is_ok());
 
         let mut coordinator = match runtime.begin_shutdown() {
@@ -634,7 +600,7 @@ mod tests {
 
     #[test]
     fn host_runtime_starts_ready_gates_features_and_shuts_down_idempotently() {
-        let runtime = initialize_host_runtime();
+        let runtime = initialize_host_runtime(ProviderRuntimeState::new());
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.host_state, HostState::Ready);
         assert_eq!(snapshot.features.len(), 7);

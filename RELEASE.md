@@ -53,7 +53,18 @@ A repository-wide concurrency group ensures one release workflow runs at a time.
 | `macos-x64` | `macos-14` | `x86_64-apple-darwin` | `flint` |
 | `macos-arm64` | `macos-14` | `aarch64-apple-darwin` | `flint` |
 
-The matrix uses `fail-fast: false`. Each job installs frontend dependencies, applies the computed version to the same five release paths (`VERSION`, `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock`), builds with `tauri build --no-bundle --target <triple>`, and verifies the executable architecture on Unix runners. The Cargo manifest update covers both host and workspace-package versions; the single lockfile update covers every local workspace package entry. Non-root member manifests inherit `[workspace.package]` and are not independently rewritten.
+The matrix uses `fail-fast: false`. The `prepare` job must first pass the architecture and frontend contract tests plus `node scripts/check-architecture.mjs --phase 5`. Each build job then installs frontend dependencies, applies the computed version to the same five release paths (`VERSION`, `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock`), builds a raw executable with `tauri build --no-bundle --target <triple>`, and verifies its architecture on Unix runners. The release workflow packages those raw executables into ZIPs; it does not publish the platform installer bundles produced by an ordinary bundled build. The Cargo manifest update covers both host and workspace-package versions; the single lockfile update covers every local workspace package entry. Non-root member manifests inherit `[workspace.package]` and are not independently rewritten.
+
+### Prepare verification gate
+
+Before any build job starts, `prepare` runs:
+
+```bash
+node --test scripts/test-architecture-checker.mjs scripts/test-frontend-contracts.mjs
+node scripts/check-architecture.mjs --phase 5
+```
+
+The strict gate allows `@tauri-apps/*` imports only in `src/core/api/tauriInvoke.ts`, `src/core/events/tauriEvents.ts`, `src/core/platform/tauriDialogs.ts`, `src/core/platform/tauriOpener.ts`, and `src/core/platform/tauriWindow.ts`. `src/main.tsx` is the sole concrete `HostServices` composition entry, and features receive the typed contracts through `AppPageContext`. The checker requires overlay contracts, shared stale-request guards, one shared actual-registry `ProviderRuntimeState`, exact nineteen-package Cargo/source/dependency/typed-port rules, both provider compositions, the sole `ModSource`/`LoaderKind` bindings, and the 30-command/28-feature-command gate map. No temporary production exception remains. GitHub Actions is the final verification authority; this guide does not claim a green run.
 
 ## Artifacts
 
@@ -114,9 +125,14 @@ The bot push can fail if the branch requires pull requests, reviews, signed comm
 
 ## Local checks
 
-Before changing release tooling:
+Before changing release tooling, run the relevant developer checks:
 
 ```bash
+npm run build
+cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+cargo test --workspace --all-targets --locked --manifest-path src-tauri/Cargo.toml
+node --test scripts/test-architecture-checker.mjs scripts/test-frontend-contracts.mjs
+node scripts/check-architecture.mjs --phase 5
 node --check scripts/release-version.mjs
 node --check scripts/version-files.mjs
 node --check scripts/apply-version.mjs
@@ -127,13 +143,13 @@ node scripts/test-release-scripts.mjs
 node scripts/validate-release.mjs --require-exact
 ```
 
-If actionlint is available:
+If `actionlint` is available:
 
 ```bash
 actionlint .github/workflows/flint-release.yml
 ```
 
-Markdown/YAML checks and a real CI run are still required before publishing.
+These are developer checks, not completion evidence. Markdown/YAML validation and a successful hosted GitHub Actions run are still required before publishing. Never report CI as green without the hosted run result.
 
 ## Operational constraints
 

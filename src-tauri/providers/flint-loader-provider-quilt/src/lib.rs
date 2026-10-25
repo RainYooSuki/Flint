@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn expired_deadline_is_reported_before_network_io() {
+    fn expired_deadline_and_pre_cancelled_cancellation_fail_before_network_io() {
         let network = FakeNetworkPort::new();
         let workspace = FakePathPort::new();
         let progress = NoopProgress;
@@ -335,6 +335,23 @@ mod tests {
             .list_versions(&context, &LoaderListRequest::new("1.20.1"))
             .expect_err("deadline must fail");
         assert_eq!(error, "Operation deadline exceeded.");
+        assert_eq!(network.requests_len(), 0);
+
+        let cancellation = Cancellation::new();
+        cancellation.cancel();
+        let cancelled_context = LoaderListContext::new(
+            &network,
+            &workspace,
+            &progress,
+            &logger,
+            LoaderTimeouts::default(),
+            Deadline::after(Duration::from_secs(30)),
+            cancellation,
+        );
+        let error = QuiltLoaderProvider::new()
+            .list_versions(&cancelled_context, &LoaderListRequest::new("1.20.1"))
+            .expect_err("cancellation must fail");
+        assert_eq!(error, "Operation was cancelled.");
         assert_eq!(network.requests_len(), 0);
     }
 

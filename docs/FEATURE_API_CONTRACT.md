@@ -83,7 +83,7 @@ Rules:
 - Access and refresh tokens are persisted in the app data directory; tokens must never be included in logs, returned API responses, launch result commands, or UI notices.
 - `remove_account("offline")` is rejected. Removing the active Microsoft account falls back to offline.
 - `launch_instance` resolves the active account automatically. Microsoft accounts use their Minecraft UUID, access token and `msa` user type; the access token is refreshed when needed. Offline accounts continue using `LaunchRequest.username`.
-- The existing `LaunchResult.command` must be returned with access tokens redacted.
+- `LaunchResult.command` is a display-only command string. Access tokens are replaced before formatting, while the spawned process receives the internal arguments separately. Tokens must never appear in returned commands, errors, events, logs, or UI notices.
 
 ## Loader installation
 
@@ -253,7 +253,7 @@ Commands:
 Rules:
 
 - CurseForge calls require `LauncherSettings.curseforgeApiKey`; a missing key returns an actionable error. Modrinth calls require a descriptive `User-Agent` header.
-- `search_mods` maps loader ids to provider filters. Only Minecraft Java mods are searched.
+- `search_mods`, `list_mod_versions`, `resolve_mod_dependencies`, and `install_mod` accept only the exact lowercase mod-search loader values `fabric`, `forge`, `neoforge`, and `quilt`. Legacy separator aliases, substrings, display-label matching, empty values, and other loaders fail with an actionable error before provider/network I/O. Only Minecraft Java mods are searched.
 - `list_mod_versions` returns versions matching the requested game version and loader, newest first.
 - Dependency resolution follows required dependencies recursively with cycle detection, a bounded node count, and a bounded depth. Optional and incompatible dependencies are reported but not installed.
 - Required dependencies without a safe downloadable file are a hard error for `resolve_mod_dependencies`; `install_mod(..., installDependencies=true)` installs the resolved required graph.
@@ -310,6 +310,8 @@ Rules:
 | `flint://install-progress` | existing `InstallProgress` |
 | `flint://loader-install-progress` | `LoaderInstallProgress` |
 | `flint://mod-install-progress` | `ModInstallProgress` |
+
+Event names and payload field shapes are unchanged. Provider-influenced loader and mod progress messages, and loader-triggered vanilla progress messages, are sanitized before publication: credential/URL assignments are redacted, control characters and whitespace are normalized, and messages are bounded to 512 Unicode scalar values. Progress delivery remains best-effort; command results and committed durable state are authoritative.
 
 ## UI expectations
 

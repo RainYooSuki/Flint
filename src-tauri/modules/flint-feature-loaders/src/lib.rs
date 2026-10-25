@@ -66,7 +66,10 @@ pub struct LoaderInstallProgress {
     pub total: u64,
     pub message: String,
 }
-use flint_core::paths::{component_is_safe, resolve_game_dir};
+use flint_core::{
+    minecraft::sanitize_progress_message,
+    paths::{component_is_safe, resolve_game_dir},
+};
 use flint_core::ports::{
     Cancellation, CommandProcessPort, Deadline, NoopLogger, NoopProgress, ProcessJavaRunner,
     ProgressSink, ProgressUpdate, ReqwestNetwork, SafeWorkspace,
@@ -89,11 +92,9 @@ use flint_provider_api::{
 use std::{fs, path::Path, sync::Arc};
 
 
-#[allow(dead_code)]
 struct LoaderBinding {
     requirement: ProviderRequirement,
     provider_id: &'static str,
-    display_name: &'static str,
 }
 
 /// The sole serialized `LoaderKind` to provider-binding mapping.
@@ -102,32 +103,26 @@ fn loader_binding(loader: LoaderKind) -> LoaderBinding {
         LoaderKind::Fabric => LoaderBinding {
             requirement: loader_provider_requirement(Some(FABRIC_SELECTION_KEY)),
             provider_id: FABRIC_PROVIDER_ID,
-            display_name: "Fabric",
         },
         LoaderKind::Forge => LoaderBinding {
             requirement: loader_provider_requirement(Some(FORGE_SELECTION_KEY)),
             provider_id: FORGE_PROVIDER_ID,
-            display_name: "Forge",
         },
         LoaderKind::Liteloader => LoaderBinding {
             requirement: loader_provider_requirement(Some(LITELOADER_SELECTION_KEY)),
             provider_id: LITELOADER_PROVIDER_ID,
-            display_name: "LiteLoader",
         },
         LoaderKind::Neoforge => LoaderBinding {
             requirement: loader_provider_requirement(Some(NEOFORGE_SELECTION_KEY)),
             provider_id: NEOFORGE_PROVIDER_ID,
-            display_name: "NeoForge",
         },
         LoaderKind::Optifine => LoaderBinding {
             requirement: loader_provider_requirement(Some(OPTIFINE_SELECTION_KEY)),
             provider_id: OPTIFINE_PROVIDER_ID,
-            display_name: "OptiFine",
         },
         LoaderKind::Quilt => LoaderBinding {
             requirement: loader_provider_requirement(Some(QUILT_SELECTION_KEY)),
             provider_id: QUILT_PROVIDER_ID,
-            display_name: "Quilt",
         },
     }
 }
@@ -229,7 +224,7 @@ fn loader_progress_event(
         stage: stage.to_string(),
         completed,
         total,
-        message: message.to_string(),
+        message: sanitize_progress_message(message),
     }
 }
 
@@ -280,7 +275,8 @@ struct VanillaProgressAdapter<'a> {
 }
 
 impl InstallProgressSink for VanillaProgressAdapter<'_> {
-    fn report(&self, progress: InstallProgress) {
+    fn report(&self, mut progress: InstallProgress) {
+        progress.message = sanitize_progress_message(&progress.message);
         self.sink.report(progress);
     }
 }
@@ -465,32 +461,16 @@ mod tests {
     #[test]
     fn loader_binding_maps_each_exact_requirement() {
         let expected = [
-            (LoaderKind::Fabric, "fabric", "loader-kind:fabric", "Fabric"),
-            (LoaderKind::Forge, "forge", "loader-kind:forge", "Forge"),
-            (
-                LoaderKind::Liteloader,
-                "liteloader",
-                "loader-kind:liteloader",
-                "LiteLoader",
-            ),
-            (
-                LoaderKind::Neoforge,
-                "neoforge",
-                "loader-kind:neoforge",
-                "NeoForge",
-            ),
-            (
-                LoaderKind::Optifine,
-                "optifine",
-                "loader-kind:optifine",
-                "OptiFine",
-            ),
-            (LoaderKind::Quilt, "quilt", "loader-kind:quilt", "Quilt"),
+            (LoaderKind::Fabric, "fabric", "loader-kind:fabric"),
+            (LoaderKind::Forge, "forge", "loader-kind:forge"),
+            (LoaderKind::Liteloader, "liteloader", "loader-kind:liteloader"),
+            (LoaderKind::Neoforge, "neoforge", "loader-kind:neoforge"),
+            (LoaderKind::Optifine, "optifine", "loader-kind:optifine"),
+            (LoaderKind::Quilt, "quilt", "loader-kind:quilt"),
         ];
-        for (loader, provider_id, selection_key, display_name) in expected {
+        for (loader, provider_id, selection_key) in expected {
             let binding = loader_binding(loader);
             assert_eq!(binding.provider_id, provider_id);
-            assert_eq!(binding.display_name, display_name);
             assert_eq!(
                 binding.requirement.capability,
                 flint_provider_api::LOADER_INSTALLATION_CAPABILITY_ID
@@ -605,6 +585,74 @@ mod tests {
         );
     }
 
+    #[test]
+    fn progress_adapter_sanitizes_messages_without_changing_stage_order() {
+        let request = install_request();
+        let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = RecordingLoaderSink {
+            updates: std::sync::Arc::clone(&updates),
+        };
+        let adapter = LoaderProgressAdapter {
+            request: &request,
+            sink: &sink,
+        };
+        adapter.report(ProgressUpdate::new(
+            1,
+            Some(3),
+            Some(
+                "Downloading https://example.com/library.jar?token=url-secret\tapi_key=key-secret libraries"
+                    .to_string(),
+            ),
+        ));
+        adapter.report(ProgressUpdate::new(
+            2,
+            Some(3),
+            Some("Running Forge installer".to_string()),
+        ));
+        adapter.report(ProgressUpdate::new(
+            3,
+            Some(3),
+            Some(
+                "Provider detail\nAuthorization: Bearer bearer-secret\r\nhttps://example.com/private"
+                    .to_string(),
+            ),
+        ));
+
+        let updates = updates.lock().expect("loader progress lock");
+        assert_eq!(
+            updates.iter().map(|update| update.stage.as_str()).collect::<Vec<_>>(),
+            vec!["libraries", "installer", "provider"]
+        );
+        assert!(updates[0].message.contains("[redacted-url]"));
+        for secret in ["url-secret", "key-secret", "bearer-secret", "https://"] {
+            assert!(
+                updates.iter().all(|update| !update.message.contains(secret)),
+                "loader progress leaked {secret}"
+            );
+        }
+        assert!(updates
+            .iter()
+            .all(|update| !update.message.chars().any(char::is_control)));
+
+        let vanilla_updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let vanilla_sink = RecordingVanillaSink {
+            updates: std::sync::Arc::clone(&vanilla_updates),
+        };
+        let vanilla_adapter = VanillaProgressAdapter {
+            sink: &vanilla_sink,
+        };
+        vanilla_adapter.report(InstallProgress {
+            stage: "download".to_string(),
+            completed: 1,
+            total: 1,
+            message: "Downloading https://example.com/file\napi_key=vanilla-secret".to_string(),
+        });
+        let vanilla_updates = vanilla_updates.lock().expect("vanilla progress lock");
+        assert_eq!(vanilla_updates[0].stage, "download");
+        assert!(vanilla_updates[0].message.contains("[redacted-url]"));
+        assert!(!vanilla_updates[0].message.contains("vanilla-secret"));
+        assert!(!vanilla_updates[0].message.chars().any(char::is_control));
+    }
     #[test]
     fn preserves_loader_timeout_split() {
         let timeouts = loader_timeouts();

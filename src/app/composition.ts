@@ -6,8 +6,6 @@ import { savesFeature } from "../modules/saves";
 import { settingsFeature } from "../modules/settings";
 import { versionsFeature } from "../modules/versions";
 
-export { AccountDialogSurface } from "../modules/accounts";
-
 /** The single explicit static composition root for frontend features. */
 export const frontendRegistry = Object.freeze(buildContributionRegistry([
   launchFeature,

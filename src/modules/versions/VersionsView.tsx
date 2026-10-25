@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "../../components/Icon";
 import type { InstanceActionContribution } from "../../core/contributions";
+import type { HostEvents } from "../../core/events/hostEvents";
 import { InstanceActionRenderer } from "../../core/InstanceActionRenderer";
 import { InstalledModsPanel } from "./downloads/InstalledModsPanel";
 import { LoaderInstallPanel } from "./downloads/LoaderInstallPanel";
@@ -44,6 +45,7 @@ interface VersionsViewProps {
   loadersAvailable: boolean;
   modsAvailable: boolean;
   instanceActions: readonly InstanceActionContribution[];
+  events: HostEvents;
   onRefreshInstances: () => void;
   onSelectInstance: (id: string) => void;
   onFetchRemote: () => void;
@@ -78,6 +80,7 @@ export function VersionsView({
   loadersAvailable,
   modsAvailable,
   instanceActions,
+  events,
   onRefreshInstances,
   onSelectInstance,
   onFetchRemote,
@@ -512,6 +515,7 @@ export function VersionsView({
             onOpenPath={onOpenPath}
             onNotify={onNotify}
             onBusyChange={setFeatureBusy}
+            events={events}
           />
         ) : mode === "mods" ? (
           <ModDiscoveryPanel
@@ -523,6 +527,7 @@ export function VersionsView({
             onGoLocal={() => setMode("local")}
             onNotify={onNotify}
             onBusyChange={setFeatureBusy}
+            events={events}
           />
         ) : (
           <InstalledModsPanel

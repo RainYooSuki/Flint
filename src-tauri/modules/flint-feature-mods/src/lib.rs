@@ -122,6 +122,7 @@ pub struct ModInstallResult {
     pub warnings: Vec<String>,
 }
 use flint_core::{
+    minecraft::sanitize_progress_message,
     net,
     paths::resolve_game_dir,
 };
@@ -176,7 +177,7 @@ pub fn search_mods_blocking(
     limit: u32,
 ) -> Result<ModSearchPage, String> {
     validate_search_inputs(query, game_version, offset, limit)?;
-    let loader = normalize_loader(loader);
+    let loader = validate_mod_loader(loader)?;
     let timeout = SEARCH_MODS_TIMEOUT;
     let network = ReqwestNetwork::new(timeout)?;
     let selected = select_for_source(registry, source, &network, timeout)?;
@@ -185,7 +186,7 @@ pub fn search_mods_blocking(
         &ModSearchRequest {
             query: query.trim().to_string(),
             game_version: game_version.trim().to_string(),
-            loader,
+            loader: loader.to_string(),
             offset,
             limit,
         },
@@ -202,7 +203,7 @@ pub fn list_mod_versions_blocking(
 ) -> Result<Vec<ModVersionInfo>, String> {
     validate_mod_provider_id(project_id)?;
     validate_filter_text(game_version, "game version")?;
-    let loader = normalize_loader(loader);
+    let loader = validate_mod_loader(loader)?;
     let timeout = LIST_MOD_VERSIONS_TIMEOUT;
     let network = ReqwestNetwork::new(timeout)?;
     let selected = select_for_source(registry, source, &network, timeout)?;
@@ -211,7 +212,7 @@ pub fn list_mod_versions_blocking(
         &ModListVersionsRequest {
             project_id: project_id.to_string(),
             game_version: game_version.trim().to_string(),
-            loader,
+            loader: loader.to_string(),
         },
     )?;
     Ok(versions
@@ -233,7 +234,7 @@ pub fn resolve_mod_dependencies_blocking(
         validate_mod_provider_id(version_id)?;
     }
     validate_filter_text(game_version, "game version")?;
-    let loader = normalize_loader(loader);
+    let loader = validate_mod_loader(loader)?;
     let timeout = RESOLVE_MOD_DEPENDENCIES_TIMEOUT;
     let network = ReqwestNetwork::new(timeout)?;
     let selected = select_for_source(registry, source, &network, timeout)?;
@@ -244,7 +245,7 @@ pub fn resolve_mod_dependencies_blocking(
         project_id,
         version_id,
         game_version.trim(),
-        &loader,
+        loader,
     )?;
     build_dependency_plan(
         selected.provider,
@@ -252,7 +253,7 @@ pub fn resolve_mod_dependencies_blocking(
         source,
         root,
         game_version.trim(),
-        &loader,
+        loader,
     )
 }
 
@@ -272,7 +273,7 @@ pub fn install_mod_blocking(
         validate_mod_provider_id(version_id)?;
     }
     validate_filter_text(game_version, "game version")?;
-    let loader = normalize_loader(loader);
+    let loader = validate_mod_loader(loader)?;
     let game_root = resolve_game_dir(game_dir);
     let mods_dir = game_root.join("mods");
     net::ensure_directory(&mods_dir)?;
@@ -286,7 +287,7 @@ pub fn install_mod_blocking(
         project_id,
         version_id,
         game_version.trim(),
-        &loader,
+        loader,
     )?;
     let mut warnings = Vec::new();
     let mut plan_required = Vec::new();
@@ -297,7 +298,7 @@ pub fn install_mod_blocking(
             source,
             root_version.clone(),
             game_version.trim(),
-            &loader,
+            loader,
         )?;
         warnings.extend(plan.warnings);
         warnings.extend(plan.optional.iter().map(|dependency| {
@@ -337,7 +338,7 @@ pub fn install_mod_blocking(
             &format!("Installing {}", version.file_name),
         );
         let (installed, was_skipped) =
-            install_single_mod(&network, &mods_dir, version, &loader, INSTALL_MOD_TIMEOUT)?;
+            install_single_mod(&network, &mods_dir, version, loader, INSTALL_MOD_TIMEOUT)?;
         if was_skipped {
             skipped.push(version.file_name.clone());
         }
@@ -498,13 +499,12 @@ fn validate_filter_text(value: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn normalize_loader(loader: &str) -> String {
-    match loader.trim().to_ascii_lowercase().as_str() {
-        "neo_forge" | "neo-forge" => "neoforge".to_string(),
-        "lite_loader" | "lite-loader" => "liteloader".to_string(),
-        "optifine" => "optifine".to_string(),
-        other if !other.is_empty() => other.to_string(),
-        _ => "vanilla".to_string(),
+fn validate_mod_loader(loader: &str) -> Result<&str, String> {
+    match loader {
+        "fabric" | "forge" | "neoforge" | "quilt" => Ok(loader),
+        _ => Err(format!(
+            "Unsupported mod loader '{loader}'. Supported loaders are fabric, forge, neoforge, and quilt."
+        )),
     }
 }
 
@@ -714,8 +714,7 @@ fn load_root_version(
                         .game_versions
                         .iter()
                         .any(|candidate| candidate.eq_ignore_ascii_case(game_version)))
-                && (loader == "vanilla"
-                    || version.loaders.is_empty()
+                && (version.loaders.is_empty()
                     || version
                         .loaders
                         .iter()
@@ -1003,7 +1002,7 @@ fn install_single_mod(
     if installed.version_id.is_none() {
         installed.version_id = Some(version.id.clone());
     }
-    if installed.loader.is_none() && requested_loader != "vanilla" {
+    if installed.loader.is_none() {
         installed.loader = Some(requested_loader.to_string());
     }
     Ok((installed, false))
@@ -1067,11 +1066,18 @@ fn parse_installed_mod(mods_dir: &Path, file_name: &str) -> InstalledModInfo {
 }
 
 fn validate_downloaded_mod_archive(path: &Path) -> Result<(), String> {
+    validate_downloaded_mod_archive_with_limits(path, MAX_MOD_ARCHIVE_ENTRIES)
+}
+
+fn validate_downloaded_mod_archive_with_limits(
+    path: &Path,
+    max_entries: usize,
+) -> Result<(), String> {
     let file = fs::File::open(path)
         .map_err(|error| format!("Cannot open downloaded mod archive: {error}"))?;
     let archive = ZipArchive::new(file)
         .map_err(|_| "The provider download is not a valid JAR/ZIP archive.".to_string())?;
-    if archive.len() > MAX_MOD_ARCHIVE_ENTRIES {
+    if archive.len() > max_entries {
         return Err("The downloaded mod archive contains too many entries.".to_string());
     }
     Ok(())
@@ -1337,7 +1343,7 @@ fn emit_mod_progress(
         stage: stage.to_string(),
         completed,
         total,
-        message: message.to_string(),
+        message: sanitize_progress_message(message),
     });
 }
 #[cfg(test)]
@@ -1682,6 +1688,21 @@ mod additional_tests {
         fs::write(&path, b"<html>provider error</html>").expect("write invalid download");
         let error = validate_downloaded_mod_archive(&path).expect_err("reject non-archive");
         assert!(error.contains("not a valid JAR/ZIP archive"));
+
+        let limited_jar = root.join("limited.jar");
+        write_test_jar(
+            &limited_jar,
+            &[
+                ("fabric.mod.json", b"{}"),
+                ("nested/extra.bin", b"extra"),
+            ],
+        );
+        let entry_error = validate_downloaded_mod_archive_with_limits(&limited_jar, 1)
+            .expect_err("entry-count cap must be enforced while scanning");
+        assert!(entry_error.contains("too many entries"));
+        assert!(!root.join("fabric.mod.json").exists());
+        assert!(!root.join("nested").exists());
+        assert!(limited_jar.is_file());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1862,6 +1883,93 @@ mod timeout_tests {
     }
 
     #[test]
+    fn mod_loader_validation_is_exact_and_rejects_compatibility_aliases() {
+        for loader in ["fabric", "forge", "neoforge", "quilt"] {
+            assert_eq!(validate_mod_loader(loader), Ok::<&str, String>(loader));
+        }
+        for loader in [
+            "",
+            "vanilla",
+            "neo_forge",
+            "neo-forge",
+            "lite_loader",
+            "lite-loader",
+            "optifine",
+            "Fabric",
+            " fabric ",
+            "arbitrary",
+        ] {
+            assert_eq!(
+                validate_mod_loader(loader).expect_err("invalid loader"),
+                format!(
+                    "Unsupported mod loader '{loader}'. Supported loaders are fabric, forge, neoforge, and quilt."
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_loader_fails_search_before_provider_or_network_dispatch() {
+        let (registry, timeouts) = probe_registry();
+        let error = search_mods_blocking(
+            &registry,
+            ModSource::Modrinth,
+            "probe",
+            "1.20.1",
+            "neo_forge",
+            0,
+            20,
+        )
+        .expect_err("alias must be rejected");
+        assert_eq!(
+            error,
+            "Unsupported mod loader 'neo_forge'. Supported loaders are fabric, forge, neoforge, and quilt."
+        );
+        assert!(timeouts.lock().expect("timeout probe lock").is_empty());
+
+        let sink = RecordingModSink {
+            updates: Arc::new(Mutex::new(Vec::new())),
+        };
+        let expected = "Unsupported mod loader 'neo_forge'. Supported loaders are fabric, forge, neoforge, and quilt.";
+        let list_error = list_mod_versions_blocking(
+            &registry,
+            ModSource::Modrinth,
+            "project",
+            "1.20.1",
+            "neo_forge",
+        )
+        .err()
+        .expect("list versions must reject the alias");
+        assert_eq!(list_error, expected);
+        let resolve_error = resolve_mod_dependencies_blocking(
+            &registry,
+            ModSource::Modrinth,
+            "project",
+            "",
+            "1.20.1",
+            "neo_forge",
+        )
+        .err()
+        .expect("dependency resolution must reject the alias");
+        assert_eq!(resolve_error, expected);
+        let install_error = install_mod_blocking(
+            &registry,
+            &sink,
+            "game",
+            ModSource::Modrinth,
+            "project",
+            "",
+            "1.20.1",
+            "neo_forge",
+            false,
+        )
+        .err()
+        .expect("mod installation must reject the alias");
+        assert_eq!(install_error, expected);
+        assert!(timeouts.lock().expect("timeout probe lock").is_empty());
+    }
+
+    #[test]
     fn host_operation_timeouts_remain_45_45_60_600_and_enter_provider_context() {
         assert_eq!(SEARCH_MODS_TIMEOUT, Duration::from_secs(45));
         assert_eq!(LIST_MOD_VERSIONS_TIMEOUT, Duration::from_secs(45));
@@ -1950,7 +2058,34 @@ mod timeout_tests {
         assert_eq!(updates[0].completed, 1);
         assert_eq!(updates[0].total, 2);
         assert_eq!(updates[0].message, "Processed example.jar");
+        drop(updates);
+
+        emit_mod_progress(
+            erased,
+            "Example Mod",
+            "example.jar",
+            "provider",
+            2,
+            2,
+            "Provider detail\nhttps://example.com/private?token=url-secret\tapi_key=api-secret",
+        );
+        let updates = sink.updates.lock().expect("mod progress lock");
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].stage, "download");
+        assert_eq!(updates[1].stage, "provider");
+        assert!(updates[1].message.contains("[redacted-url]"));
+        for secret in ["url-secret", "api-secret", "https://"] {
+            assert!(!updates[1].message.contains(secret));
+        }
+        assert!(!updates[1].message.chars().any(char::is_control));
+        let payload = serde_json::to_value(&updates[1]).expect("mod progress payload");
+        assert_eq!(payload["stage"].as_str(), Some("provider"));
+        assert!(!payload["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("api-secret"));
     }
+
     #[test]
     fn install_download_uses_the_600s_operation_timeout() {
         let mods_dir = std::env::temp_dir().join(format!(

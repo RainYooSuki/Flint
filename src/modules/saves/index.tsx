@@ -13,6 +13,7 @@ function SavesPage({ context }: PageComponentProps) {
       selectedInstance={context.selectedInstance}
       onOpenPath={context.onOpenPath}
       onNotify={context.onNotify}
+      dialogs={context.services.dialogs}
     />
   );
 }
@@ -43,7 +44,8 @@ export const savesFeature: FeatureDescriptor = {
       }
     ],
     settingsSections: [],
-    instanceActions: []
+    instanceActions: [],
+    overlays: []
   }
 };
 

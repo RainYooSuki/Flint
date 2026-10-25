@@ -242,6 +242,9 @@ export function filterContributionRegistry(
   const instanceActions = freezeOrderedContributions(
     registry.instanceActions.filter((action) => activeFeatureIds.has(action.featureId))
   );
+  const overlays = freezeOrderedContributions(
+    registry.overlays.filter((overlay) => activeFeatureIds.has(overlay.featureId))
+  );
 
   const pageById = Object.create(null) as Record<string, PageContribution | undefined>;
   for (const page of pages) pageById[page.id] = page;
@@ -252,6 +255,7 @@ export function filterContributionRegistry(
     navigation,
     settingsSections,
     instanceActions,
+    overlays,
     pageById: Object.freeze(pageById),
     defaultPageId: pages[0]?.id ?? null
   });

@@ -127,7 +127,8 @@ export const settingsFeature: FeatureDescriptor = {
         validate: validateArgumentsSettings
       }
     ],
-    instanceActions: []
+    instanceActions: [],
+    overlays: []
   }
 };
 

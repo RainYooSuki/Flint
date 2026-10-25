@@ -13,16 +13,19 @@ import type {
   RemoteVersion
 } from "../types";
 import type { InstanceActionContribution, SettingsSectionContribution } from "./contributions";
+import type { HostServices } from "./platform/hostServices";
 
 /**
  * The shell-owned state and actions exposed to page contributions.
  *
- * The shell owns shared state and exposes only the availability-filtered,
- * frozen contribution lists. Feature pages and sections receive this explicit
- * typed contract instead of importing shell internals or another feature module.
+ * The shell owns shared state, injects typed host services, and exposes only
+ * the availability-filtered, frozen contribution lists. Feature pages and
+ * sections receive this explicit typed contract instead of importing shell
+ * internals or another feature module.
  */
 export interface AppPageContext {
   readonly navigateToPage: (targetPageId: string) => void;
+  readonly services: HostServices;
   readonly hostState: HostLifecycleState | null;
   readonly featureStates: Readonly<Record<string, FeatureLifecycleState | undefined>>;
   readonly settingsSections: readonly SettingsSectionContribution[];
@@ -67,6 +70,7 @@ export interface AppPageContext {
   readonly accounts: AccountInfo[];
   readonly accountsLoading: boolean;
   readonly accountsError: string | null;
+  readonly accountDialogOpen: boolean;
 
   readonly onLaunch: () => void;
   readonly onSelectInstance: (id: string) => void;

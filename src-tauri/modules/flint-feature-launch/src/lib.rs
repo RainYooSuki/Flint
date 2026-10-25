@@ -1,5 +1,6 @@
-use flint_core::paths::{
-    component_is_safe, is_safe_relative_path, resolve_game_dir, safe_join,
+use flint_core::{
+    paths::{component_is_safe, resolve_game_dir, safe_join},
+    ports::{ArchiveEntry, ArchiveLimits, PathPort, SafeWorkspace},
 };
 use flint_feature_accounts as auth;
 use flint_feature_settings as settings;
@@ -40,6 +41,7 @@ pub struct LaunchResult {
 }
 
 const MAX_NATIVE_ENTRIES: usize = 10_000;
+const MAX_NATIVE_PATH_BYTES: usize = 4_096;
 const MAX_NATIVE_FILE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_NATIVE_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -317,15 +319,8 @@ pub fn launch_blocking(request: LaunchRequest) -> Result<LaunchResult, String> {
         .try_clone()
         .map_err(|error| format!("Cannot duplicate launch log handle: {error}"))?;
 
-    let display_args: Vec<String> = if user_type == "msa" {
-        all_args
-            .iter()
-            .map(|argument| auth::redact_secret(argument, &access_token))
-            .collect()
-    } else {
-        all_args.clone()
-    };
-    let command_string = display_command(&java_path, &display_args);
+    let command_string =
+        launch_command_string(&java_path, &all_args, &access_token, &user_type);
     let mut command = Command::new(&java_path);
     command
         .current_dir(&root)
@@ -419,13 +414,44 @@ fn prepare_natives(
         )
     })?;
 
-    for jar in jars {
-        extract_native_jar(&jar, natives_dir)?;
+    let extraction_result = (|| -> Result<(), String> {
+        for jar in jars {
+            extract_native_jar(&jar, natives_dir)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = extraction_result {
+        let _ = fs::remove_dir_all(natives_dir);
+        return Err(error);
     }
     Ok(())
 }
 
+fn native_archive_limits() -> ArchiveLimits {
+    ArchiveLimits {
+        max_entries: MAX_NATIVE_ENTRIES,
+        max_path_bytes: MAX_NATIVE_PATH_BYTES,
+        max_uncompressed_bytes: MAX_NATIVE_TOTAL_BYTES,
+    }
+}
+
 fn extract_native_jar(jar: &NativeJarSpec, destination: &Path) -> Result<(), String> {
+    extract_native_jar_with_limits(jar, destination, &native_archive_limits())
+}
+
+fn extract_native_jar_with_limits(
+    jar: &NativeJarSpec,
+    destination: &Path,
+    limits: &ArchiveLimits,
+) -> Result<(), String> {
+    struct PendingNativeEntry {
+        index: usize,
+        relative_path: String,
+        is_directory: bool,
+        excluded: bool,
+        uncompressed_size: u64,
+    }
+
     let file = File::open(&jar.path).map_err(|error| {
         format!(
             "Cannot open native library ({}): {error}",
@@ -438,81 +464,128 @@ fn extract_native_jar(jar: &NativeJarSpec, destination: &Path) -> Result<(), Str
             jar.path.display()
         )
     })?;
-    if archive.len() > MAX_NATIVE_ENTRIES {
+
+    if archive.len() > limits.max_entries {
         return Err(format!(
-            "Native library contains too many entries: {}",
-            jar.path.display()
+            "Archive contains {} entries, limit {}.",
+            archive.len(),
+            limits.max_entries
         ));
     }
-
-    let mut total_uncompressed = 0u64;
+    let mut pending_entries = Vec::new();
+    let mut policy_entries = Vec::new();
     for index in 0..archive.len() {
-        let mut entry = archive
+        let entry = archive
             .by_index(index)
             .map_err(|error| format!("Cannot read native archive entry: {error}"))?;
-        if entry.is_dir() {
-            continue;
-        }
         let archive_name = entry.name().replace('\\', "/");
-        if is_excluded(&archive_name, &jar.excludes) {
+        let trimmed = archive_name.trim_end_matches('/');
+        if trimmed.is_empty() {
             continue;
         }
-        let Some(enclosed) = entry.enclosed_name() else {
-            return Err(format!(
-                "Native library contains an unsafe path: {}",
-                entry.name()
-            ));
-        };
-        let relative_text = enclosed.to_string_lossy().replace('\\', "/");
-        if !is_safe_relative_path(&relative_text) {
-            return Err(format!(
-                "Native library contains an unsafe path: {}",
-                entry.name()
-            ));
-        }
-        let size = entry.size();
-        if size > MAX_NATIVE_FILE_BYTES {
-            return Err(format!(
-                "Native archive entry is too large: {}",
-                entry.name()
-            ));
-        }
-        total_uncompressed = total_uncompressed
-            .checked_add(size)
-            .ok_or_else(|| "Native archive size overflow.".to_string())?;
-        if total_uncompressed > MAX_NATIVE_TOTAL_BYTES {
-            return Err("Native archive expands beyond the safety limit.".to_string());
-        }
+        let is_directory = entry.is_dir() || archive_name.ends_with('/');
+        let is_symlink = entry
+            .unix_mode()
+            .map(is_zip_symlink_mode)
+            .unwrap_or(false);
+        let uncompressed_size = entry.size();
+        policy_entries.push(ArchiveEntry {
+            relative_path: trimmed.to_string(),
+            uncompressed_size,
+            is_directory,
+            is_symlink,
+        });
+        pending_entries.push(PendingNativeEntry {
+            index,
+            relative_path: trimmed.to_string(),
+            is_directory,
+            excluded: is_excluded(&archive_name, &jar.excludes),
+            uncompressed_size,
+        });
+    }
 
-        let Some(target) = safe_join(destination, &relative_text) else {
-            return Err("Unsafe native extraction destination.".to_string());
-        };
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                format!(
-                    "Cannot create native extraction directory ({}): {error}",
-                    parent.display()
-                )
+    SafeWorkspace.validate_archive_entries(&policy_entries, limits)?;
+
+    let max_file_bytes = MAX_NATIVE_FILE_BYTES.min(limits.max_uncompressed_bytes);
+    let mut total_written = 0u64;
+    let mut created_files = Vec::new();
+    let extraction_result = (|| -> Result<(), String> {
+        for pending in pending_entries {
+            if pending.is_directory || pending.excluded {
+                continue;
+            }
+            if pending.uncompressed_size > MAX_NATIVE_FILE_BYTES {
+                return Err(format!(
+                    "Native archive entry is too large: {}",
+                    pending.relative_path
+                ));
+            }
+            let Some(target) = safe_join(destination, &pending.relative_path) else {
+                return Err("Unsafe native extraction destination.".to_string());
+            };
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    format!(
+                        "Cannot create native extraction directory ({}): {error}",
+                        parent.display()
+                    )
+                })?;
+            }
+            let mut entry = archive
+                .by_index(pending.index)
+                .map_err(|error| format!("Cannot read native archive entry: {error}"))?;
+            let declared_size = entry.size();
+            let remaining_total = limits
+                .max_uncompressed_bytes
+                .saturating_sub(total_written);
+            let read_limit = max_file_bytes.min(remaining_total).saturating_add(1);
+            let mut output = File::create(&target).map_err(|error| {
+                format!("Cannot extract native file ({}): {error}", target.display())
             })?;
+            created_files.push(target.clone());
+            let written = io::copy(&mut entry.by_ref().take(read_limit), &mut output)
+                .map_err(|error| format!("Cannot extract native file ({}): {error}", target.display()))?;
+            if written > max_file_bytes {
+                return Err(format!(
+                    "Native archive entry is too large: {}",
+                    pending.relative_path
+                ));
+            }
+            if written > remaining_total {
+                return Err("Native archive expands beyond the safety limit.".to_string());
+            }
+            if written != declared_size {
+                return Err(format!(
+                    "Native archive entry size mismatch while extracting {}.",
+                    pending.relative_path
+                ));
+            }
+            total_written = total_written
+                .checked_add(written)
+                .ok_or_else(|| "Native archive size overflow.".to_string())?;
         }
-        let mut output = File::create(&target).map_err(|error| {
-            format!("Cannot extract native file ({}): {error}", target.display())
-        })?;
-        let written = io::copy(
-            &mut entry.by_ref().take(MAX_NATIVE_FILE_BYTES + 1),
-            &mut output,
-        )
-        .map_err(|error| format!("Cannot extract native file ({}): {error}", target.display()))?;
-        if written > MAX_NATIVE_FILE_BYTES || written != size {
-            return Err(format!(
-                "Native archive entry size mismatch while extracting {}.",
-                entry.name()
-            ));
+        Ok(())
+    })();
+
+    if extraction_result.is_err() {
+        for path in created_files.iter().rev() {
+            let _ = fs::remove_file(path);
+            let mut parent = path.parent();
+            while let Some(directory) = parent {
+                if directory == destination {
+                    break;
+                }
+                let _ = fs::remove_dir(directory);
+                parent = directory.parent();
+            }
         }
     }
-    Ok(())
+    extraction_result
 }
 
+fn is_zip_symlink_mode(mode: u32) -> bool {
+    mode & 0o170000 == 0o120000
+}
 fn is_excluded(name: &str, excludes: &[String]) -> bool {
     excludes.iter().any(|exclude| {
         let exclude = exclude.trim_start_matches('/');
@@ -756,6 +829,22 @@ fn create_log_path(root: &Path, instance_id: &str) -> Result<PathBuf, String> {
     Ok(logs_dir.join(format!("flint-{safe_instance}-{timestamp}.log")))
 }
 
+fn launch_command_string(
+    java_path: &Path,
+    all_args: &[String],
+    access_token: &str,
+    user_type: &str,
+) -> String {
+    let display_args: Vec<String> = if user_type == "msa" {
+        all_args
+            .iter()
+            .map(|argument| auth::redact_secret(argument, access_token))
+            .collect()
+    } else {
+        all_args.to_vec()
+    };
+    display_command(java_path, &display_args)
+}
 fn display_command(program: &Path, arguments: &[String]) -> String {
     let mut parts = Vec::with_capacity(arguments.len() + 1);
     parts.push(quote_command_argument(&program.display().to_string()));
@@ -829,6 +918,77 @@ mod tests {
         (platform, placeholders)
     }
 
+    use flint_core::ports::ArchiveLimits;
+    use std::{io::Write, path::PathBuf};
+    use zip::{write::SimpleFileOptions, ZipWriter};
+
+    fn temp_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "flint-{label}-{}-{}",
+            std::process::id(),
+            flint_core::net::nonce()
+        ))
+    }
+
+    fn write_native_jar(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = File::create(path).expect("native jar file");
+        let mut writer = ZipWriter::new(file);
+        for (name, data) in entries {
+            writer
+                .start_file(*name, SimpleFileOptions::default())
+                .expect("native zip entry");
+            writer.write_all(data).expect("native zip data");
+        }
+        writer.finish().expect("finish native jar");
+    }
+
+    fn write_symlink_native_jar(path: &Path, name: &str) {
+        let file = File::create(path).expect("symlink native jar");
+        let mut writer = ZipWriter::new(file);
+        writer
+            .start_file(
+                name,
+                SimpleFileOptions::default().unix_permissions(0o120777),
+            )
+            .expect("symlink native entry");
+        writer.write_all(b"../outside").expect("symlink target");
+        writer.finish().expect("finish symlink jar");
+    }
+
+    fn patch_zip_uncompressed_size(path: &Path, uncompressed_size: u32) {
+        let mut bytes = fs::read(path).expect("read native jar for patch");
+        for (signature, offset) in [
+            ([0x50_u8, 0x4b, 0x03, 0x04], 22usize),
+            ([0x50, 0x4b, 0x01, 0x02], 24usize),
+        ] {
+            let position = bytes
+                .windows(signature.len())
+                .position(|window| window == &signature[..])
+                .expect("native zip signature");
+            let field = position + offset;
+            bytes[field..field + 4]
+                .copy_from_slice(&uncompressed_size.to_le_bytes());
+        }
+        fs::write(path, bytes).expect("write patched native jar");
+    }
+
+    fn native_spec(path: &Path) -> NativeJarSpec {
+        NativeJarSpec {
+            path: path.to_path_buf(),
+            excludes: Vec::new(),
+        }
+    }
+
+    fn native_limits(
+        max_entries: usize,
+        max_uncompressed_bytes: u64,
+    ) -> ArchiveLimits {
+        ArchiveLimits {
+            max_entries,
+            max_path_bytes: MAX_NATIVE_PATH_BYTES,
+            max_uncompressed_bytes,
+        }
+    }
     #[test]
     fn expands_repeated_and_embedded_placeholders() {
         let placeholders = HashMap::from([
@@ -920,6 +1080,214 @@ mod tests {
         assert_eq!(quote_windows_argument("a\"b"), "\"a\\\"b\"");
     }
 
+    #[test]
+    fn prepare_natives_removes_partial_directory_after_jar_failure() {
+        let root = temp_root("native-prepare-cleanup");
+        let libraries = root.join("libraries");
+        let native_library = libraries.join("org/example/native/1/native-1-natives-windows-64.jar");
+        fs::create_dir_all(native_library.parent().expect("library parent"))
+            .expect("library directory");
+        fs::write(&native_library, b"not a zip").expect("invalid native jar");
+        let natives = root.join("natives");
+        let (platform, _) = test_context();
+        let context = platform.rule_context();
+        let metadata = serde_json::json!({
+            "libraries": [{
+                "name": "org.example:native:1",
+                "downloads": {"classifiers": {"natives-windows-64": {"path": "org/example/native/1/native-1-natives-windows-64.jar"}}},
+                "natives": {"windows": "natives-windows-${arch}"}
+            }]
+        });
+        let error = prepare_natives(&metadata, &context, &libraries, &natives)
+            .expect_err("invalid native jar must fail");
+        assert!(error.contains("not a valid ZIP archive"));
+        assert!(!natives.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn native_jar_traversal_is_rejected_by_core_archive_policy() {
+        let root = temp_root("native-traversal");
+        let destination = root.join("natives");
+        fs::create_dir_all(&destination).expect("natives directory");
+        let jar = root.join("traversal.jar");
+        write_native_jar(&jar, &[("../escape.dll", b"bad")]);
+        let error = extract_native_jar(&native_spec(&jar), &destination)
+            .expect_err("traversal must fail closed");
+        assert!(error.contains("Unsafe archive entry path"));
+        assert!(!root.join("escape.dll").exists());
+        assert_eq!(fs::read_dir(&destination).expect("natives entries").count(), 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_jar_symlink_is_rejected_by_core_archive_policy() {
+        let root = temp_root("native-symlink");
+        let destination = root.join("natives");
+        fs::create_dir_all(&destination).expect("natives directory");
+        let jar = root.join("symlink.jar");
+        write_symlink_native_jar(&jar, "native/link.dll");
+        let error = extract_native_jar(&native_spec(&jar), &destination)
+            .expect_err("symlink must fail closed");
+        assert!(error.to_ascii_lowercase().contains("symlink"));
+        assert_eq!(fs::read_dir(&destination).expect("natives entries").count(), 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_jar_duplicate_and_case_alias_entries_fail_before_writing() {
+        let root = temp_root("native-duplicate");
+        let destination = root.join("natives");
+        fs::create_dir_all(&destination).expect("natives directory");
+        let jar = root.join("duplicate.jar");
+        write_native_jar(
+            &jar,
+            &[("native/A.dll", b"one"), ("native/a.DLL", b"two")],
+        );
+        let error = extract_native_jar(&native_spec(&jar), &destination)
+            .expect_err("case alias duplicate must fail closed");
+        assert!(error.contains("duplicate entry path"));
+        assert_eq!(fs::read_dir(&destination).expect("natives entries").count(), 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_jar_entry_and_total_limits_fail_before_writing() {
+        let root = temp_root("native-limits");
+        let destination = root.join("natives");
+        fs::create_dir_all(&destination).expect("natives directory");
+        let jar = root.join("limits.jar");
+        write_native_jar(
+            &jar,
+            &[("native/one.dll", b"one"), ("native/two.dll", b"two")],
+        );
+
+        let entry_error = extract_native_jar_with_limits(
+            &native_spec(&jar),
+            &destination,
+            &native_limits(1, MAX_NATIVE_TOTAL_BYTES),
+        )
+        .expect_err("entry count limit must fail closed");
+        assert_eq!(entry_error, "Archive contains 2 entries, limit 1.");
+        assert_eq!(fs::read_dir(&destination).expect("natives entries").count(), 0);
+
+        let size_error = extract_native_jar_with_limits(
+            &native_spec(&jar),
+            &destination,
+            &native_limits(MAX_NATIVE_ENTRIES, 1),
+        )
+        .expect_err("total size limit must fail closed");
+        assert!(size_error.contains("uncompressed data exceeds"));
+
+        let per_file_jar = root.join("per-file-limit.jar");
+        write_native_jar(&per_file_jar, &[("native/large.dll", b"small")]);
+        patch_zip_uncompressed_size(&per_file_jar, (MAX_NATIVE_FILE_BYTES + 1) as u32);
+        let per_file_error = extract_native_jar(&native_spec(&per_file_jar), &destination)
+            .expect_err("per-file declaration limit must fail closed");
+        assert!(per_file_error.contains("too large"));
+        assert_eq!(fs::read_dir(&destination).expect("natives entries").count(), 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_jar_entry_limit_rejects_before_path_validation_or_writing() {
+        let root = temp_root("native-early-entry-limit");
+        let destination = root.join("natives");
+        fs::create_dir_all(&destination).expect("natives directory");
+        let jar = root.join("early-limit.jar");
+        write_native_jar(
+            &jar,
+            &[("../escape.dll", b"bad"), ("native/real.dll", b"ok")],
+        );
+        let error = extract_native_jar_with_limits(
+            &native_spec(&jar),
+            &destination,
+            &native_limits(1, MAX_NATIVE_TOTAL_BYTES),
+        )
+        .expect_err("entry-count limit must reject before collection/path validation");
+        assert_eq!(error, "Archive contains 2 entries, limit 1.");
+        assert!(!root.join("escape.dll").exists());
+        assert_eq!(fs::read_dir(&destination).expect("natives entries").count(), 0);
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn native_jar_partial_output_is_removed_after_extraction_failure() {
+        let root = temp_root("native-partial");
+        let destination = root.join("natives");
+        fs::create_dir_all(destination.join("native").join("blocked")).expect("blocked directory");
+        fs::create_dir_all(destination.join("native").join("blocked").join("second.dll"))
+            .expect("blocked target directory");
+        let jar = root.join("partial.jar");
+        write_native_jar(
+            &jar,
+            &[
+                ("native/first.dll", b"first"),
+                ("native/blocked/second.dll", b"second"),
+            ],
+        );
+        let error = extract_native_jar(&native_spec(&jar), &destination)
+            .expect_err("file/directory collision must fail after partial extraction");
+        assert!(error.contains("Cannot extract native file"));
+        assert!(!destination.join("native").join("first.dll").exists());
+        assert!(!destination.join("native").join("blocked").join("second.dll").is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_jar_declared_actual_expansion_fails_and_removes_partial_file() {
+        let root = temp_root("native-expansion");
+        let destination = root.join("natives");
+        fs::create_dir_all(&destination).expect("natives directory");
+        let jar = root.join("expanded.jar");
+        write_native_jar(&jar, &[("native/expanded.dll", b"expanded native payload")]);
+        patch_zip_uncompressed_size(&jar, 1);
+        let error = extract_native_jar(&native_spec(&jar), &destination)
+            .expect_err("declared/actual size mismatch must fail closed");
+        assert!(
+            error.contains("size mismatch")
+                || error.contains("Cannot extract native file")
+        );
+        assert!(!destination.join("native").join("expanded.dll").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn launch_result_command_redacts_microsoft_token_and_keeps_offline_command() {
+        let arguments = vec![
+            "--accessToken".to_string(),
+            "microsoft-secret-token".to_string(),
+            "--username".to_string(),
+            "Alex".to_string(),
+        ];
+        let online_command = launch_command_string(
+            Path::new("java"),
+            &arguments,
+            "microsoft-secret-token",
+            "msa",
+        );
+        let online = LaunchResult {
+            pid: 0,
+            command: online_command,
+            log_path: "game/logs/latest.log".to_string(),
+        };
+        assert!(!online.command.contains("microsoft-secret-token"));
+        assert!(online.command.contains("[REDACTED]"));
+
+        let offline_arguments = vec![
+            "--accessToken".to_string(),
+            "0".to_string(),
+            "--username".to_string(),
+            "Alex".to_string(),
+        ];
+        let offline_command =
+            launch_command_string(Path::new("java"), &offline_arguments, "0", "legacy");
+        let offline = LaunchResult {
+            pid: 0,
+            command: offline_command,
+            log_path: "game/logs/latest.log".to_string(),
+        };
+        assert!(offline.command.contains("--accessToken 0"));
+        assert!(!offline.command.contains("[REDACTED]"));
+    }
     #[test]
     fn native_exclusions_match_prefixes() {
         assert!(is_excluded(

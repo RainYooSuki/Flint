@@ -12,8 +12,10 @@ import {
   collectFrontendModuleReferences,
   collectHtmlInjectionSites,
   collectImportMetaMembers,
+  collectImportMetaTauriLoadingSites,
   collectUnsafeCodeSites,
   evaluateCargoInternalEdge,
+  evaluateExactLoaderKindParser,
   evaluateExternalDependencyAllowlist,
   evaluateFeatureCrateManifest,
   evaluateFeatureDirectoryNames,
@@ -29,8 +31,15 @@ import {
   evaluateLoaderProviderCrateManifest,
   evaluateLoaderProviderDirectoryNames,
   evaluateLoaderProviderLockEntries,
+  evaluateOverlayContributionContract,
   evaluatePhase3Orchestration,
+  evaluatePhase5FrontendContractSources,
+  evaluatePhase5HostServicesFactorySource,
+  evaluatePhase5ProductionShimTokens,
+  evaluatePhase5ProviderRuntimeSources,
+  evaluatePhase5TauriAdapterImport,
   evaluateProviderTypedPortSource,
+  evaluateTauriReferencePolicy,
   evaluateVanillaInstallBoundary,
   evaluateWorkspaceCrateGroupDirectories,
   evaluateWorkspaceLockEntries,
@@ -44,6 +53,8 @@ import {
   findModSourceDispatchSites,
   firstUseRoot,
   getExportedFeatureDescriptors,
+  isReviewedTauriAdapterImport,
+  isTauriPackageSpecifier,
   moduleTargetsFromUse,
   packageRootFromPackageId,
   parseFoundationWorkspaceManifest,
@@ -60,6 +71,7 @@ import {
   reviewedHostRustModuleIds,
   reviewedLoaderProviderCrateSpecs,
   reviewedProviderTargets,
+  reviewedTauriAdapterAllowlist,
   reviewedWorkspaceCrateGroupDirectories,
   reviewedWorkspaceCrateNames,
   reviewedWorkspaceCrateSpecs,
@@ -104,6 +116,7 @@ test("phase parsing defaults to 1 and rejects unsupported/unknown input", () => 
   assert.equal(parsePhase([]), 1);
   assert.equal(parsePhase(["--phase", "2"]), 2);
   assert.equal(parsePhase(["--phase", "4"]), 4);
+  assert.equal(parsePhase(["--phase", "5"]), 5);
   assert.equal(parsePhase(["--phase=5"]), 5);
   assert.throws(() => parsePhase(["--phase", "0"]), /Unsupported phase/);
   assert.throws(() => parsePhase(["--warn"]), /Unknown argument/);
@@ -118,7 +131,7 @@ test("phase 2 fails closed when mandatory loader targets are absent", () => {
   assert.equal(violations.every((violation) => violation.rule === "RUST-PHASE-TARGET-001"), true);
 });
 
-test("phase-4 gate covers the exact nineteen workspace crates and release workflow", () => {
+test("phase-5 gate covers the exact nineteen workspace crates and strict release workflow", () => {
   const names = reviewedWorkspaceCrateNames();
   assert.equal(names.length, 19);
   const specs = reviewedWorkspaceCrateSpecs();
@@ -162,8 +175,12 @@ test("phase-4 gate covers the exact nineteen workspace crates and release workfl
   const workflow = fs.readFileSync(new URL("../.github/workflows/flint-release.yml", import.meta.url), "utf8");
   const checkerPhases = [...workflow.matchAll(/node scripts\/check-architecture\.mjs\s+--phase\s+([1-5])/g)]
     .map((match) => match[1]);
-  assert.deepEqual(checkerPhases, ["4"]);
-  assert.match(workflow, /node --test scripts\/test-architecture-checker\.mjs/);
+  assert.deepEqual(checkerPhases, ["5"]);
+  assert.match(workflow, /node --test scripts\/test-architecture-checker\.mjs scripts\/test-frontend-contracts\.mjs/);
+  assert.equal(fs.existsSync(new URL("../scripts/test-frontend-contracts.mjs", import.meta.url)), true);
+  const checkerSource = fs.readFileSync(new URL("../scripts/check-architecture.mjs", import.meta.url), "utf8");
+  assert.match(checkerSource, /strict release gate: --phase 5/);
+  assert.doesNotMatch(checkerSource, /Phase 5 remains a strict future phase|reserved for future checks/);
 });
 
 test("phase-4 external dependency allowlists are exact by package and Cargo kind", () => {
@@ -441,6 +458,7 @@ test("provider API policy targets the extracted crate and drops the host-local m
   const loaderContract = "src-tauri/crates/flint-provider-api/src/loaders.rs";
   const loaderAdapter = "src-tauri/src/loaders.rs";
   const targets = reviewedProviderTargets();
+  assert.equal(targets.every((target) => !Object.hasOwn(target, "transitionalLocalTargets")), true);
   const providerApiTargets = targets.filter((target) => target.file === providerApi);
   assert.deepEqual(
     [...new Set(providerApiTargets.map((target) => target.role))].sort(),
@@ -793,6 +811,7 @@ test("extracted feature waves use exact manifests, edges, directories, and locks
   );
   const targets = reviewedFeatureTargets();
   assert.equal(targets.length, 7);
+  assert.equal(targets.every((target) => !Object.hasOwn(target, "transitionalLocalTargets")), true);
   for (const target of targets) {
     assert.equal(target.role, "feature-leaf");
     assert.equal(target.externalRoots.includes("tauri"), false);
@@ -929,15 +948,7 @@ flint_feature_loaders::install_loader_blocking(registry, request, &loader_sink, 
     true,
   );
 });
-test("loader provider composition requires six leaf descriptors, keys, constructors, and one registry", () => {
-  const descriptors = [
-    "FABRIC_LOADER_DESCRIPTOR",
-    "FORGE_LOADER_DESCRIPTOR",
-    "LITELOADER_LOADER_DESCRIPTOR",
-    "NEOFORGE_LOADER_DESCRIPTOR",
-    "OPTIFINE_LOADER_DESCRIPTOR",
-    "QUILT_LOADER_DESCRIPTOR",
-  ];
+test("provider composition requires one shared runtime state, six keys, constructors, and one registry", () => {
   const keys = [
     "FABRIC_SELECTION_KEY",
     "FORGE_SELECTION_KEY",
@@ -955,11 +966,13 @@ test("loader provider composition requires six leaf descriptors, keys, construct
     "QuiltLoaderProvider::new",
   ];
   const source = [
-    ...descriptors.map((name) => `const ${name} = descriptor;`),
     ...keys.map((name) => `const ${name} = key;`),
-    "pub struct LoaderProviderState { registry: Result<Arc<ProviderRegistry<dyn LoaderProvider>>, String> }",
-    "fn loader_provider_descriptors() -> Vec<ProviderDescriptor> {",
-    `    vec![${descriptors.join(", ")}]`,
+    "type ModRegistry = ProviderRegistry<dyn ModProvider>;",
+    "type LoaderRegistry = ProviderRegistry<dyn LoaderProvider>;",
+    "struct ProviderRuntimeState { mod_registry: ModRegistry, loader_registry: LoaderRegistry }",
+    "impl ProviderCatalog for ProviderRuntimeState {",
+    "    fn initialize(&mut self, provider_id: &str) -> Result<(), String> { if self.provider_is_known(provider_id) { Ok(()) } else { Err(String::new()) } }",
+    "    fn shutdown(&mut self, provider_id: &str) -> Result<(), String> { self.mark_unavailable(provider_id, \"stopped\"); Ok(()) }",
     "}",
     "fn loader_provider_requirements() -> Vec<ProviderRequirement> {",
     `    vec![${keys.map((key) => `requirement(${key})`).join(", ")}]`,
@@ -976,13 +989,37 @@ test("loader provider composition requires six leaf descriptors, keys, construct
     true,
   );
   assert.equal(
-    evaluateLoaderProviderComposition(source.replaceAll("OPTIFINE_LOADER_DESCRIPTOR", "OTHER_DESCRIPTOR"))
-      .some((issue) => issue.message.includes("OPTIFINE_LOADER_DESCRIPTOR")),
+    evaluateLoaderProviderComposition(source.replaceAll("QuiltLoaderProvider::new", "OtherProvider::new"))
+      .some((issue) => issue.message.includes("QuiltLoaderProvider::new")),
     true,
   );
   assert.equal(
-    evaluateLoaderProviderComposition(source.replaceAll("QuiltLoaderProvider::new", "OtherProvider::new"))
-      .some((issue) => issue.message.includes("QuiltLoaderProvider::new")),
+    evaluateLoaderProviderComposition(source.replace(
+      "struct ProviderRuntimeState { mod_registry: ModRegistry, loader_registry: LoaderRegistry }",
+      "struct OtherState { mod_registry: ModRegistry, loader_registry: LoaderRegistry }",
+    )).some((issue) => issue.message.includes("ProviderRuntimeState")),
+    true,
+  );
+  assert.equal(
+    evaluateLoaderProviderComposition(
+      source.replaceAll("ProviderRegistry<dyn LoaderProvider>", "ProviderRegistry<dyn OtherProvider>"),
+    ).some((issue) => issue.message.includes("ProviderRegistry<dyn LoaderProvider>")),
+    true,
+  );
+  assert.equal(
+    evaluateLoaderProviderComposition(source.replace("mod_registry:", "metadata_mod:"))
+      .some((issue) => issue.message.includes("mod_registry and loader_registry")),
+    true,
+  );
+  assert.equal(
+    evaluateLoaderProviderComposition(
+      source.replace("impl ProviderCatalog for ProviderRuntimeState {", "impl OtherCatalog for ProviderRuntimeState {"),
+    ).some((issue) => issue.message.includes("ProviderCatalog")),
+    true,
+  );
+  assert.equal(
+    evaluateLoaderProviderComposition(source.replace("self.provider_is_known(provider_id)", "true"))
+      .some((issue) => issue.message.includes("initialize must consult")),
     true,
   );
   assert.equal(
@@ -995,8 +1032,65 @@ test("loader provider composition requires six leaf descriptors, keys, construct
     true,
   );
 });
+test("phase-5 shared ProviderRuntimeState owns both registries and is initialized once", () => {
+  const compositionSource = [
+    "type ModRegistry = ProviderRegistry<dyn ModProvider>;",
+    "type LoaderRegistry = ProviderRegistry<dyn LoaderProvider>;",
+    "struct ProviderRuntimeState { mod_registry: ModRegistry, loader_registry: LoaderRegistry }",
+    "impl ProviderCatalog for ProviderRuntimeState {",
+    "    fn initialize(&mut self, provider_id: &str) -> Result<(), String> { if self.provider_is_known(provider_id) { Ok(()) } else { Err(String::new()) } }",
+    "    fn shutdown(&mut self, provider_id: &str) -> Result<(), String> { self.mark_unavailable(provider_id, \"stopped\"); Ok(()) }",
+    "}",
+    "fn build_mod_provider_registry() -> Result<ModRegistry, String> {",
+    "    ProviderRegistry::new(vec![Box::new(CurseForgeModProvider::new())], MOD_PROVIDER_API)",
+    "}",
+    "fn build_loader_provider_registry() -> Result<LoaderRegistry, String> {",
+    "    ProviderRegistry::new(vec![Box::new(FabricLoaderProvider::new())], LOADER_PROVIDER_API)",
+    "}",
+  ].join("\n");
+  const hostLibSource = [
+    "let provider_runtime = ProviderRuntimeState::new();",
+    "app.manage(provider_runtime.clone());",
+    "app.manage(initialize_host_runtime(provider_runtime));",
+  ].join("\n");
+  const sources = [
+    { relativePath: "src-tauri/src/provider_composition.rs", productionText: compositionSource },
+    { relativePath: "src-tauri/src/lib.rs", productionText: hostLibSource },
+  ];
+  assert.deepEqual(evaluatePhase5ProviderRuntimeSources(sources), []);
+  const workspaceRecords = sources.map(({ relativePath, ...source }) => ({ relative: relativePath, ...source }));
+  assert.deepEqual(evaluatePhase5ProviderRuntimeSources(workspaceRecords), []);
 
-test("host command gate map covers exactly the 28 feature commands and reviewed module", () => {
+  const duplicateInitialization = evaluatePhase5ProviderRuntimeSources([
+    sources[0],
+    { ...sources[1], productionText: `${hostLibSource}\nlet duplicate = ProviderRuntimeState::new();` },
+  ]);
+  assert.equal(duplicateInitialization.some((issue) => issue.rule === "RUST-PROVIDER-RUNTIME-001"), true);
+
+  const duplicateRuntime = evaluatePhase5ProviderRuntimeSources([
+    ...sources,
+    { relativePath: "src-tauri/src/feature_host.rs", productionText: "struct HostProviderCatalog;" },
+  ]);
+  assert.equal(duplicateRuntime.some((issue) => issue.rule === "ARCH-PHASE5-SHIM-001"), true);
+
+  const duplicateCatalog = evaluatePhase5ProviderRuntimeSources([
+    ...sources,
+    { relativePath: "src-tauri/src/feature_host.rs", productionText: "impl ProviderCatalog for MetadataCatalog {}" },
+  ]);
+  assert.equal(duplicateCatalog.some((issue) => issue.rule === "RUST-PROVIDER-RUNTIME-001"), true);
+
+  const duplicateState = evaluatePhase5ProviderRuntimeSources([
+    ...sources,
+    { relativePath: "src-tauri/src/feature_host.rs", productionText: "struct ProviderRuntimeState { metadata_only: bool }" },
+  ]);
+  assert.equal(duplicateState.some((issue) => issue.rule === "RUST-PROVIDER-RUNTIME-001"), true);
+
+  const constructionOutsideComposition = evaluatePhase5ProviderRuntimeSources([
+    sources[0],
+    { ...sources[1], productionText: `${hostLibSource}\nBox::new(CurseForgeModProvider::new());` },
+  ]);
+  assert.equal(constructionOutsideComposition.some((issue) => issue.rule === "RUST-PROVIDER-COMPOSITION-001"), true);
+});test("host command gate map covers exactly the 28 feature commands and reviewed module", () => {
   const gates = reviewedFeatureCommandGates();
   assert.equal(gates.length, 28);
   assert.equal(new Set(gates.map((gate) => gate.command)).size, 28);
@@ -1323,22 +1417,317 @@ test("safe HTML sink reads are not reported as injection", () => {
   assert.deepEqual(collectHtmlInjectionSites(source), []);
 });
 
-test("Tauri waiver is exact by file/specifier and expires at phase 5", () => {
-  assert.equal(classifyTauriImport(1, "src/components/TitleBar.tsx", "@tauri-apps/api/window"), null);
+test("phase-5 Tauri adapter allowlist is exact and rejects extra or local adapter imports", () => {
+  const expectedAdapters = [
+    { file: "src/core/api/tauriInvoke.ts", specifier: "@tauri-apps/api/core" },
+    { file: "src/core/events/tauriEvents.ts", specifier: "@tauri-apps/api/event" },
+    { file: "src/core/platform/tauriDialogs.ts", specifier: "@tauri-apps/plugin-dialog" },
+    { file: "src/core/platform/tauriOpener.ts", specifier: "@tauri-apps/plugin-opener" },
+    { file: "src/core/platform/tauriWindow.ts", specifier: "@tauri-apps/api/window" },
+  ];
+  assert.deepEqual(reviewedTauriAdapterAllowlist(), expectedAdapters);
+  for (const adapter of expectedAdapters) {
+    assert.equal(classifyTauriImport(5, adapter.file, adapter.specifier), null);
+    assert.equal(isReviewedTauriAdapterImport(adapter.file, adapter.specifier), true);
+    assert.equal(isTauriPackageSpecifier(adapter.specifier), true);
+  }
+  assert.equal(classifyTauriImport(5, "src/api.ts", "@tauri-apps/api/core").rule, "FE-TAURI-DIRECT-001");
+  assert.equal(classifyTauriImport(5, "src/core/events/tauriEvents.ts", "@tauri-apps/api/window").rule, "FE-TAURI-DIRECT-001");
+  assert.equal(classifyTauriImport(5, "src/core/events/tauriEvents.ts", "@tauri-apps/plugin-fs").rule, "FE-TAURI-DIRECT-001");
+  assert.equal(classifyTauriImport(5, "src/api.ts", "react"), null);
+  assert.deepEqual(evaluateTauriReferencePolicy("src/core/api/tauriInvoke.ts", "@tauri-apps/api/core", "static"), []);
   assert.equal(
-    classifyTauriImport(1, "src/components/NewChrome.tsx", "@tauri-apps/api/window").rule,
-    "FE-TAURI-DIRECT-001",
+    evaluateTauriReferencePolicy("src/core/api/tauriInvoke.ts", "@tauri-apps/api/core", "dynamic")[0].rule,
+    "FE-TAURI-DYNAMIC-001",
   );
   assert.equal(
-    classifyTauriImport(1, "src/components/TitleBar.tsx", "@tauri-apps/api/event").rule,
+    evaluateTauriReferencePolicy("src/api.ts", "@tauri-apps/api/core", "static")[0].rule,
     "FE-TAURI-DIRECT-001",
   );
+
+  assert.equal(evaluatePhase5TauriAdapterImport("src/api.ts", "src/core/api/tauriInvoke.ts"), null);
+  assert.equal(evaluatePhase5TauriAdapterImport("src/core/platform/tauriServices.ts", "src/core/events/tauriEvents.ts"), null);
+  assert.equal(evaluatePhase5TauriAdapterImport("src/main.tsx", "src/core/platform/tauriServices.ts"), null);
   assert.equal(
-    classifyTauriImport(5, "src/components/TitleBar.tsx", "@tauri-apps/api/window").rule,
-    "FE-TAURI-DIRECT-001",
+    evaluatePhase5TauriAdapterImport("src/modules/accounts/AccountDialog.tsx", "src/core/platform/tauriOpener.ts").rule,
+    "FE-TAURI-ADAPTER-IMPORT-001",
+  );
+  assert.equal(
+    evaluatePhase5TauriAdapterImport("src/api.ts", "src/core/events/tauriEvents.ts").rule,
+    "FE-TAURI-ADAPTER-IMPORT-001",
+  );
+  assert.equal(
+    evaluatePhase5TauriAdapterImport("src/app/App.tsx", "src/core/platform/tauriServices.ts").rule,
+    "FE-TAURI-ADAPTER-IMPORT-001",
+  );
+  assert.equal(
+    evaluateFrontendBoundary(5, "src/modules/accounts/AccountDialog.tsx", "src/core/platform/tauriOpener.ts").rule,
+    "FE-TAURI-ADAPTER-IMPORT-001",
+  );
+
+  assert.deepEqual(evaluatePhase5HostServicesFactorySource("src/main.tsx", "createTauriHostServices()"), []);
+  assert.deepEqual(evaluatePhase5HostServicesFactorySource("src/core/platform/tauriServices.ts", "export function createTauriHostServices() {}"), []);
+  assert.equal(
+    evaluatePhase5HostServicesFactorySource("src/modules/accounts/index.tsx", "createTauriHostServices()")[0].rule,
+    "FE-TAURI-HOST-SERVICES-001",
+  );
+
+  const loadingSource = parseTypeScriptSource(
+    "sample.ts",
+    [
+      'const lazy = import("@tauri-apps/api/core");',
+      'const glob = import.meta.glob("@tauri-apps/api/event");',
+    ].join("\n"),
+  );
+  const dynamicRefs = collectFrontendModuleReferences(loadingSource).filter(
+    (reference) => reference.kind === "dynamic" && isTauriPackageSpecifier(reference.specifier),
+  );
+  assert.deepEqual(dynamicRefs.map((reference) => reference.specifier), ["@tauri-apps/api/core"]);
+  assert.deepEqual(
+    collectImportMetaTauriLoadingSites(loadingSource).map((site) => site.specifier),
+    ["@tauri-apps/api/event"],
   );
 });
 
+test("phase-5 production shim and old-dispatch tokens fail closed while tests remain masked", () => {
+  const sharedTokens = [
+    "TAURI_TRANSITIONAL_WAIVERS",
+    "transitionalLocalTargets",
+    "providerTargetAllowed",
+    "removeByPhase",
+    "HostProviderCatalog",
+  ];
+  for (const token of sharedTokens) {
+    assert.equal(
+      evaluatePhase5ProductionShimTokens("src-tauri/src/feature_host.rs", `let ${token} = 1;`)
+        .some((issue) => issue.rule === "ARCH-PHASE5-SHIM-001"),
+      true,
+      token,
+    );
+  }
+  for (const token of ["AccountDialogSurface", "loaderKindFromValue", "neo_forge", "neo-forge", "lite_loader", "lite-loader"]) {
+    const fixture = token.includes("-") ? `let _ = "${token}";` : `const ${token} = legacy;`;
+    assert.equal(
+      evaluatePhase5ProductionShimTokens("src/app/App.tsx", fixture)
+        .some((issue) => issue.rule === "FE-PHASE5-SHIM-001"),
+      true,
+      token,
+    );
+  }
+  for (const token of ["LoaderProviderContext", "normalize_loader", "neo_forge", "neo-forge", "lite_loader", "lite-loader"]) {
+    const fixture = token.includes("-") ? `let _ = "${token}";` : `fn ${token}() {}`;
+    assert.equal(
+      evaluatePhase5ProductionShimTokens("src-tauri/modules/flint-feature-mods/src/lib.rs", fixture)
+        .some((issue) => issue.rule === "RUST-PHASE5-SHIM-001"),
+      true,
+      token,
+    );
+  }
+  assert.equal(
+    evaluatePhase5ProductionShimTokens(
+      "src-tauri/modules/flint-feature-loaders/src/lib.rs",
+      "struct LoaderBinding { display_name: &'static str }",
+    ).some((issue) => issue.rule === "RUST-PHASE5-SHIM-001"),
+    true,
+  );
+  assert.equal(
+    evaluatePhase5ProductionShimTokens(
+      "src-tauri/modules/flint-feature-loaders/src/lib.rs",
+      "let label = LoaderBinding.display_name;",
+    ).some((issue) => issue.rule === "RUST-PHASE5-SHIM-001"),
+    true,
+  );
+  assert.deepEqual(
+    evaluatePhase5ProductionShimTokens("src-tauri/src/models.rs", "display_name: String,"),
+    [],
+  );
+
+  const maskedTests = prepareRustProductionSource(`
+fn production() {}
+#[cfg(test)]
+mod tests {
+    struct HostProviderCatalog;
+    struct LoaderBinding { display_name: &'static str }
+    fn aliases() {
+        let _ = normalize_loader("neo_forge");
+        let _ = "lite_loader";
+    }
+}
+`);
+  for (const maskedPath of [
+    "src-tauri/modules/flint-feature-mods/src/lib.rs",
+    "src-tauri/modules/flint-feature-loaders/src/lib.rs",
+  ]) {
+    assert.deepEqual(evaluatePhase5ProductionShimTokens(maskedPath, maskedTests), []);
+  }
+});
+test("phase-5 overlay contribution slot and exact loader parser are typed and strict", () => {
+  const overlaySource = [
+    "export interface OverlayContribution {",
+    "  readonly id: string;",
+    "  readonly featureId: string;",
+    "  readonly order: number;",
+    "  readonly component: PageComponent;",
+    "  readonly visible?: (context: AppPageContext) => boolean;",
+    "}",
+    "export interface FeatureContributions {",
+    "  readonly overlays: readonly OverlayContribution[];",
+    "}",
+    "export interface FrontendContributionRegistry {",
+    "  readonly overlays: readonly OverlayContribution[];",
+    "}",
+    "if (!Array.isArray(feature.contributions.overlays)) throw new Error('bad');",
+    "assertFunction(overlay.component, 'component');",
+    "assertFunction(overlay.visible, 'visible');",
+    "const frozen = freezeOrderedContributions(feature.contributions.overlays);",
+    "const overlays = freezeOrderedContributions(orderedFeatures.flatMap((feature) => feature.contributions.overlays));",
+  ].join("\n");
+  assert.deepEqual(evaluateOverlayContributionContract(overlaySource), []);
+  assert.equal(
+    evaluateOverlayContributionContract(overlaySource.replace("readonly visible?: (context: AppPageContext) => boolean;", "visible: unknown;"))
+      .some((issue) => issue.rule === "FE-PHASE5-OVERLAY-001" && /visible/.test(issue.message)),
+    true,
+  );
+  assert.equal(
+    evaluateOverlayContributionContract(overlaySource.replace("readonly overlays: readonly OverlayContribution[];", ""))
+      .some((issue) => issue.rule === "FE-PHASE5-OVERLAY-001" && /overlays/.test(issue.message)),
+    true,
+  );
+
+  const parserSource = [
+    'export const LOADER_KINDS = ["fabric", "forge", "neoforge", "quilt", "liteloader", "optifine"];',
+    "export function isLoaderKind(value: string): value is LoaderKind {",
+    "  return (LOADER_KINDS as string[]).includes(value.trim().toLowerCase());",
+    "}",
+    "export function parseLoaderKind(value: string): LoaderKind | null {",
+    "  const normalized = value.trim().toLowerCase();",
+    '  if (!normalized || normalized === "vanilla" || normalized === "原版") return null;',
+    "  return LOADER_KINDS.find((kind) => kind === normalized) ?? null;",
+    "}",
+  ].join("\n");
+  assert.deepEqual(evaluateExactLoaderKindParser(parserSource), []);
+  const fuzzyParser = parserSource.replace(
+    "  return LOADER_KINDS.find((kind) => kind === normalized) ?? null;",
+    '  if (normalized === "neo_forge" || normalized.startsWith("neo")) return "neoforge" as LoaderKind;\n  return null;',
+  );
+  const fuzzyIssues = evaluateExactLoaderKindParser(fuzzyParser);
+  assert.equal(fuzzyIssues.some((issue) => issue.rule === "FE-LOADER-PARSER-001" && /substring or prefix/.test(issue.message)), true);
+  assert.equal(fuzzyIssues.some((issue) => /legacy loader aliases/.test(issue.message)), true);
+
+  const includesParser = parserSource.replace(
+    "  return LOADER_KINDS.find((kind) => kind === normalized) ?? null;",
+    [
+      "  const exact = LOADER_KINDS.find((kind) => kind === normalized);",
+      '  if (normalized.includes("fabric")) return "fabric" as LoaderKind;',
+      "  return exact ?? null;",
+    ].join("\n"),
+  );
+  const includesIssues = evaluateExactLoaderKindParser(includesParser);
+  assert.equal(includesIssues.some((issue) => issue.rule === "FE-LOADER-PARSER-001" && /includes/.test(issue.message)), true);
+  assert.equal(includesIssues.some((issue) => issue.message.includes("exact canonical comparison")), false);
+
+  const extraAliasParser = parserSource.replace(
+    'export const LOADER_KINDS = ["fabric", "forge", "neoforge", "quilt", "liteloader", "optifine"];',
+    'export const LOADER_KINDS = ["fabric", "forge", "neoforge", "quilt", "liteloader", "optifine", "fabric-loader"];',
+  );
+  assert.equal(
+    evaluateExactLoaderKindParser(extraAliasParser)
+      .some((issue) => issue.rule === "FE-LOADER-PARSER-001" && /extra or alias literals/.test(issue.message)),
+    true,
+  );
+
+  const reorderedParser = parserSource.replace(
+    'export const LOADER_KINDS = ["fabric", "forge", "neoforge", "quilt", "liteloader", "optifine"];',
+    'export const LOADER_KINDS = ["forge", "fabric", "neoforge", "quilt", "liteloader", "optifine"];',
+  );
+  assert.equal(
+    evaluateExactLoaderKindParser(reorderedParser)
+      .some((issue) => issue.rule === "FE-LOADER-PARSER-001" && /reviewed order/.test(issue.message)),
+    true,
+  );
+});
+test("phase-5 frontend contract gate requires HostServices, overlays, exact parsing, and stale-request guards", () => {
+  const contributions = [
+    "export interface OverlayContribution {",
+    "  readonly id: string;",
+    "  readonly featureId: string;",
+    "  readonly order: number;",
+    "  readonly component: PageComponent;",
+    "  readonly visible?: (context: AppPageContext) => boolean;",
+    "}",
+    "export interface FeatureContributions { readonly overlays: readonly OverlayContribution[]; }",
+    "export interface FrontendContributionRegistry { readonly overlays: readonly OverlayContribution[]; }",
+    "if (!Array.isArray(feature.contributions.overlays)) throw new Error('bad');",
+    "assertFunction(overlay.component, 'component');",
+    "assertFunction(overlay.visible, 'visible');",
+    "freezeOrderedContributions(feature.contributions.overlays);",
+    "freezeOrderedContributions(orderedFeatures.flatMap((feature) => feature.contributions.overlays));",
+  ].join("\n");
+  const parser = [
+    'export const LOADER_KINDS = ["fabric", "forge", "neoforge", "quilt", "liteloader", "optifine"];',
+    "export function isLoaderKind(value: string): value is LoaderKind {",
+    "  return (LOADER_KINDS as string[]).includes(value.trim().toLowerCase());",
+    "}",
+    "export function parseLoaderKind(value: string): LoaderKind | null {",
+    "  const normalized = value.trim().toLowerCase();",
+    '  if (!normalized || normalized === "vanilla") return null;',
+    "  return LOADER_KINDS.find((kind) => kind === normalized) ?? null;",
+    "}",
+  ].join("\n");
+  const sources = [
+    ["src/core/contributions.ts", contributions],
+    ["src/utils.ts", parser],
+    ["src/core/app-context.ts", "import type { HostServices } from './platform/hostServices';\nreadonly services: HostServices;\nreadonly accountDialogOpen: boolean;"],
+    ["src/core/availability.ts", "const overlays = freezeOrderedContributions(registry.overlays.filter((overlay) => activeFeatureIds.has(overlay.featureId)));"],
+    ["src/app/App.tsx", "availableRegistry.overlays.map((overlay) => { if (overlay.visible && !overlay.visible(pageContext)) return null; return (<ContributionBoundary><Overlay context={pageContext} /></ContributionBoundary>); });\nuseRequestGeneration();\nrequests.isCurrent(requestId);"],
+    ["src/main.tsx", 'import { createTauriHostServices } from "./core/platform/tauriServices";\nconst hostServices = createTauriHostServices();'],
+    ["src/api.ts", "import { tauriInvoke } from './core/api/tauriInvoke';"],
+    ["src/modules/accounts/index.tsx", 'const ACCOUNT_OVERLAY_ID = "flint.accounts.overlay.account-dialog";\noverlays: [];\nvisible: (context: AppPageContext) => context.accountDialogOpen'],
+    ...["about", "launch", "saves", "settings", "versions"].map((name) => [`src/modules/${name}/index.tsx`, "overlays: []"]),
+    ["src/modules/versions/downloads/LoaderInstallPanel.tsx", "parseLoaderKind(); useRequestGeneration(); requests.isCurrent(id);"],
+    ["src/modules/versions/downloads/ModDiscoveryPanel.tsx", "parseLoaderKind(); useRequestGeneration(); requests.isCurrent(id);"],
+    ["src/modules/saves/SaveManagerView.tsx", "useRequestGeneration(); requests.isCurrent(id);"],
+    ...reviewedTauriAdapterAllowlist().map((adapter) => [adapter.file, "export {};"]),
+  ].map(([relativePath, sourceText]) => ({ relativePath, sourceText }));
+  assert.deepEqual(evaluatePhase5FrontendContractSources(sources), []);
+
+  const missingOverlay = sources.map((source) =>
+    source.relativePath === "src/modules/accounts/index.tsx"
+      ? { ...source, sourceText: "overlays: []; visible: (context: AppPageContext) => context.accountDialogOpen" }
+      : source,
+  );
+  assert.equal(
+    evaluatePhase5FrontendContractSources(missingOverlay)
+      .some((issue) => issue.rule === "FE-PHASE5-OVERLAY-001" && /exactly one overlay/.test(issue.message)),
+    true,
+  );
+  const missingAdapter = sources.filter((source) => source.relativePath !== "src/core/platform/tauriWindow.ts");
+  assert.equal(
+    evaluatePhase5FrontendContractSources(missingAdapter)
+      .some((issue) => issue.rule === "FE-TAURI-ADAPTER-IMPORT-001" && /tauriWindow/.test(issue.message)),
+    true,
+  );
+  const missingLoaderParser = sources.map((source) =>
+    source.relativePath === "src/modules/versions/downloads/LoaderInstallPanel.tsx"
+      ? { ...source, sourceText: "useRequestGeneration(); requests.isCurrent(id);" }
+      : source,
+  );
+  assert.equal(
+    evaluatePhase5FrontendContractSources(missingLoaderParser)
+      .some((issue) => issue.rule === "FE-LOADER-PARSER-001" && /parseLoaderKind/.test(issue.message)),
+    true,
+  );
+  const missingStaleGuard = sources.map((source) =>
+    source.relativePath === "src/modules/saves/SaveManagerView.tsx"
+      ? { ...source, sourceText: "requests.isCurrent(id);" }
+      : source,
+  );
+  assert.equal(
+    evaluatePhase5FrontendContractSources(missingStaleGuard)
+      .some((issue) => issue.rule === "FE-STALE-REQUEST-001" && /useRequestGeneration/.test(issue.message)),
+    true,
+  );
+});
 test("match-source detection does not require a literal ModSource arm", () => {
   assert.equal(findMatchSourceSites("match source { _ => fallback() }").length, 1);
   assert.equal(findMatchSourceSites("match selected_source.as_str() { _ => fallback() }").length, 1);

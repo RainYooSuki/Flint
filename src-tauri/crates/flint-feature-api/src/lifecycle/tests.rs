@@ -24,6 +24,7 @@ use super::{
 struct RuntimeLogs {
     initialized_features: Arc<Mutex<Vec<String>>>,
     shut_down_features: Arc<Mutex<Vec<String>>>,
+    failed_shutdown_features: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl Default for RuntimeLogs {
@@ -31,6 +32,7 @@ impl Default for RuntimeLogs {
         Self {
             initialized_features: Arc::new(Mutex::new(Vec::new())),
             shut_down_features: Arc::new(Mutex::new(Vec::new())),
+            failed_shutdown_features: Arc::new(Mutex::new(BTreeSet::new())),
         }
     }
 }
@@ -51,7 +53,17 @@ impl FeatureRuntime for RecordingRuntime {
             .lock()
             .expect("runtime shutdown log lock")
             .push(self.feature_id.clone());
-        Ok(())
+        if self
+            .logs
+            .failed_shutdown_features
+            .lock()
+            .expect("runtime shutdown failure lock")
+            .contains(&self.feature_id)
+        {
+            Err("runtime shutdown failed with token=hidden".to_string())
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -310,6 +322,10 @@ fn public_failure_reasons_are_control_safe_bounded_and_redacted() {
 #[test]
 fn startup_shutdown_is_deterministic_reverse_ordered_and_idempotent() {
     let logs = RuntimeLogs::default();
+    logs.failed_shutdown_features
+        .lock()
+        .expect("runtime shutdown failure lock")
+        .insert("flint.zeta".to_string());
     let core_calls = Arc::new(AtomicUsize::new(0));
     let catalog = TestProviderCatalog::new(&[
         "provider.zeta",
@@ -394,13 +410,22 @@ fn startup_shutdown_is_deterministic_reverse_ordered_and_idempotent() {
         .diagnostics()
         .iter()
         .any(|diagnostic| diagnostic.contains("provider shutdown failed")));
+    assert!(lifecycle.diagnostics().iter().any(|diagnostic| {
+        diagnostic.contains("feature 'flint.zeta' shutdown failed")
+    }));
+    assert!(lifecycle
+        .diagnostics()
+        .iter()
+        .all(|diagnostic| !diagnostic.contains("token")));
     assert!(lifecycle
         .provider_states
         .values()
         .all(|state| *state == ProviderState::Stopped));
 
+    let diagnostics_after_shutdown = lifecycle.diagnostics().len();
     lifecycle.shutdown().expect("idempotent shutdown");
     assert_eq!(core_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(lifecycle.diagnostics().len(), diagnostics_after_shutdown);
     assert_eq!(
         shut_down_features(&logs),
         vec!["flint.alpha", "flint.zeta", "flint.gamma", "flint.beta"]

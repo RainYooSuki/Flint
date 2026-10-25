@@ -17,8 +17,19 @@ The prepare source guard runs for every automatic push or manual branch-triggere
 
 ## Maintainer expectations
 
-The workflow computes `YYYY.M.N-sha7`, builds Windows x64, Linux x64, macOS x64, and macOS arm64, publishes raw files plus matching ZIPs and `sha.txt`, and verifies the exact release asset set. Only after publication and verification does it commit the released value to `VERSION` as `github-actions[bot]` and push to the triggering branch. That bot push uses `GITHUB_TOKEN`, so it does not start another workflow run; a manual `VERSION`-only push does start the workflow and then fails the prepare source guard.
+The workflow computes `YYYY.M.N-sha7`, builds Windows x64, Linux x64, macOS x64, and macOS arm64, publishes raw files plus matching ZIPs and `sha.txt`, and verifies the exact release asset set. The release build uses `tauri build --no-bundle`; the workflow packages the raw executables into ZIPs and does not publish the platform installer bundles from an ordinary bundled build. Only after publication and verification does it commit the released value to `VERSION` as `github-actions[bot]` and push to the triggering branch. That bot push uses `GITHUB_TOKEN`, so it does not start another workflow run; a manual `VERSION`-only push does start the workflow and then fails the prepare source guard.
 
 At post-release recording, if branch `VERSION` already equals the released version, the workflow exits without another commit. Otherwise it requires branch `VERSION` to equal the source-commit `VERSION`, writes the released value, and refuses any unexpected branch `VERSION` state rather than overwriting it.
 
-Use `main` or `dev` for normal releases. Review [`../../RELEASE.md`](../../RELEASE.md) before changing tags, release permissions, or branch protection. Run the local checks in that guide before pushing release-tooling changes.
+## Phase 5 prepare gate
+
+The `prepare` job installs frontend dependencies and runs:
+
+```bash
+node --test scripts/test-architecture-checker.mjs scripts/test-frontend-contracts.mjs
+node scripts/check-architecture.mjs --phase 5
+```
+
+The strict gate allows `@tauri-apps/*` only in the exact five reviewed frontend adapters: `src/core/api/tauriInvoke.ts`, `src/core/events/tauriEvents.ts`, `src/core/platform/tauriDialogs.ts`, `src/core/platform/tauriOpener.ts`, and `src/core/platform/tauriWindow.ts`. It requires `HostServices` injection and registry overlays, rejects production shim/alias and migration-policy tokens, requires one shared actual-registry `ProviderRuntimeState`, and enforces the exact nineteen-package Cargo/source/dependency/typed-port rules, both provider compositions, the sole `ModSource`/`LoaderKind` bindings, and the 30-command/28-feature-command gate map. There are no temporary production exceptions. GitHub Actions is the final verification authority; local checks are not evidence that hosted CI is green.
+
+Use `main` or `dev` for normal releases. Review [`../../RELEASE.md`](../../RELEASE.md) before changing tags, release permissions, or branch protection. Run the developer checks in that guide before pushing release-tooling changes; use the hosted workflow result as completion evidence.

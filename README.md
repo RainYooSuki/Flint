@@ -61,7 +61,7 @@ Microsoft and CurseForge integrations are optional. Configure them in Settings u
 
 ## Technology
 
-Flint uses Tauri 2 with a Rust backend and a React 18 + TypeScript frontend built by Vite. The Rust backend uses `reqwest` with rustls, `serde`, `zip`, `flate2`, `base64`, `sha1`, `regex`, `dirs`, and `tokio` for its network, archive, asset, NBT, and background-task paths. The base command contract is in [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md); account, loader, mod, and save extensions are in [`docs/FEATURE_API_CONTRACT.md`](docs/FEATURE_API_CONTRACT.md).
+Flint uses Tauri 2 with a nineteen-package Rust workspace and a React 18 + TypeScript frontend built by Vite. The Rust workspace separates the thin Tauri host, framework-neutral core/API crates, seven feature crates, two mod providers, and six loader providers. Provider-backed commands and feature availability share one actual-registry `ProviderRuntimeState`; the host owns lifecycle, availability IPC, command gating, and exit shutdown. Frontend Tauri access is confined to typed invoke/event/dialog/opener/window adapters injected as `HostServices`. The base command contract is in [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md); account, loader, mod, and save extensions are in [`docs/FEATURE_API_CONTRACT.md`](docs/FEATURE_API_CONTRACT.md).
 
 ## Requirements
 
@@ -101,6 +101,12 @@ The development server listens on `http://localhost:1420`.
 
 ## Build and test
 
+Install frontend dependencies:
+
+```bash
+npm install
+```
+
 Build the frontend:
 
 ```bash
@@ -119,16 +125,22 @@ Build the configured native bundles:
 npm run tauri -- build
 ```
 
-Run the available checks:
+The release workflow uses `tauri build --no-bundle --target <triple>` to produce the raw executable for each release target. It then packages that raw executable into the matching ZIP artifact; it does not publish the platform installer bundles produced by an ordinary bundled build. A local `npm run tauri -- build` uses the bundle formats configured in `src-tauri/tauri.conf.json`.
+
+Run the available development checks:
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+cargo test --workspace --all-targets --locked --manifest-path src-tauri/Cargo.toml
+node --test scripts/test-architecture-checker.mjs scripts/test-frontend-contracts.mjs
+node scripts/check-architecture.mjs --phase 5
 node scripts/test-release-scripts.mjs
 node scripts/validate-release.mjs --require-exact
 ```
 
-Raw output locations without `--target` are `src-tauri/target/release/flint.exe` on Windows and `src-tauri/target/release/flint` on Linux/macOS. Target-specific builds are placed under `src-tauri/target/<triple>/release/`. Cargo resolves the backend dependencies from `Cargo.lock` on the first build; no separate Rust dependency installation step is needed.
+These commands are developer checks, not evidence that the hosted release workflow is green. GitHub Actions is the verification authority for completion and release.
+
+Raw output locations without `--target` are `src-tauri/target/release/flint.exe` on Windows and `src-tauri/target/release/flint` on Linux/macOS. Target-specific builds are placed under `src-tauri/target/<triple>/release/`. Cargo resolves backend dependencies from `src-tauri/Cargo.lock`; no separate Rust dependency installation step is needed.
 
 ## Versioning
 
@@ -156,7 +168,7 @@ For version `<version>`, releases contain the Windows `.exe`, the Linux/macOS ra
 
 The workflow is [`.github/workflows/flint-release.yml`](.github/workflows/flint-release.yml).
 
-- Every push to `main` or `dev` starts the release workflow, including docs/tooling-only pushes and pushes that change only `VERSION`, Markdown/docs, workflow files, release scripts, or ignore metadata.
+- Every push to `main` or `dev` starts the release workflow, including docs/tooling-only pushes and pushes that change only `VERSION`, Markdown/docs, workflow files, release scripts, or ignore metadata. The `prepare` job runs the architecture and frontend contract tests, then `node scripts/check-architecture.mjs --phase 5`.
 - Manual runs use `workflow_dispatch` from the selected branch.
 - No changed-file exemptions apply. The prepare source guard runs for every automatic push or manual branch-triggered run and rejects an empty commit or a commit whose only changed file is `VERSION`. Docs/tooling/workflow-only commits and `VERSION` plus other-file commits may proceed. A `VERSION`-only push starts the workflow and then fails in prepare.
 - After release verification, if branch `VERSION` already equals the released version, the workflow exits successfully without another commit; otherwise it requires the branch value to equal the source-commit `VERSION`, writes the released value, and refuses any unexpected branch `VERSION` state.

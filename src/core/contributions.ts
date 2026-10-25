@@ -74,11 +74,20 @@ export interface InstanceActionContribution {
   readonly handler: (context: InstanceActionContext) => void | Promise<void>;
 }
 
+export interface OverlayContribution {
+  readonly id: string;
+  readonly featureId: string;
+  readonly order: number;
+  readonly component: PageComponent;
+  readonly visible?: (context: AppPageContext) => boolean;
+}
+
 export interface FeatureContributions {
   readonly pages: readonly PageContribution[];
   readonly navigation: readonly NavigationContribution[];
   readonly settingsSections: readonly SettingsSectionContribution[];
   readonly instanceActions: readonly InstanceActionContribution[];
+  readonly overlays: readonly OverlayContribution[];
 }
 
 export interface FeatureDescriptor {
@@ -95,6 +104,7 @@ export interface FrontendContributionRegistry {
   readonly navigation: readonly NavigationContribution[];
   readonly settingsSections: readonly SettingsSectionContribution[];
   readonly instanceActions: readonly InstanceActionContribution[];
+  readonly overlays: readonly OverlayContribution[];
   readonly pageById: Readonly<Record<string, PageContribution | undefined>>;
   readonly defaultPageId: string | null;
 }
@@ -190,6 +200,9 @@ function assertFeatureContributionsShape(feature: FeatureDescriptor): void {
   }
   if (!Array.isArray(feature.contributions.instanceActions)) {
     validationError(`feature ${feature.id} contributions.instanceActions must be an array.`);
+  }
+  if (!Array.isArray(feature.contributions.overlays)) {
+    validationError(`feature ${feature.id} contributions.overlays must be an array.`);
   }
 }
 
@@ -326,6 +339,15 @@ export function validateFeatureDescriptors(features: readonly FeatureDescriptor[
         assertFunction(action.enabled, `instance action ${action.id} enabled selector`);
       }
     }
+
+    for (const overlay of feature.contributions.overlays) {
+      assertContributionBase(feature, overlay, "overlay", contributionIds);
+      contributionIds.add(overlay.id);
+      assertFunction(overlay.component, `overlay ${overlay.id} component`);
+      if (overlay.visible !== undefined) {
+        assertFunction(overlay.visible, `overlay ${overlay.id} visible selector`);
+      }
+    }
   }
 
   for (const feature of features) {
@@ -348,7 +370,8 @@ function freezeFeature(feature: FeatureDescriptor): FeatureDescriptor {
     pages: freezeOrderedContributions(feature.contributions.pages),
     navigation: freezeOrderedContributions(feature.contributions.navigation),
     settingsSections: freezeOrderedContributions(feature.contributions.settingsSections),
-    instanceActions: freezeOrderedContributions(feature.contributions.instanceActions)
+    instanceActions: freezeOrderedContributions(feature.contributions.instanceActions),
+    overlays: freezeOrderedContributions(feature.contributions.overlays)
   });
 
   return Object.freeze({
@@ -372,6 +395,7 @@ export function buildContributionRegistry(features: readonly FeatureDescriptor[]
   const navigation = freezeOrderedContributions(orderedFeatures.flatMap((feature) => feature.contributions.navigation));
   const settingsSections = freezeOrderedContributions(orderedFeatures.flatMap((feature) => feature.contributions.settingsSections));
   const instanceActions = freezeOrderedContributions(orderedFeatures.flatMap((feature) => feature.contributions.instanceActions));
+  const overlays = freezeOrderedContributions(orderedFeatures.flatMap((feature) => feature.contributions.overlays));
 
   const pageById = Object.create(null) as Record<string, PageContribution | undefined>;
   for (const page of pages) pageById[page.id] = page;
@@ -382,6 +406,7 @@ export function buildContributionRegistry(features: readonly FeatureDescriptor[]
     navigation,
     settingsSections,
     instanceActions,
+    overlays,
     pageById: Object.freeze(pageById),
     defaultPageId: pages[0]?.id ?? null
   });
