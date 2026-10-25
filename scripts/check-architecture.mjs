@@ -1457,7 +1457,7 @@ const providerTarget = (file, role, localTargets, transitional = {}, external = 
   file, role, localTargets: new Set(localTargets), transitionalLocalTargets: new Map(Object.entries(transitional)), externalRoots: new Set(external),
 });
 const MOD_PROVIDER_TARGETS = [
-  providerTarget(PROVIDER_API_SOURCE, "mod-provider-api", []),
+  providerTarget(PROVIDER_API_SOURCE, "mod-provider-api", ["loaders", "mods"]),
   providerTarget("src-tauri/crates/flint-provider-api/src/mods.rs", "mod-provider-api", [], {}, ["std", "flint_core"]),
   providerTarget(
     "src-tauri/providers/flint-mod-provider-curseforge/src/lib.rs",
@@ -1796,7 +1796,7 @@ const LOADER_PROVIDER_TARGETS = [
     providerTarget(
       file,
       "loader-provider-api",
-      [],
+      file === PROVIDER_API_SOURCE ? ["loaders", "mods"] : [],
       {},
       file === PROVIDER_API_SOURCE ? ["std", "semver", "flint_core"] : ["std", "flint_core"],
     ),
@@ -2471,6 +2471,9 @@ function checkFeatureTarget(phase, target, graph, report) {
       if (privateImport) {
         report("RUST-FEATURE-IMPORT-001", record.relative, declaration.line, `feature crate imports host/private crate module '${privateImport}'.`);
       }
+      continue;
+    }
+    if (target.localTargets.has(root)) {
       continue;
     }
     if (root === "tauri" || root.startsWith("tauri_")) {
@@ -3351,7 +3354,8 @@ function checkCargoGate(phase, report) {
   }
   const host = packages.find((pkg) => samePath(pkg.manifest_path, RUST_MANIFEST));
   const hostLib = host?.targets?.find((target) => target.name === "flint_lib");
-  if (!host || host.name !== "flint" || !hostLib || !(hostLib.kind ?? []).includes("lib")) {
+  const hostLibraryKinds = new Set(["lib", "staticlib", "cdylib", "rlib"]);
+  if (!host || host.name !== "flint" || !hostLib || !(hostLib.kind ?? []).some((kind) => hostLibraryKinds.has(kind))) {
     report("RUST-CARGO-HOST-001", "src-tauri/Cargo.toml", 1, "host package 'flint' with reviewed library target 'flint_lib' must remain at src-tauri/Cargo.toml.");
   }
 }

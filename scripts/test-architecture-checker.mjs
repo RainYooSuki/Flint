@@ -450,7 +450,7 @@ test("provider API policy targets the extracted crate and drops the host-local m
   assert.equal(modApiTargets.length, 2);
   const genericApi = modApiTargets.find((target) => target.file === providerApi);
   assert.ok(genericApi);
-  assert.deepEqual(genericApi.localTargets, []);
+  assert.deepEqual(genericApi.localTargets, ["loaders", "mods"]);
   assert.deepEqual(genericApi.externalRoots, ["flint_core", "semver", "std"]);
   const modContract = modApiTargets.find(
     (target) => target.file === "src-tauri/crates/flint-provider-api/src/mods.rs",
@@ -480,6 +480,9 @@ test("provider API policy targets the extracted crate and drops the host-local m
     loaderApiTargets.map((target) => target.file).sort(),
     [loaderContract, providerApi].sort(),
   );
+  const genericLoaderApi = loaderApiTargets.find((target) => target.file === providerApi);
+  assert.ok(genericLoaderApi);
+  assert.deepEqual(genericLoaderApi.localTargets, ["loaders", "mods"]);
   const loaderContractTarget = targets.find(
     (target) => target.role === "loader-provider-api" && target.file === loaderContract,
   );
