@@ -683,12 +683,18 @@ export function evaluatePhase5FrontendContractSources(sources) {
 const CONCRETE_PROVIDER_CONSTRUCTION_PATTERN = /\b(?:CurseForgeModProvider|ModrinthModProvider|FabricLoaderProvider|ForgeLoaderProvider|LiteLoaderProvider|NeoForgeLoaderProvider|OptiFineProvider|QuiltLoaderProvider)\s*::\s*new\s*\(/g;
 const PROVIDER_COMPOSITION_SOURCE = "src-tauri/src/provider_composition.rs";
 const HOST_LIB_SOURCE = "src-tauri/src/lib.rs";
+function isRustTestOnlySourcePath(relativePath) {
+  const normalized = toPosix(relativePath);
+  return /(^|\/)tests?\.rs$/.test(normalized) || /(^|\/)tests\//.test(normalized);
+}
 export function evaluatePhase5ProviderRuntimeSources(sources) {
   const issues = [];
-  const entries = (sources ?? []).map((source) => ({
-    relativePath: toPosix(source.relativePath ?? source.relative),
-    productionText: source.productionText,
-  }));
+  const entries = (sources ?? [])
+    .map((source) => ({
+      relativePath: toPosix(source.relativePath ?? source.relative),
+      productionText: source.productionText,
+    }))
+    .filter((entry) => !isRustTestOnlySourcePath(entry.relativePath));
   for (const entry of entries) {
     for (const issue of evaluatePhase5ProductionShimTokens(entry.relativePath, entry.productionText)) {
       issues.push({ ...issue, file: entry.relativePath });

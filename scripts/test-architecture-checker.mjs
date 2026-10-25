@@ -1056,6 +1056,7 @@ test("phase-5 shared ProviderRuntimeState owns both registries and is initialize
   const sources = [
     { relativePath: "src-tauri/src/provider_composition.rs", productionText: compositionSource },
     { relativePath: "src-tauri/src/lib.rs", productionText: hostLibSource },
+    { relativePath: "src-tauri/crates/flint-feature-api/src/lifecycle/tests.rs", productionText: "impl ProviderCatalog for TestProviderCatalog {}" },
   ];
   assert.deepEqual(evaluatePhase5ProviderRuntimeSources(sources), []);
   const workspaceRecords = sources.map(({ relativePath, ...source }) => ({ relative: relativePath, ...source }));
