@@ -93,7 +93,7 @@ jobs:
 
       - name: Check architecture boundaries
         shell: bash
-        run: node scripts/check-architecture.mjs --phase 3
+        run: node scripts/check-architecture.mjs --phase 4
 
       - name: Compute release metadata from exact HEAD
         id: meta

@@ -13,25 +13,36 @@ import {
   collectHtmlInjectionSites,
   collectImportMetaMembers,
   collectUnsafeCodeSites,
+  evaluateCargoInternalEdge,
+  evaluateExternalDependencyAllowlist,
   evaluateFeatureCrateManifest,
   evaluateFeatureDirectoryNames,
   evaluateFeatureLockEntries,
+  evaluateFeatureProviderRegistryConsumer,
   evaluateFeatureRegistryConstruction,
+  evaluateFoundationCrateSource,
   evaluateFrontendBoundary,
   evaluateHostFeatureDependencyDeclarations,
   evaluateHostLoaderDependencyDeclarations,
+  evaluateHostModLoaderAdapters,
   evaluateLoaderProviderComposition,
   evaluateLoaderProviderCrateManifest,
   evaluateLoaderProviderDirectoryNames,
   evaluateLoaderProviderLockEntries,
   evaluatePhase3Orchestration,
-  evaluateHostModLoaderAdapters,
+  evaluateProviderTypedPortSource,
   evaluateVanillaInstallBoundary,
+  evaluateWorkspaceCrateGroupDirectories,
+  evaluateWorkspaceLockEntries,
+  evaluateWorkspacePackageNames,
+  evaluateWorkspaceSourceRoots,
+  evaluateWorkspaceVersionCoherence,
+  findCargoDependencyCycles,
   findLoaderKindDispatchSites,
   findMatchSourceSites,
-  firstUseRoot,
   findModSourceAliasDispatchSites,
   findModSourceDispatchSites,
+  firstUseRoot,
   getExportedFeatureDescriptors,
   moduleTargetsFromUse,
   packageRootFromPackageId,
@@ -42,12 +53,16 @@ import {
   prepareRustProductionSource,
   requiredLoaderFiles,
   resolveFrontendModule,
+  reviewedExternalDependencyRules,
   reviewedFeatureCommandGates,
   reviewedFeatureCrateSpecs,
   reviewedFeatureTargets,
   reviewedHostRustModuleIds,
   reviewedLoaderProviderCrateSpecs,
   reviewedProviderTargets,
+  reviewedWorkspaceCrateGroupDirectories,
+  reviewedWorkspaceCrateNames,
+  reviewedWorkspaceCrateSpecs,
 } from "./check-architecture.mjs";
 
 function hostCommandFixture(gates = reviewedFeatureCommandGates()) {
@@ -88,6 +103,7 @@ function hostCommandFixture(gates = reviewedFeatureCommandGates()) {
 test("phase parsing defaults to 1 and rejects unsupported/unknown input", () => {
   assert.equal(parsePhase([]), 1);
   assert.equal(parsePhase(["--phase", "2"]), 2);
+  assert.equal(parsePhase(["--phase", "4"]), 4);
   assert.equal(parsePhase(["--phase=5"]), 5);
   assert.throws(() => parsePhase(["--phase", "0"]), /Unsupported phase/);
   assert.throws(() => parsePhase(["--warn"]), /Unknown argument/);
@@ -102,6 +118,324 @@ test("phase 2 fails closed when mandatory loader targets are absent", () => {
   assert.equal(violations.every((violation) => violation.rule === "RUST-PHASE-TARGET-001"), true);
 });
 
+test("phase-4 gate covers the exact nineteen workspace crates and release workflow", () => {
+  const names = reviewedWorkspaceCrateNames();
+  assert.equal(names.length, 19);
+  const specs = reviewedWorkspaceCrateSpecs();
+  assert.equal(specs.length, 19);
+  assert.deepEqual(specs.map((spec) => spec.crateName), names);
+  assert.equal(new Set(specs.map((spec) => spec.sourceRoot)).size, 19);
+  assert.equal(new Set(specs.map((spec) => spec.manifest)).size, 19);
+  assert.deepEqual(evaluateWorkspacePackageNames(names), []);
+
+  const missingPackage = evaluateWorkspacePackageNames(names.filter((name) => name !== "flint-core"));
+  assert.equal(missingPackage.some((issue) => /flint-core.*missing/.test(issue.message)), true);
+  const extraPackage = evaluateWorkspacePackageNames([...names, "flint-unreviewed"]);
+  assert.equal(extraPackage.some((issue) => issue.rule === "RUST-CARGO-CRATE-ALLOW-001" && /flint-unreviewed/.test(issue.message)), true);
+
+  const sourceRoots = specs.map((spec) => spec.sourceRoot);
+  assert.deepEqual(evaluateWorkspaceSourceRoots(sourceRoots), []);
+  const missingRoot = specs.find((spec) => spec.crateName === "flint-core").sourceRoot;
+  const missingSource = evaluateWorkspaceSourceRoots(sourceRoots.filter((root) => root !== missingRoot));
+  assert.equal(missingSource.length, 1);
+  assert.match(missingSource[0], /flint-core/);
+
+  const groups = reviewedWorkspaceCrateGroupDirectories();
+  assert.equal(groups.length, 3);
+  for (const group of groups) {
+    assert.deepEqual(evaluateWorkspaceCrateGroupDirectories(group.root, group.expectedDirectories), []);
+  }
+  const crateGroup = groups.find((group) => group.root === "src-tauri/crates");
+  assert.deepEqual(
+    evaluateWorkspaceCrateGroupDirectories(crateGroup.root, [...crateGroup.expectedDirectories, "flint-unreviewed"]),
+    ["unexpected workspace crate directory 'flint-unreviewed' under 'src-tauri/crates'."],
+  );
+  const modulesGroup = groups.find((group) => group.root === "src-tauri/modules");
+  assert.deepEqual(
+    evaluateWorkspaceCrateGroupDirectories(
+      modulesGroup.root,
+      modulesGroup.expectedDirectories.filter((name) => name !== "flint-feature-mods"),
+    ),
+    ["missing workspace crate directory 'flint-feature-mods' under 'src-tauri/modules'."],
+  );
+
+  const workflow = fs.readFileSync(new URL("../.github/workflows/flint-release.yml", import.meta.url), "utf8");
+  const checkerPhases = [...workflow.matchAll(/node scripts\/check-architecture\.mjs\s+--phase\s+([1-5])/g)]
+    .map((match) => match[1]);
+  assert.deepEqual(checkerPhases, ["4"]);
+  assert.match(workflow, /node --test scripts\/test-architecture-checker\.mjs/);
+});
+
+test("phase-4 external dependency allowlists are exact by package and Cargo kind", () => {
+  const rules = reviewedExternalDependencyRules();
+  assert.equal(rules.length, 19);
+  const hostRule = rules.find((rule) => rule.packageName === "flint");
+  assert.deepEqual(hostRule.dependencies.find((dependency) => dependency.name === "tauri-build").kinds, ["build"]);
+  const liteloaderRule = rules.find((rule) => rule.packageName === "flint-loader-provider-liteloader");
+  assert.deepEqual(
+    liteloaderRule.dependencies.map((dependency) => [dependency.name, dependency.kinds]),
+    [["regex", ["normal"]], ["serde_json", ["normal"]]],
+  );
+  const metadataDependencies = (packageName) => {
+    const rule = rules.find((candidate) => candidate.packageName === packageName);
+    assert.ok(rule, `missing external rule for ${packageName}`);
+    return rule.dependencies.flatMap((dependency) =>
+      dependency.kinds.map((kind) => ({ name: dependency.name, kind: kind === "normal" ? null : kind })),
+    );
+  };
+
+  assert.deepEqual(evaluateExternalDependencyAllowlist("flint", metadataDependencies("flint")), []);
+  assert.deepEqual(evaluateExternalDependencyAllowlist("flint-feature-api", metadataDependencies("flint-feature-api")), []);
+  assert.deepEqual(
+    evaluateExternalDependencyAllowlist("flint-mod-provider-curseforge", metadataDependencies("flint-mod-provider-curseforge")),
+    [],
+  );
+
+  const hostDependencies = metadataDependencies("flint");
+  const wrongBuildKind = hostDependencies.map((dependency) =>
+    dependency.name === "tauri-build" ? { name: "tauri-build", kind: "normal" } : dependency,
+  );
+  const wrongKindIssues = evaluateExternalDependencyAllowlist("flint", wrongBuildKind);
+  assert.equal(wrongKindIssues.some((issue) => issue.rule === "RUST-CARGO-EXTERNAL-ALLOW-001"), true);
+  assert.equal(wrongKindIssues.some((issue) => issue.rule === "RUST-CARGO-EXTERNAL-MISSING-001"), true);
+
+  const featureApiWithWrongKind = metadataDependencies("flint-feature-api").map((dependency) =>
+    dependency.name === "serde_json" ? { name: "serde_json", kind: "normal" } : dependency,
+  );
+  assert.equal(
+    evaluateExternalDependencyAllowlist("flint-feature-api", featureApiWithWrongKind)
+      .some((issue) => issue.rule === "RUST-CARGO-EXTERNAL-ALLOW-001"),
+    true,
+  );
+
+  const providerDependencies = [
+    ...metadataDependencies("flint-mod-provider-curseforge"),
+    { name: "reqwest", kind: "normal" },
+    { name: "zip", kind: "normal" },
+  ];
+  const providerIssues = evaluateExternalDependencyAllowlist("flint-mod-provider-curseforge", providerDependencies);
+  assert.equal(providerIssues.filter((issue) => issue.rule === "RUST-CARGO-PROVIDER-EXTERNAL-001").length, 2);
+});
+
+test("phase-4 internal Cargo edges and cycles are fail-closed", () => {
+  assert.equal(evaluateCargoInternalEdge("flint", "flint-core").allowed, true);
+  assert.equal(evaluateCargoInternalEdge("flint-core", "flint-feature-api").allowed, false);
+  assert.equal(
+    evaluateCargoInternalEdge("flint-mod-provider-curseforge", "flint-loader-provider-fabric").rule,
+    "RUST-CARGO-PROVIDER-EDGE-001",
+  );
+  assert.equal(
+    evaluateCargoInternalEdge("flint-loader-provider-fabric", "flint-feature-mods").rule,
+    "RUST-CARGO-PROVIDER-EDGE-001",
+  );
+  assert.equal(evaluateCargoInternalEdge("flint-feature-launch", "flint-feature-accounts").allowed, true);
+  assert.equal(
+    evaluateCargoInternalEdge("flint-feature-launch", "flint-feature-saves").rule,
+    "RUST-CARGO-CROSS-FEATURE-001",
+  );
+  assert.equal(
+    evaluateCargoInternalEdge("flint-feature-settings", "flint").rule,
+    "RUST-CARGO-HOST-REVERSE-001",
+  );
+
+  const cycles = findCargoDependencyCycles(new Map([
+    ["alpha", ["beta"]],
+    ["beta", ["alpha"]],
+    ["leaf", []],
+  ]));
+  assert.deepEqual(cycles, [["alpha", "beta", "alpha"]]);
+  assert.deepEqual(findCargoDependencyCycles(new Map([["alpha", ["beta"]], ["beta", []]])), []);
+});
+
+test("phase-4 workspace versions and the single lockfile stay coherent", () => {
+  const version = "2026.10.1-d1cce64";
+  const packages = reviewedWorkspaceCrateNames().map((name) => ({ name, version }));
+  assert.deepEqual(evaluateWorkspaceVersionCoherence(version, version, packages), []);
+  assert.equal(
+    evaluateWorkspaceVersionCoherence(version, "2026.10.2-deadbee", packages)
+      .some((issue) => issue.rule === "RUST-CARGO-VERSION-001"),
+    true,
+  );
+  assert.equal(
+    evaluateWorkspaceVersionCoherence(version, version, packages.map((pkg) =>
+      pkg.name === "flint-core" ? { ...pkg, version: "0.0.0" } : pkg,
+    )).some((issue) => issue.rule === "RUST-CARGO-VERSION-001"),
+    true,
+  );
+
+  const lock = [
+    "[[package]]",
+    'name = "flint"',
+    `version = "${version}"`,
+    "",
+    ...reviewedWorkspaceCrateNames().filter((name) => name !== "flint").flatMap((name) => [
+      "[[package]]",
+      `name = "${name}"`,
+      `version = "${version}"`,
+      "",
+    ]),
+  ].join("\n");
+  assert.deepEqual(evaluateWorkspaceLockEntries(lock, version), []);
+  const missingLockEntry = lock.replace(
+    'name = "flint-core"\nversion = "2026.10.1-d1cce64"',
+    'name = "flint-core"\nversion = "0.0.0"',
+  );
+  assert.equal(
+    evaluateWorkspaceLockEntries(missingLockEntry, version)
+      .some((issue) => issue.rule === "RUST-CARGO-LOCK-001"),
+    true,
+  );
+});
+
+test("phase-4 provider typed-port evaluator requires contracts and rejects raw host APIs", () => {
+  const validLoader = [
+    "use flint_core::ports::{NetworkPort, PathPort};",
+    "use flint_provider_api::{LoaderListContext, LoaderProvider};",
+    "impl LoaderProvider for FabricLoaderProvider {",
+    "    fn list_versions(&self) -> Result<(), String> { Ok(()) }",
+    "}",
+    "fn fetch_metadata(context: &LoaderListContext<'_>) { let _ = context.network(); }",
+  ].join("\n");
+  assert.deepEqual(evaluateProviderTypedPortSource("loader", validLoader), []);
+
+  const validMod = [
+    "use flint_core::ports::NetworkPort;",
+    "use flint_provider_api::{ModProvider, ModProviderContext};",
+    "impl ModProvider for ModrinthModProvider {}",
+    "fn fetch(context: &ModProviderContext<'_>) { let _ = context.network(); }",
+  ].join("\n");
+  assert.deepEqual(evaluateProviderTypedPortSource("mod", validMod), []);
+
+  const missingContract = evaluateProviderTypedPortSource("loader", "fn helper() {}");
+  assert.equal(
+    missingContract.some((issue) => issue.rule === "RUST-PROVIDER-TYPED-PORT-001" && /LoaderProvider/.test(issue.message)),
+    true,
+  );
+  assert.equal(
+    missingContract.some((issue) => /typed context ports/.test(issue.message)),
+    true,
+  );
+
+  const forbidden = `${validMod}
+use reqwest::Client;
+use std::fs::File;
+use flint_feature_mods::ModSource;
+use flint_loader_provider_fabric::FabricLoaderProvider;
+`;
+  const forbiddenIssues = evaluateProviderTypedPortSource("mod", forbidden);
+  assert.equal(forbiddenIssues.some((issue) => /reqwest/.test(issue.message)), true);
+  assert.equal(forbiddenIssues.some((issue) => /filesystem/.test(issue.message)), true);
+  assert.equal(forbiddenIssues.some((issue) => /feature crate import/.test(issue.message)), true);
+  assert.equal(forbiddenIssues.some((issue) => /provider-to-provider/.test(issue.message)), true);
+});
+
+test("phase-4 provider typed-port evaluator rejects concrete core adapters and registry construction", () => {
+  const cleanLoader = [
+    "use flint_core::ports::{NetworkPort, PathPort};",
+    "use flint_provider_api::{LoaderListContext, LoaderProvider};",
+    "impl LoaderProvider for FabricLoaderProvider {",
+    "    fn list_versions(&self) -> Result<(), String> { Ok(()) }",
+    "}",
+    "fn fetch(context: &LoaderListContext<'_>) { let _ = context.network(); }",
+  ].join("\n");
+  const cleanMod = [
+    "use flint_core::ports::NetworkPort;",
+    "use flint_provider_api::{ModProvider, ModProviderContext};",
+    "impl ModProvider for ModrinthModProvider {}",
+    "fn fetch(context: &ModProviderContext<'_>) { let _ = context.network(); }",
+  ].join("\n");
+  assert.deepEqual(evaluateProviderTypedPortSource("loader", cleanLoader), []);
+  assert.deepEqual(evaluateProviderTypedPortSource("mod", cleanMod), []);
+
+  for (const adapter of [
+    "ReqwestNetwork",
+    "SafeWorkspace",
+    "CommandProcessPort",
+    "ProcessJavaRunner",
+    "NoopLogger",
+    "NoopProgress",
+  ]) {
+    const source = `${cleanMod}
+use flint_core::ports::${adapter};
+`;
+    const issues = evaluateProviderTypedPortSource("mod", source);
+    const adapterIssues = issues.filter((issue) => issue.rule === "RUST-PROVIDER-CORE-ADAPTER-001");
+    assert.equal(adapterIssues.length, 1, `missing concrete adapter rejection for ${adapter}`);
+    assert.match(adapterIssues[0].message, new RegExp(`'${adapter}'`));
+  }
+  assert.equal(
+    evaluateProviderTypedPortSource("loader", "use flint_core::ports::SafeWorkspace;", { requireContract: false })
+      .some((issue) => issue.rule === "RUST-PROVIDER-CORE-ADAPTER-001"),
+    true,
+  );
+
+  const directConstruction = `${cleanLoader}
+fn compose_registry() { let _ = ProviderRegistry::new(vec![], 1); }
+`;
+  const directIssues = evaluateProviderTypedPortSource("loader", directConstruction)
+    .filter((issue) => issue.rule === "RUST-PROVIDER-REGISTRY-CONSTRUCTION-001");
+  assert.equal(directIssues.length, 1);
+  assert.match(directIssues[0].message, /provider_composition\.rs/);
+
+  const genericConstruction = `${cleanMod}
+fn compose_registry() { let _ = ProviderRegistry::<dyn ModProvider>::new(vec![], 1); }
+`;
+  assert.equal(
+    evaluateProviderTypedPortSource("mod", genericConstruction)
+      .filter((issue) => issue.rule === "RUST-PROVIDER-REGISTRY-CONSTRUCTION-001").length,
+    1,
+  );
+
+  const testOnlySource = `${cleanMod}
+#[cfg(test)]
+mod tests {
+    use flint_core::ports::{ReqwestNetwork, SafeWorkspace, CommandProcessPort, ProcessJavaRunner, NoopLogger, NoopProgress};
+    fn compose_in_test() { let _ = ProviderRegistry::<dyn ModProvider>::new(vec![], 1); }
+}
+`;
+  const masked = prepareRustProductionSource(testOnlySource);
+  assert.equal(masked.includes("ReqwestNetwork"), false);
+  assert.equal(masked.includes("ProviderRegistry"), false);
+  assert.deepEqual(evaluateProviderTypedPortSource("mod", masked), []);
+});
+test("phase-4 feature registry consumers and foundation sources enforce direction", () => {
+  const validMods = [
+    "use flint_provider_api::{ModProvider, ProviderRegistry};",
+    "fn search(registry: &ProviderRegistry<dyn ModProvider>) { let _ = registry; }",
+  ].join("\n");
+  assert.deepEqual(evaluateFeatureProviderRegistryConsumer("flint-feature-mods", validMods), []);
+
+  const invalidMods = `${validMods}
+use tauri::AppHandle;
+use flint_mod_provider_modrinth::ModrinthModProvider;
+fn build() { let _ = ProviderRegistry::new(vec![], 1); }
+`;
+  const modIssues = evaluateFeatureProviderRegistryConsumer("flint-feature-mods", invalidMods);
+  assert.equal(modIssues.some((issue) => /may not construct provider registries/.test(issue.message)), true);
+  assert.equal(modIssues.some((issue) => /Tauri/.test(issue.message)), true);
+  assert.equal(modIssues.some((issue) => /concrete provider/.test(issue.message)), true);
+
+  assert.deepEqual(
+    evaluateFoundationCrateSource("flint-provider-api", "use flint_core::ports::NetworkPort;"),
+    [],
+  );
+  assert.deepEqual(
+    evaluateFoundationCrateSource("flint-feature-api", "use flint_core::contract::ApiVersion;"),
+    [],
+  );
+  assert.equal(
+    evaluateFoundationCrateSource("flint-feature-api", "use flint_provider_api::Provider;")
+      .some((issue) => /provider API crate/.test(issue.message)),
+    true,
+  );
+  const foundationIssues = evaluateFoundationCrateSource(
+    "flint-core",
+    "use tauri::AppHandle;\nuse flint_feature_mods::ModSource;\nuse flint_provider_api::Provider;",
+  );
+  assert.equal(foundationIssues.some((issue) => /Tauri/.test(issue.message)), true);
+  assert.equal(foundationIssues.some((issue) => /feature or concrete provider/.test(issue.message)), true);
+  assert.equal(foundationIssues.some((issue) => /provider or feature API/.test(issue.message)), true);
+});
 test("provider API policy targets the extracted crate and drops the host-local module", () => {
   const providerApi = "src-tauri/crates/flint-provider-api/src/lib.rs";
   const loaderContract = "src-tauri/crates/flint-provider-api/src/loaders.rs";

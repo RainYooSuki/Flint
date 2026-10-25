@@ -4,9 +4,11 @@
  *
  * Static, phase-aware, and fail-closed. Frontend parsing and module resolution
  * use the installed TypeScript compiler API and the repository tsconfig.
- * Rust checks are narrow source checks: comments/strings are masked first, and
+ * Rust phases 1-3 are source checks: comments/strings are masked first, and
  * only `#[cfg(test)] mod ... { ... }` scopes are removed. Production inline
- * modules are intentionally scanned.
+ * modules are intentionally scanned. Phase 4 adds Cargo metadata for workspace,
+ * package, and dependency truth plus all-workspace source/typed-port gates;
+ * Phase 5 remains a strict future phase.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -1066,6 +1068,7 @@ function extractRustUseDeclarations(productionText) {
   while ((match = pattern.exec(productionText)) !== null) {
     declarations.push({
       payload: match[1],
+      index: match.index,
       line: lineOf(productionText, match.index),
     });
   }
@@ -1471,19 +1474,27 @@ const MOD_PROVIDER_TARGETS = [
     ["std", "serde_json", "flint_core", "flint_provider_api"],
   ),
 ];
-const MOD_PROVIDER_CRATE_MANIFESTS = [
-  "src-tauri/providers/flint-mod-provider-curseforge/Cargo.toml",
-  "src-tauri/providers/flint-mod-provider-modrinth/Cargo.toml",
+const MOD_PROVIDER_CRATE_SPECS = [
+  {
+    crateName: "flint-mod-provider-curseforge",
+    manifest: "src-tauri/providers/flint-mod-provider-curseforge/Cargo.toml",
+    source: "src-tauri/providers/flint-mod-provider-curseforge/src/lib.rs",
+    dependencies: ["flint-core", "flint-provider-api", "serde_json"],
+  },
+  {
+    crateName: "flint-mod-provider-modrinth",
+    manifest: "src-tauri/providers/flint-mod-provider-modrinth/Cargo.toml",
+    source: "src-tauri/providers/flint-mod-provider-modrinth/src/lib.rs",
+    dependencies: ["flint-core", "flint-provider-api", "serde_json"],
+  },
 ];
+const MOD_PROVIDER_CRATE_MANIFESTS = MOD_PROVIDER_CRATE_SPECS.map((spec) => spec.manifest);
 const MOD_PROVIDER_CRATE_REQUIRED_DEPENDENCIES = new Set([
   "flint-core",
   "flint-provider-api",
   "serde_json",
 ]);
-const MOD_PROVIDER_CRATE_ALLOWED_DEPENDENCIES = new Set([
-  ...MOD_PROVIDER_CRATE_REQUIRED_DEPENDENCIES,
-  "semver",
-]);
+const MOD_PROVIDER_CRATE_ALLOWED_DEPENDENCIES = new Set(MOD_PROVIDER_CRATE_REQUIRED_DEPENDENCIES);
 function checkModProviderCrateManifests(report) {
   for (const relative of MOD_PROVIDER_CRATE_MANIFESTS) {
     const absolute = path.join(REPO_ROOT, relative);
@@ -1898,6 +1909,170 @@ const FORBIDDEN_PROVIDER_CODE = [
   [/\bFile\s*::\s*(?:open|create|create_new)\s*\(/g, "direct filesystem file access"],
   [/\b(?:TcpStream|TcpListener|UdpSocket)\b/g, "direct socket access"],
 ];
+const PROVIDER_CONTEXT_PORT_ACCESSOR = /\b[A-Za-z_][A-Za-z0-9_]*\.(?:network|metadata_network|installer_network|workspace|safe_workspace|java|progress|logger|timeouts?|deadline|cancellation|check_control|root|scoped_workspace)\s*\(/;
+const PROVIDER_TYPED_PORT_CODE_PATTERNS = [
+  [/\breqwest\b/g, "direct reqwest API use"],
+  [/\bzip\s*::/g, "direct zip API use"],
+  [/\btauri(?:_[A-Za-z0-9_]+)?\s*::/g, "direct Tauri path"],
+  [/\b(?:AppHandle|Emitter)\b/g, "Tauri host handle/emitter"],
+  [/\b(?:std\s*::\s*)?(?:fs|process|net)\s*::/g, "raw filesystem/process/network path"],
+  [/\bCommand\s*::\s*new\s*\(/g, "process spawning"],
+  [/\bFile\b/g, "direct File API"],
+  [/\b(?:OpenOptions|TcpStream|TcpListener|UdpSocket|UnixStream|UnixListener)\b/g, "direct socket/filesystem API"],
+  [/\bflint_(?:mod|loader)_provider_[A-Za-z0-9_]+\b/g, "provider-to-provider import"],
+  [/\bflint_feature_[A-Za-z0-9_]+\b/g, "feature crate import"],
+  [/\b(?:flint|flint_lib)\s*::/g, "host crate import"],
+];
+const PROVIDER_CONCRETE_CORE_ADAPTER_PATTERN = /\b(?:ReqwestNetwork|SafeWorkspace|CommandProcessPort|ProcessJavaRunner|NoopLogger|NoopProgress)\b/g;
+const PROVIDER_REGISTRY_CONSTRUCTION_PATTERN = /\bProviderRegistry(?:\s*::\s*<[^;{}()]*>)?\s*::\s*new\s*\(/g;
+export function evaluateProviderTypedPortSource(providerKind, sourceText, { requireContract = true } = {}) {
+  const issues = [];
+  const add = (rule, message, index = 0) => issues.push({ rule, line: lineOf(sourceText, index), message });
+  const expectedTrait = providerKind === "loader" ? "LoaderProvider" : providerKind === "mod" ? "ModProvider" : null;
+  if (!expectedTrait) {
+    add("RUST-PROVIDER-TYPED-PORT-001", `unknown provider kind '${providerKind}'.`);
+    return issues;
+  }
+  if (requireContract) {
+    const implementation = new RegExp(`\\bimpl\\s+(?:flint_provider_api\\s*::\\s*(?:[A-Za-z_][A-Za-z0-9_]*\\s*::\\s*)?)?${expectedTrait}\\s+for\\b`);
+    if (!implementation.test(sourceText)) {
+      add("RUST-PROVIDER-TYPED-PORT-001", `${providerKind} provider must implement flint_provider_api::${expectedTrait}.`);
+    }
+    if (!/\bflint_provider_api\b/.test(sourceText)) {
+      add("RUST-PROVIDER-TYPED-PORT-001", `${providerKind} provider must use the reviewed flint-provider-api contract.`);
+    }
+    if (!/\bflint_core\s*::/.test(sourceText)) {
+      add("RUST-PROVIDER-TYPED-PORT-001", `${providerKind} provider must use flint-core typed policy.`);
+    }
+    if (!PROVIDER_CONTEXT_PORT_ACCESSOR.test(sourceText)) {
+      add("RUST-PROVIDER-TYPED-PORT-001", `${providerKind} provider must consume typed context ports instead of raw host APIs.`);
+    }
+  }
+  for (const declaration of extractRustUseDeclarations(sourceText)) {
+    const root = firstUseRoot(declaration.payload);
+    if (!root) {
+      add("RUST-PROVIDER-IMPORT-001", "unparseable provider use declaration.", declaration.index);
+      continue;
+    }
+    let forbidden = null;
+    if (root === "reqwest") forbidden = "direct reqwest import";
+    else if (root === "zip") forbidden = "direct zip import";
+    else if (root === "tauri" || root.startsWith("tauri_")) forbidden = "Tauri import";
+    else if (["fs", "process", "net"].includes(root)) forbidden = `${root} import`;
+    else if (root === "std" && /\b(?:fs|process|net)\b/.test(declaration.payload)) forbidden = "std filesystem/process/network import";
+    else if (root === "tokio" && /\bprocess\b/.test(declaration.payload)) forbidden = "tokio process import";
+    else if (root.startsWith("flint_mod_provider_") || root.startsWith("flint_loader_provider_")) forbidden = "provider-to-provider import";
+    else if (root.startsWith("flint_feature_")) forbidden = "feature crate import";
+    else if (root === "flint" || root === "flint_lib" || root.startsWith("flint::") || root.startsWith("flint_lib::")) forbidden = "host crate import";
+    else if (HOST_PRIVATE_MODULES.has(root)) forbidden = "host-private module import";
+    if (forbidden) add("RUST-PROVIDER-IMPORT-001", `forbidden provider import (${forbidden}).`, declaration.index);
+  }
+  for (const [pattern, label] of PROVIDER_TYPED_PORT_CODE_PATTERNS) {
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(sourceText)) !== null) {
+      add("RUST-PROVIDER-IO-001", `forbidden provider code: ${label}.`, match.index);
+    }
+  }
+  PROVIDER_CONCRETE_CORE_ADAPTER_PATTERN.lastIndex = 0;
+  let adapterMatch;
+  while ((adapterMatch = PROVIDER_CONCRETE_CORE_ADAPTER_PATTERN.exec(sourceText)) !== null) {
+    add("RUST-PROVIDER-CORE-ADAPTER-001", `provider leaves must consume typed context ports and may not reference or construct concrete core adapter '${adapterMatch[0]}'.`, adapterMatch.index);
+  }
+  PROVIDER_REGISTRY_CONSTRUCTION_PATTERN.lastIndex = 0;
+  let registryMatch;
+  while ((registryMatch = PROVIDER_REGISTRY_CONSTRUCTION_PATTERN.exec(sourceText)) !== null) {
+    add("RUST-PROVIDER-REGISTRY-CONSTRUCTION-001", "provider leaves may not construct ProviderRegistry; immutable registries are composed only in src-tauri/src/provider_composition.rs.", registryMatch.index);
+  }
+  return issues;
+}
+const FEATURE_REGISTRY_CONSUMER_SPECS = new Map([
+  ["flint-feature-mods", { trait: "ModProvider", forbiddenTrait: "LoaderProvider" }],
+  ["flint-feature-loaders", { trait: "LoaderProvider", forbiddenTrait: "ModProvider" }],
+]);
+const CONCRETE_PROVIDER_TYPE_PATTERN = /\b(?:CurseForgeModProvider|ModrinthModProvider|FabricLoaderProvider|QuiltLoaderProvider|ForgeLoaderProvider|NeoForgeLoaderProvider|LiteLoaderProvider|OptiFineProvider)\b/g;
+export function evaluateFeatureProviderRegistryConsumer(featureName, sourceText) {
+  const spec = FEATURE_REGISTRY_CONSUMER_SPECS.get(featureName);
+  if (!spec) {
+    return [{ rule: "RUST-FEATURE-PROVIDER-REGISTRY-001", line: 1, message: `unknown provider-registry consumer '${featureName}'.` }];
+  }
+  const issues = [];
+  const add = (message, index = 0) => issues.push({ rule: "RUST-FEATURE-PROVIDER-REGISTRY-001", line: lineOf(sourceText, index), message });
+  if (!/\bflint_provider_api\b/.test(sourceText)) {
+    add(`feature '${featureName}' must import the reviewed flint-provider-api contract.`);
+  }
+  const registryType = new RegExp(`\\bProviderRegistry\\s*<\\s*dyn\\s+${spec.trait}\\s*>`);
+  if (!registryType.test(sourceText)) {
+    add(`feature '${featureName}' must receive ProviderRegistry<dyn ${spec.trait}>.`);
+  }
+  const registryConstruction = /\bProviderRegistry\s*::\s*new\s*\(/.exec(sourceText);
+  if (registryConstruction) {
+    add("feature crates may not construct provider registries; construction belongs only in provider_composition.", registryConstruction.index);
+  }
+  const forbiddenTrait = new RegExp(`\\b${spec.forbiddenTrait}\\b`).exec(sourceText);
+  if (forbiddenTrait) {
+    add(`feature '${featureName}' imports the wrong provider contract '${spec.forbiddenTrait}'.`, forbiddenTrait.index);
+  }
+  for (const declaration of extractRustUseDeclarations(sourceText)) {
+    const root = firstUseRoot(declaration.payload);
+    if (!root) {
+      add("unparseable feature use declaration.", declaration.index);
+      continue;
+    }
+    if (root === "tauri" || root.startsWith("tauri_")) {
+      add("feature provider consumers may not import Tauri.", declaration.index);
+    } else if (root === "flint" || root === "flint_lib") {
+      add("feature provider consumers may not import the host crate.", declaration.index);
+    } else if (root.startsWith("flint_mod_provider_") || root.startsWith("flint_loader_provider_")) {
+      add("feature provider consumers may not import concrete provider crates.", declaration.index);
+    } else if (HOST_PRIVATE_MODULES.has(root) || FEATURE_PRIVATE_MODULE_NAMES.has(root)) {
+      add(`feature provider consumer imports host-private module '${root}'.`, declaration.index);
+    }
+  }
+  const tauriCode = /\btauri(?:_[A-Za-z0-9_]+)?\s*::|\b(?:AppHandle|Emitter)\b/.exec(sourceText);
+  if (tauriCode) add("feature provider consumers may not use Tauri host APIs.", tauriCode.index);
+  CONCRETE_PROVIDER_TYPE_PATTERN.lastIndex = 0;
+  const concreteType = CONCRETE_PROVIDER_TYPE_PATTERN.exec(sourceText);
+  if (concreteType) add(`feature provider consumer imports concrete provider '${concreteType[0]}'.`, concreteType.index);
+  return issues;
+}
+export function evaluateFoundationCrateSource(crateName, sourceText) {
+  if (!["flint-core", "flint-feature-api", "flint-provider-api"].includes(crateName)) {
+    return [{ rule: "RUST-FOUNDATION-IMPORT-001", line: 1, message: `unknown foundation source crate '${crateName}'.` }];
+  }
+  const issues = [];
+  const add = (message, index = 0) => issues.push({ rule: "RUST-FOUNDATION-IMPORT-001", line: lineOf(sourceText, index), message });
+  for (const declaration of extractRustUseDeclarations(sourceText)) {
+    const root = firstUseRoot(declaration.payload);
+    if (!root) {
+      add("unparseable foundation use declaration.", declaration.index);
+      continue;
+    }
+    if (root === "tauri" || root.startsWith("tauri_")) {
+      add("core/provider API sources may not import Tauri.", declaration.index);
+    } else if (root === "flint" || root === "flint_lib") {
+      add("core/provider API sources may not import the host crate.", declaration.index);
+    } else if (root.startsWith("flint_feature_") || root.startsWith("flint_mod_provider_") || root.startsWith("flint_loader_provider_")) {
+      add("core/provider API sources may not import feature or concrete provider crates.", declaration.index);
+    } else if (crateName === "flint-core" && (root === "flint_provider_api" || root === "flint_feature_api")) {
+      add("flint-core may not import provider or feature API crates.", declaration.index);
+    } else if (crateName === "flint-feature-api" && root === "flint_provider_api") {
+      add("flint-feature-api may not import the provider API crate.", declaration.index);
+    }
+  }
+  const forbiddenCode = /\btauri(?:_[A-Za-z0-9_]+)?\s*::|\b(?:AppHandle|Emitter)\b|\bflint_feature_[A-Za-z0-9_]+\b|\bflint_(?:mod|loader)_provider_[A-Za-z0-9_]+\b|\b(?:flint|flint_lib)\s*::/g;
+  let match;
+  while ((match = forbiddenCode.exec(sourceText)) !== null) {
+    add(`forbidden foundation source import '${match[0]}'.`, match.index);
+  }
+  if (crateName === "flint-core") {
+    const apiImport = /\b(?:flint_provider_api|flint_feature_api)\b/g;
+    while ((match = apiImport.exec(sourceText)) !== null) {
+      add("flint-core may not import provider or feature API crates.", match.index);
+    }
+  }
+  return issues;
+}
 function providerTargetAllowed(phase, target, localTarget) {
   if (target.localTargets.has(localTarget)) return true;
   const waiver = target.transitionalLocalTargets.get(localTarget);
@@ -2462,6 +2637,143 @@ function checkLoaderProviderGate(phase, graph, report) {
   }
 }
 // ---------------------------------------------------------------------------
+// Phase 4 all-workspace source and typed-port gate
+// ---------------------------------------------------------------------------
+const PROVIDER_TYPED_PORT_SPECS = [
+  ...MOD_PROVIDER_CRATE_SPECS.map((spec) => ({ ...spec, providerKind: "mod" })),
+  ...LOADER_PROVIDER_CRATE_SPECS.map((spec) => ({ ...spec, providerKind: "loader" })),
+];
+function checkWorkspaceCrateDirectories(report) {
+  for (const group of WORKSPACE_CRATE_GROUP_SPECS) {
+    const absoluteRoot = path.join(REPO_ROOT, group.root);
+    if (!fs.existsSync(absoluteRoot)) {
+      report("RUST-WORKSPACE-CRATE-DIR-001", group.root, 1, "required workspace crate group directory is missing.");
+      continue;
+    }
+    const rootStat = fs.lstatSync(absoluteRoot);
+    if (rootStat.isSymbolicLink()) {
+      report("ARCH-SYMLINK-001", group.root, 1, "symlinked workspace crate group roots are forbidden.");
+      continue;
+    }
+    if (!rootStat.isDirectory()) {
+      report("RUST-WORKSPACE-CRATE-DIR-001", group.root, 1, "workspace crate group root is not a directory.");
+      continue;
+    }
+    const directories = [];
+    for (const entry of fs.readdirSync(absoluteRoot, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+      if (entry.isSymbolicLink()) {
+        report("ARCH-SYMLINK-001", relFromRepo(path.join(absoluteRoot, entry.name)), 1, "symlinked workspace crate directories are forbidden.");
+        continue;
+      }
+      if (entry.isDirectory()) directories.push(entry.name);
+    }
+    for (const issue of evaluateWorkspaceCrateGroupDirectories(group.root, directories)) {
+      report("RUST-WORKSPACE-CRATE-DIR-001", group.root, 1, issue);
+    }
+  }
+}
+function buildWorkspaceRustSources(report) {
+  checkWorkspaceCrateDirectories(report);
+  const records = [];
+  const availableRoots = [];
+  for (const spec of WORKSPACE_CRATE_SOURCE_SPECS) {
+    const absoluteRoot = path.join(REPO_ROOT, spec.sourceRoot);
+    if (!fs.existsSync(absoluteRoot)) continue;
+    const rootStat = fs.lstatSync(absoluteRoot);
+    if (rootStat.isSymbolicLink()) {
+      report("ARCH-SYMLINK-001", spec.sourceRoot, 1, "symlinked workspace source roots are forbidden.");
+      continue;
+    }
+    if (!rootStat.isDirectory()) {
+      report("RUST-WORKSPACE-SOURCE-001", spec.sourceRoot, 1, "workspace crate source root is not a directory.");
+      continue;
+    }
+    availableRoots.push(spec.sourceRoot);
+    const sourceFiles = walkFilesFailClosed(absoluteRoot, new Set([".rs"]), report);
+    if (sourceFiles.length === 0) {
+      report("RUST-WORKSPACE-SOURCE-001", spec.sourceRoot, 1, `workspace crate '${spec.crateName}' has no production Rust sources.`);
+    }
+    const extraFiles = [];
+    for (const extraSource of spec.extraSources) {
+      const absolute = path.join(REPO_ROOT, extraSource);
+      if (!fs.existsSync(absolute)) {
+        report("RUST-WORKSPACE-SOURCE-001", extraSource, 1, `workspace crate '${spec.crateName}' is missing required production Rust source.`);
+        continue;
+      }
+      const extraStat = fs.lstatSync(absolute);
+      if (extraStat.isSymbolicLink()) {
+        report("ARCH-SYMLINK-001", extraSource, 1, "symlinked workspace source files are forbidden.");
+        continue;
+      }
+      if (!extraStat.isFile()) {
+        report("RUST-WORKSPACE-SOURCE-001", extraSource, 1, "workspace extra source is not a regular file.");
+        continue;
+      }
+      extraFiles.push(absolute);
+    }
+    for (const absolute of [...sourceFiles, ...extraFiles].sort((left, right) => left.localeCompare(right))) {
+      const relative = relFromRepo(absolute);
+      let productionText;
+      try {
+        productionText = prepareRustProductionSource(readText(absolute));
+      } catch (error) {
+        report("RUST-LEX-001", relative, 1, `cannot statically mask Rust source: ${error.message}`);
+        continue;
+      }
+      records.push({ crateName: spec.crateName, layer: spec.layer, relative, productionText });
+    }
+  }
+  for (const issue of evaluateWorkspaceSourceRoots(availableRoots)) {
+    report("RUST-WORKSPACE-SOURCE-001", "src-tauri", 1, issue);
+  }
+  return records;
+}
+function checkFoundationWorkspaceSources(records, report) {
+  for (const record of records) {
+    if (!["flint-core", "flint-feature-api", "flint-provider-api"].includes(record.crateName)) continue;
+    for (const issue of evaluateFoundationCrateSource(record.crateName, record.productionText)) {
+      report(issue.rule, record.relative, issue.line, issue.message);
+    }
+  }
+}
+function checkProviderTypedPortGate(records, report) {
+  for (const spec of PROVIDER_TYPED_PORT_SPECS) {
+    const crateRecords = records.filter((record) => record.crateName === spec.crateName);
+    if (crateRecords.length === 0) {
+      report("RUST-PHASE-TARGET-001", spec.source, 1, `phase 4 requires loader/mod provider source for '${spec.crateName}'.`);
+      continue;
+    }
+    for (const record of crateRecords) {
+      const requireContract = record.relative === spec.source;
+      for (const issue of evaluateProviderTypedPortSource(spec.providerKind, record.productionText, { requireContract })) {
+        report(issue.rule, record.relative, issue.line, issue.message);
+      }
+    }
+  }
+}
+function checkFeatureProviderRegistryGate(records, report) {
+  for (const featureName of FEATURE_REGISTRY_CONSUMER_SPECS.keys()) {
+    const spec = FEATURE_CRATE_SPECS.find((candidate) => candidate.crateName === featureName);
+    const record = spec ? records.find((candidate) => candidate.relative === spec.source) : null;
+    if (!record) {
+      report("RUST-PHASE-TARGET-001", spec?.source ?? `src-tauri/modules/${featureName}/src/lib.rs`, 1, `phase 4 requires provider-registry consumer source for '${featureName}'.`);
+      continue;
+    }
+    for (const issue of evaluateFeatureProviderRegistryConsumer(featureName, record.productionText)) {
+      report(issue.rule, record.relative, issue.line, issue.message);
+    }
+  }
+}
+function checkPhase4WorkspaceSourceGate(records, report) {
+  if (records.length === 0) {
+    report("RUST-WORKSPACE-SOURCE-001", "src-tauri", 1, "phase 4 did not discover any workspace production Rust sources.");
+    return;
+  }
+  checkFoundationWorkspaceSources(records, report);
+  checkProviderTypedPortGate(records, report);
+  checkFeatureProviderRegistryGate(records, report);
+}
+// ---------------------------------------------------------------------------
 // Phase 4 Cargo workspace metadata gate
 // ---------------------------------------------------------------------------
 const FEATURE_CRATES = ["flint-feature-accounts", "flint-feature-launch", "flint-feature-vanilla", "flint-feature-loaders", "flint-feature-mods", "flint-feature-saves", "flint-feature-settings"];
@@ -2494,6 +2806,283 @@ const CARGO_RULES = new Map([
     dependencies: new Set(["flint-core", "flint-provider-api"]),
   }]),
 ]);
+const FOUNDATION_WORKSPACE_CRATES = ["flint-core", "flint-feature-api", "flint-provider-api"];
+const WORKSPACE_CRATE_SOURCE_SPECS = Object.freeze([
+  {
+    crateName: "flint",
+    layer: "host",
+    manifest: "src-tauri/Cargo.toml",
+    crateRoot: "src-tauri",
+    sourceRoot: "src-tauri/src",
+    extraSources: ["src-tauri/build.rs"],
+  },
+  ...FOUNDATION_WORKSPACE_CRATES.map((crateName) => ({
+    crateName,
+    layer: crateName === "flint-core" ? "core" : crateName === "flint-feature-api" ? "feature-api" : "provider-api",
+    manifest: `src-tauri/crates/${crateName}/Cargo.toml`,
+    crateRoot: `src-tauri/crates/${crateName}`,
+    sourceRoot: `src-tauri/crates/${crateName}/src`,
+    extraSources: [],
+  })),
+  ...FEATURE_CRATE_SPECS.map((spec) => ({
+    crateName: spec.crateName,
+    layer: "feature",
+    manifest: spec.manifest,
+    crateRoot: path.posix.dirname(path.posix.dirname(spec.source)),
+    sourceRoot: path.posix.dirname(spec.source),
+    extraSources: [],
+  })),
+  ...MOD_PROVIDER_CRATE_SPECS.map((spec) => ({
+    crateName: spec.crateName,
+    layer: "provider",
+    manifest: spec.manifest,
+    crateRoot: path.posix.dirname(path.posix.dirname(spec.source)),
+    sourceRoot: path.posix.dirname(spec.source),
+    extraSources: [],
+  })),
+  ...LOADER_PROVIDER_CRATE_SPECS.map((spec) => ({
+    crateName: spec.crateName,
+    layer: "provider",
+    manifest: spec.manifest,
+    crateRoot: path.posix.dirname(path.posix.dirname(spec.source)),
+    sourceRoot: path.posix.dirname(spec.source),
+    extraSources: [],
+  })),
+]);
+const WORKSPACE_CRATE_SOURCE_SPEC_BY_NAME = new Map(
+  WORKSPACE_CRATE_SOURCE_SPECS.map((spec) => [spec.crateName, spec]),
+);
+const WORKSPACE_CRATE_GROUP_SPECS = Object.freeze([
+  {
+    root: "src-tauri/crates",
+    expectedDirectories: [...FOUNDATION_WORKSPACE_CRATES].sort(),
+  },
+  {
+    root: "src-tauri/modules",
+    expectedDirectories: [...FEATURE_CRATES].sort(),
+  },
+  {
+    root: "src-tauri/providers",
+    expectedDirectories: [...PROVIDER_CRATES].sort(),
+  },
+]);
+export function reviewedWorkspaceCrateNames() {
+  return [...WORKSPACE_CRATE_NAMES].sort();
+}
+export function reviewedWorkspaceCrateSpecs() {
+  return WORKSPACE_CRATE_SOURCE_SPECS
+    .map((spec) => ({
+      crateName: spec.crateName,
+      layer: spec.layer,
+      manifest: spec.manifest,
+      crateRoot: spec.crateRoot,
+      sourceRoot: spec.sourceRoot,
+      extraSources: [...spec.extraSources].sort(),
+    }))
+    .sort((left, right) => left.crateName.localeCompare(right.crateName));
+}
+export function reviewedWorkspaceCrateGroupDirectories() {
+  return WORKSPACE_CRATE_GROUP_SPECS.map((group) => ({
+    root: group.root,
+    expectedDirectories: [...group.expectedDirectories].sort(),
+  }));
+}
+export function evaluateWorkspaceSourceRoots(availableRoots) {
+  const available = new Set(Array.from(availableRoots ?? [], toPosix));
+  const issues = [];
+  for (const spec of WORKSPACE_CRATE_SOURCE_SPECS) {
+    if (!available.has(spec.sourceRoot)) {
+      issues.push(`missing workspace source root '${spec.sourceRoot}' for crate '${spec.crateName}'.`);
+    }
+  }
+  return issues;
+}
+export function evaluateWorkspaceCrateGroupDirectories(relativeRoot, directoryNames) {
+  const group = WORKSPACE_CRATE_GROUP_SPECS.find((candidate) => candidate.root === toPosix(relativeRoot));
+  if (!group) return [`unknown workspace crate group '${relativeRoot}'.`];
+  const expected = new Set(group.expectedDirectories);
+  const actual = new Set(directoryNames ?? []);
+  const issues = [];
+  for (const name of [...expected].sort()) {
+    if (!actual.has(name)) issues.push(`missing workspace crate directory '${name}' under '${group.root}'.`);
+  }
+  for (const name of [...actual].sort()) {
+    if (!expected.has(name)) issues.push(`unexpected workspace crate directory '${name}' under '${group.root}'.`);
+  }
+  return issues;
+}
+export function evaluateWorkspacePackageNames(packageNames) {
+  const expected = new Set(WORKSPACE_CRATE_NAMES);
+  const actual = new Set();
+  const issues = [];
+  for (const name of packageNames ?? []) {
+    if (typeof name !== "string" || !name) {
+      issues.push({ rule: "RUST-CARGO-WORKSPACE-001", message: "cargo metadata contains a workspace package with no valid name." });
+      continue;
+    }
+    if (actual.has(name)) {
+      issues.push({ rule: "RUST-CARGO-WORKSPACE-001", message: `workspace package '${name}' appears more than once.` });
+      continue;
+    }
+    actual.add(name);
+    if (!expected.has(name)) {
+      issues.push({ rule: "RUST-CARGO-CRATE-ALLOW-001", message: `workspace package '${name}' is not in the exact reviewed crate allowlist.` });
+    }
+  }
+  for (const name of WORKSPACE_CRATE_NAMES) {
+    if (!actual.has(name)) {
+      issues.push({ rule: "RUST-CARGO-WORKSPACE-001", message: `reviewed workspace package '${name}' is missing from cargo metadata.` });
+    }
+  }
+  return issues;
+}
+const INTERNAL_CRATE_NAME_SET = new Set(WORKSPACE_CRATE_NAMES);
+const FORBIDDEN_PROVIDER_EXTERNAL_DEPENDENCIES = new Set(["reqwest", "zip", "tokio", "process"]);
+function externalDependencyRule(normal = [], build = [], dev = []) {
+  const result = new Map();
+  const add = (name, kind) => {
+    if (!result.has(name)) result.set(name, new Set());
+    result.get(name).add(kind);
+  };
+  for (const name of normal) add(name, "normal");
+  for (const name of build) add(name, "build");
+  for (const name of dev) add(name, "dev");
+  return result;
+}
+const FEATURE_EXTERNAL_NORMAL_DEPENDENCIES = new Map(
+  FEATURE_CRATE_SPECS.map((spec) => [
+    spec.crateName,
+    spec.dependencies.filter((dependency) => !INTERNAL_CRATE_NAME_SET.has(dependency)),
+  ]),
+);
+const MOD_PROVIDER_EXTERNAL_NORMAL_DEPENDENCIES = new Map(
+  MOD_PROVIDER_CRATE_SPECS.map((spec) => [
+    spec.crateName,
+    spec.dependencies.filter((dependency) => !INTERNAL_CRATE_NAME_SET.has(dependency)),
+  ]),
+);
+const LOADER_PROVIDER_EXTERNAL_NORMAL_DEPENDENCIES = new Map(
+  LOADER_PROVIDER_CRATE_SPECS.map((spec) => [
+    spec.crateName,
+    spec.dependencies.filter((dependency) => !INTERNAL_CRATE_NAME_SET.has(dependency)),
+  ]),
+);
+const EXTERNAL_DEPENDENCY_RULES = new Map([
+  ["flint", externalDependencyRule(
+    ["tauri", "tauri-plugin-dialog", "tauri-plugin-opener", "semver", "serde", "serde_json", "dirs", "reqwest", "zip", "sha1", "regex", "md5", "flate2", "base64", "tokio"],
+    ["tauri-build"],
+    [],
+  )],
+  ["flint-core", externalDependencyRule(["dirs", "reqwest", "regex", "serde_json", "sha1"])],
+  ["flint-feature-api", externalDependencyRule(["semver", "serde"], [], ["serde_json"])],
+  ["flint-provider-api", externalDependencyRule(["semver"])],
+  ...FEATURE_CRATE_SPECS.map((spec) => [
+    spec.crateName,
+    externalDependencyRule(FEATURE_EXTERNAL_NORMAL_DEPENDENCIES.get(spec.crateName) ?? []),
+  ]),
+  ...MOD_PROVIDER_CRATE_SPECS.map((spec) => [
+    spec.crateName,
+    externalDependencyRule(MOD_PROVIDER_EXTERNAL_NORMAL_DEPENDENCIES.get(spec.crateName) ?? []),
+  ]),
+  ...LOADER_PROVIDER_CRATE_SPECS.map((spec) => [
+    spec.crateName,
+    externalDependencyRule(LOADER_PROVIDER_EXTERNAL_NORMAL_DEPENDENCIES.get(spec.crateName) ?? []),
+  ]),
+]);
+export function reviewedExternalDependencyRules() {
+  return [...EXTERNAL_DEPENDENCY_RULES.entries()]
+    .map(([packageName, dependencies]) => ({
+      packageName,
+      dependencies: [...dependencies.entries()]
+        .map(([name, kinds]) => ({ name, kinds: [...kinds].sort() }))
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    }))
+    .sort((left, right) => left.packageName.localeCompare(right.packageName));
+}
+function normalizeCargoDependencyKind(kind) {
+  return kind === undefined || kind === null ? "normal" : String(kind);
+}
+export function evaluateExternalDependencyAllowlist(packageName, dependencies) {
+  const allowed = EXTERNAL_DEPENDENCY_RULES.get(packageName);
+  if (!allowed) {
+    return [{
+      rule: "RUST-CARGO-CRATE-ALLOW-001",
+      message: `package '${packageName}' has no reviewed external dependency allowlist.`,
+    }];
+  }
+  if (!Array.isArray(dependencies)) {
+    return [{
+      rule: "RUST-CARGO-METADATA-001",
+      message: `package '${packageName}' cargo metadata dependencies are not an array.`,
+    }];
+  }
+  const issues = [];
+  const observed = new Map();
+  const providerLayer = CARGO_RULES.get(packageName)?.layer === "provider";
+  for (const dependency of dependencies) {
+    if (!dependency || typeof dependency.name !== "string" || !dependency.name.trim()) {
+      issues.push({
+        rule: "RUST-CARGO-METADATA-001",
+        message: `package '${packageName}' has a cargo dependency without a valid package name.`,
+      });
+      continue;
+    }
+    const dependencyName = dependency.name.trim();
+    if (INTERNAL_CRATE_NAME_SET.has(dependencyName)) continue;
+    const dependencyKind = normalizeCargoDependencyKind(dependency.kind);
+    const allowedKinds = allowed.get(dependencyName);
+    if (!allowedKinds?.has(dependencyKind)) {
+      const providerForbidden = providerLayer && FORBIDDEN_PROVIDER_EXTERNAL_DEPENDENCIES.has(dependencyName);
+      issues.push({
+        rule: providerForbidden ? "RUST-CARGO-PROVIDER-EXTERNAL-001" : "RUST-CARGO-EXTERNAL-ALLOW-001",
+        message: `external dependency '${dependencyName}' (${dependencyKind}) for '${packageName}' is not in the exact reviewed allowlist.`,
+      });
+      continue;
+    }
+    if (!observed.has(dependencyName)) observed.set(dependencyName, new Set());
+    observed.get(dependencyName).add(dependencyKind);
+  }
+  for (const [dependencyName, allowedKinds] of allowed) {
+    for (const dependencyKind of allowedKinds) {
+      if (!observed.get(dependencyName)?.has(dependencyKind)) {
+        issues.push({
+          rule: "RUST-CARGO-EXTERNAL-MISSING-001",
+          message: `reviewed external dependency '${dependencyName}' (${dependencyKind}) is missing from '${packageName}'.`,
+        });
+      }
+    }
+  }
+  return issues;
+}
+export function evaluateCargoInternalEdge(sourceName, dependencyName) {
+  const sourceRule = CARGO_RULES.get(sourceName);
+  if (!sourceRule) {
+    return {
+      allowed: false,
+      rule: "RUST-CARGO-CRATE-ALLOW-001",
+      message: `workspace crate '${sourceName}' is not in the exact reviewed crate allowlist.`,
+    };
+  }
+  const crossFeature =
+    sourceRule.layer === "feature" &&
+    FEATURE_CRATES.includes(dependencyName) &&
+    CROSS_FEATURE_PUBLIC_EDGES.has(`${sourceName}->${dependencyName}`);
+  if (sourceRule.dependencies.has(dependencyName) || crossFeature) {
+    return { allowed: true, rule: null, message: null };
+  }
+  const rule = sourceRule.layer === "provider"
+    ? "RUST-CARGO-PROVIDER-EDGE-001"
+    : sourceRule.layer === "feature" && FEATURE_CRATES.includes(dependencyName)
+      ? "RUST-CARGO-CROSS-FEATURE-001"
+      : sourceRule.layer !== "host" && dependencyName === "flint"
+        ? "RUST-CARGO-HOST-REVERSE-001"
+        : "RUST-CARGO-DEP-ALLOW-001";
+  return {
+    allowed: false,
+    rule,
+    message: `unreviewed workspace edge '${sourceName}' -> '${dependencyName}'.`,
+  };
+}
 function findLockfiles(root, report) {
   const lockfiles = [];
   const stack = [root];
@@ -2514,7 +3103,8 @@ function findLockfiles(root, report) {
   }
   return lockfiles;
 }
-function checkCargoDependencyCycles(graph, packages, report) {
+export function findCargoDependencyCycles(graph) {
+  const cycles = [];
   const state = new Map();
   const stack = [];
   function visit(name) {
@@ -2524,8 +3114,7 @@ function checkCargoDependencyCycles(graph, packages, report) {
       if (!graph.has(dependency)) continue;
       if (state.get(dependency) === 1) {
         const start = stack.indexOf(dependency);
-        const cycle = [...stack.slice(start), dependency];
-        report("RUST-CARGO-CYCLE-001", relFromRepo(packages.get(dependency)?.manifest_path ?? RUST_MANIFEST), 1, `Cargo dependency cycle: ${cycle.join(" -> ")}`);
+        cycles.push([...stack.slice(start), dependency]);
       } else if (state.get(dependency) !== 2) {
         visit(dependency);
       }
@@ -2534,6 +3123,12 @@ function checkCargoDependencyCycles(graph, packages, report) {
     state.set(name, 2);
   }
   for (const name of graph.keys()) if (!state.has(name)) visit(name);
+  return cycles;
+}
+function checkCargoDependencyCycles(graph, packages, report) {
+  for (const cycle of findCargoDependencyCycles(graph)) {
+    report("RUST-CARGO-CYCLE-001", relFromRepo(packages.get(cycle[0])?.manifest_path ?? RUST_MANIFEST), 1, `Cargo dependency cycle: ${cycle.join(" -> ")}`);
+  }
 }
 function manifestSectionText(manifestText, sectionName) {
   const lines = manifestText.split(/\r?\n/);
@@ -2550,6 +3145,65 @@ function manifestSectionText(manifestText, sectionName) {
     if (active) sectionLines.push(line);
   }
   return found ? sectionLines.join("\n") : null;
+}
+function manifestSectionStringValue(manifestText, sectionName, key) {
+  const section = manifestSectionText(manifestText, sectionName);
+  if (section === null) return null;
+  const pattern = new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']+)["']\\s*(?:#.*)?$`, "m");
+  return pattern.exec(section)?.[1] ?? null;
+}
+export function evaluateWorkspaceVersionCoherence(hostVersion, workspaceVersion, packages) {
+  const issues = [];
+  if (!hostVersion) issues.push({ rule: "RUST-CARGO-VERSION-001", message: "host manifest must declare a package version." });
+  if (!workspaceVersion) issues.push({ rule: "RUST-CARGO-VERSION-001", message: "workspace manifest must declare [workspace.package] version." });
+  if (hostVersion && workspaceVersion && hostVersion !== workspaceVersion) {
+    issues.push({
+      rule: "RUST-CARGO-VERSION-001",
+      message: `host package version '${hostVersion}' does not match workspace package version '${workspaceVersion}'.`,
+    });
+  }
+  if (!Array.isArray(packages)) {
+    issues.push({ rule: "RUST-CARGO-METADATA-001", message: "workspace package versions are not available from cargo metadata." });
+    return issues;
+  }
+  for (const pkg of packages) {
+    if (!pkg || typeof pkg.name !== "string" || typeof pkg.version !== "string") {
+      issues.push({ rule: "RUST-CARGO-METADATA-001", message: "cargo metadata contains a workspace package without a valid name/version." });
+    } else if (hostVersion && pkg.version !== hostVersion) {
+      issues.push({
+        rule: "RUST-CARGO-VERSION-001",
+        message: `workspace package '${pkg.name}' version '${pkg.version}' does not match host version '${hostVersion}'.`,
+      });
+    }
+  }
+  return issues;
+}
+export function evaluateWorkspaceLockEntries(lockText, expectedVersion = null) {
+  let version = expectedVersion;
+  const issues = [];
+  if (!version) {
+    const host = /\[\[package\]\]\s*\r?\nname = "flint"\s*\r?\nversion = "([^"]+)"/.exec(lockText);
+    if (!host) return [{ rule: "RUST-CARGO-LOCK-001", message: "Cargo.lock must contain the host package 'flint' with its workspace version." }];
+    version = host[1];
+  }
+  for (const name of WORKSPACE_CRATE_NAMES) {
+    const pattern = new RegExp(`\\[\\[package\\]\\]\\r?\\nname = "${name}"\\r?\\nversion = "([^"]+)"`, "g");
+    const matches = [...lockText.matchAll(pattern)];
+    if (matches.length === 0) {
+      issues.push({ rule: "RUST-CARGO-LOCK-001", message: `Cargo.lock must contain local package '${name}'.` });
+    } else if (matches.length > 1) {
+      issues.push({ rule: "RUST-CARGO-LOCK-001", message: `Cargo.lock contains duplicate local package entry '${name}'.` });
+    }
+    for (const match of matches) {
+      if (match[1] !== version) {
+        issues.push({
+          rule: "RUST-CARGO-LOCK-001",
+          message: `Cargo.lock package '${name}' version '${match[1]}' does not match workspace version '${version}'.`,
+        });
+      }
+    }
+  }
+  return issues;
 }
 export function parseFoundationWorkspaceManifest(manifestText) {
   const section = manifestSectionText(manifestText, "workspace");
@@ -2578,7 +3232,7 @@ function checkFoundationWorkspaceManifest(manifestText, report) {
   const foundation = parseFoundationWorkspaceManifest(manifestText);
   if (!foundation.present) return;
   if (foundation.resolver !== "2") {
-    report("RUST-CARGO-WORKSPACE-001", "src-tauri/Cargo.toml", 1, 'the phase-3 workspace foundation must declare resolver = "2".');
+    report("RUST-CARGO-WORKSPACE-001", "src-tauri/Cargo.toml", 1, 'the reviewed workspace foundation must declare resolver = "2".');
   }
   const expectedMembers = JSON.stringify(FOUNDATION_WORKSPACE_MEMBERS);
   if (foundation.members === null || JSON.stringify(foundation.members) !== expectedMembers) {
@@ -2586,7 +3240,7 @@ function checkFoundationWorkspaceManifest(manifestText, report) {
       "RUST-CARGO-WORKSPACE-001",
       "src-tauri/Cargo.toml",
       1,
-      `the phase-3 workspace foundation members must be exactly ${JSON.stringify(FOUNDATION_WORKSPACE_MEMBERS)}.`,
+      `the reviewed workspace foundation members must be exactly ${JSON.stringify(FOUNDATION_WORKSPACE_MEMBERS)}.`,
     );
   }
   for (const issue of evaluateHostLoaderDependencyDeclarations(manifestText)) {
@@ -2603,8 +3257,8 @@ function checkCargoGate(phase, report) {
   }
   const manifestText = readText(RUST_MANIFEST);
   const hasWorkspace = /^\s*\[workspace\]\s*(?:#.*)?$/m.test(manifestText);
+  if (hasWorkspace) checkFoundationWorkspaceManifest(manifestText, report);
   if (phase < 4) {
-    if (hasWorkspace) checkFoundationWorkspaceManifest(manifestText, report);
     const lockRelative = "src-tauri/Cargo.lock";
     const lockPath = path.join(REPO_ROOT, lockRelative);
     if (!fs.existsSync(lockPath)) {
@@ -2643,8 +3297,13 @@ function checkCargoGate(phase, report) {
     report("RUST-CARGO-METADATA-001", "src-tauri/Cargo.toml", 1, "cargo metadata workspace root is not src-tauri.");
   }
   const members = new Set(metadata.workspace_members ?? []);
+  if (members.size !== WORKSPACE_CRATE_NAMES.length) {
+    report("RUST-CARGO-WORKSPACE-001", "src-tauri/Cargo.toml", 1, `cargo metadata must expose exactly ${WORKSPACE_CRATE_NAMES.length} workspace members, found ${members.size}.`);
+  }
   const packages = (metadata.packages ?? []).filter((pkg) => members.has(pkg.id));
-  const names = new Set(packages.map((pkg) => pkg.name));
+  for (const issue of evaluateWorkspacePackageNames(packages.map((pkg) => pkg.name))) {
+    report(issue.rule, "src-tauri/Cargo.toml", 1, issue.message);
+  }
   const packagesByName = new Map(packages.map((pkg) => [pkg.name, pkg]));
   const graph = new Map();
   for (const pkg of packages) {
@@ -2653,24 +3312,19 @@ function checkCargoGate(phase, report) {
       report("RUST-CARGO-CRATE-ALLOW-001", relFromRepo(pkg.manifest_path), 1, `workspace crate '${pkg.name}' is not in the exact reviewed crate allowlist.`);
       continue;
     }
+    const expectedSpec = WORKSPACE_CRATE_SOURCE_SPEC_BY_NAME.get(pkg.name);
+    if (!expectedSpec || !samePath(pkg.manifest_path, path.join(REPO_ROOT, expectedSpec.manifest))) {
+      report("RUST-CARGO-CRATE-ALLOW-001", relFromRepo(pkg.manifest_path), 1, `workspace crate '${pkg.name}' must use the exact reviewed manifest '${expectedSpec?.manifest ?? "<missing>"}'.`);
+    }
+    for (const issue of evaluateExternalDependencyAllowlist(pkg.name, pkg.dependencies ?? [])) {
+      report(issue.rule, relFromRepo(pkg.manifest_path), 1, issue.message);
+    }
     const internalDependencies = [];
     for (const dependency of pkg.dependencies ?? []) {
-      if (names.has(dependency.name)) {
+      if (INTERNAL_CRATE_NAME_SET.has(dependency.name)) {
         internalDependencies.push(dependency.name);
-        const crossFeature =
-          rule.layer === "feature" &&
-          FEATURE_CRATES.includes(dependency.name) &&
-          CROSS_FEATURE_PUBLIC_EDGES.has(`${pkg.name}->${dependency.name}`);
-        if (!rule.dependencies.has(dependency.name) && !crossFeature) {
-          const ruleId = rule.layer === "provider"
-            ? "RUST-CARGO-PROVIDER-EDGE-001"
-            : rule.layer === "feature" && FEATURE_CRATES.includes(dependency.name)
-              ? "RUST-CARGO-CROSS-FEATURE-001"
-              : rule.layer !== "host" && dependency.name === "flint"
-                ? "RUST-CARGO-HOST-REVERSE-001"
-                : "RUST-CARGO-DEP-ALLOW-001";
-          report(ruleId, relFromRepo(pkg.manifest_path), 1, `unreviewed workspace edge '${pkg.name}' -> '${dependency.name}'.`);
-        }
+        const edge = evaluateCargoInternalEdge(pkg.name, dependency.name);
+        if (!edge.allowed) report(edge.rule, relFromRepo(pkg.manifest_path), 1, edge.message);
       } else if (rule.layer !== "host" && /^tauri(?:[-_]|$)/i.test(dependency.name)) {
         report("RUST-CARGO-TAURI-001", relFromRepo(pkg.manifest_path), 1, `non-host crate '${pkg.name}' depends on Tauri package '${dependency.name}'.`);
       }
@@ -2678,9 +3332,20 @@ function checkCargoGate(phase, report) {
     graph.set(pkg.name, internalDependencies);
   }
   checkCargoDependencyCycles(graph, packagesByName, report);
+  const hostVersion = manifestSectionStringValue(manifestText, "package", "version");
+  const workspaceVersion = manifestSectionStringValue(manifestText, "workspace.package", "version");
+  for (const issue of evaluateWorkspaceVersionCoherence(hostVersion, workspaceVersion, packages)) {
+    report(issue.rule, "src-tauri/Cargo.toml", 1, issue.message);
+  }
   const rootLock = path.join(REPO_ROOT, "src-tauri", "Cargo.lock");
   const lockfiles = findLockfiles(path.join(REPO_ROOT, "src-tauri"), report);
-  if (!fs.existsSync(rootLock)) report("RUST-CARGO-LOCK-001", "src-tauri/Cargo.lock", 1, "the single workspace lockfile is missing.");
+  if (!fs.existsSync(rootLock)) {
+    report("RUST-CARGO-LOCK-001", "src-tauri/Cargo.lock", 1, "the single workspace lockfile is missing.");
+  } else {
+    for (const issue of evaluateWorkspaceLockEntries(readText(rootLock), hostVersion)) {
+      report(issue.rule, "src-tauri/Cargo.lock", 1, issue.message);
+    }
+  }
   for (const lockfile of lockfiles) {
     if (!samePath(lockfile, rootLock)) report("RUST-CARGO-LOCK-001", relFromRepo(lockfile), 1, "member-local Cargo.lock files are forbidden.");
   }
@@ -2714,12 +3379,19 @@ function printReviewedAllowlists(phase) {
     const transitional = [...target.transitionalLocalTargets.keys()].sort();
     console.log(`[allowlist] ${target.file} (${target.role}) local={${local.join(", ")}} transitional={${transitional.join(", ")}} external={${[...target.externalRoots].sort().join(", ")}}`);
   }
+  if (phase >= 4) {
+    const sourceRoots = reviewedWorkspaceCrateSpecs().map((spec) => spec.sourceRoot);
+    console.log(`[allowlist] phase-4 workspace source roots (${sourceRoots.length}): ${sourceRoots.join(", ")}`);
+    const externalRules = reviewedExternalDependencyRules();
+    console.log(`[allowlist] exact external Cargo dependency rules cover ${externalRules.length} workspace packages; all normal/build/dev kinds are kind-specific.`);
+  }
 }
 function runRequestedPhase(phase) {
   const { violations, report } = createReporter();
   console.log(`Flint architecture check: requested phase ${phase}; fail-closed, no warn mode.`);
   if (!fs.existsSync(FRONTEND_ROOT)) report("ARCH-ROOT-001", "src", 1, "frontend source root is missing.");
   if (!fs.existsSync(RUST_SOURCE_ROOT)) report("ARCH-ROOT-001", "src-tauri/src", 1, "Rust source root is missing.");
+  const workspaceSources = phase >= 4 ? buildWorkspaceRustSources(report) : [];
   const graph = buildRustGraph(report);
   checkModProviderCrateManifests(report);
   checkLoaderProviderCrateManifests(report);
@@ -2738,10 +3410,15 @@ function runRequestedPhase(phase) {
   checkFrontend(phase, report);
   checkCargoGate(phase, report);
   if (phase >= 3) checkHostCommandGates(report);
+  if (phase >= 4) checkPhase4WorkspaceSourceGate(workspaceSources, report);
   printReviewedAllowlists(phase);
   if (phase >= 3) console.log("[scope] phase-3 contribution checks are static manifest/import/registry-shape checks; runtime duplicate and navigation-target validation is not executed.");
-  if (phase < 5) {
-    console.log(`[scope] phases ${phase + 1}-5 are not evaluated in this invocation; the requested phase still fails on any absent mandatory target.`);
+  if (phase >= 5) {
+    console.log("[scope] phase-5 strict waiver expiry is applied; Phase 5 hardening acceptance is not claimed by this invocation.");
+  } else if (phase >= 4) {
+    console.log("[scope] phase-4 workspace/Cargo/typed-port gate is active: cargo metadata supplies package/dependency truth, all 19 production source roots are scanned, and Phase 5 remains pending and is not evaluated.");
+  } else {
+    console.log(`[scope] phases ${phase + 1}-4 are not evaluated in this invocation; the requested phase still fails on any absent mandatory target. Phase 5 remains pending.`);
   }
   if (violations.length > 0) {
     violations.sort((left, right) =>
@@ -2765,7 +3442,7 @@ export function main(argv = process.argv.slice(2)) {
   } catch (error) {
     if (error instanceof CliError) {
       console.error(`[CLI-ARG-001] ${error.message}`);
-      console.error("Usage: node scripts/check-architecture.mjs [--phase <1..5>]");
+      console.error("Usage: node scripts/check-architecture.mjs [--phase <1..5>] (release gate: --phase 4; --phase 5 is reserved for future checks)");
       return 2;
     }
     console.error(`[ARCH-CHECK-001] architecture checker failed closed: ${error.message}`);
