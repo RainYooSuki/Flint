@@ -946,13 +946,28 @@ mod tests {
         let file = File::create(path).expect("symlink native jar");
         let mut writer = ZipWriter::new(file);
         writer
-            .start_file(
-                name,
-                SimpleFileOptions::default().unix_permissions(0o120777),
-            )
+            .start_file(name, SimpleFileOptions::default())
             .expect("symlink native entry");
         writer.write_all(b"../outside").expect("symlink target");
         writer.finish().expect("finish symlink jar");
+        mark_central_directory_symlink(path);
+    }
+
+    fn mark_central_directory_symlink(path: &Path) {
+        let mut bytes = fs::read(path).expect("read native jar for symlink patch");
+        let signature = [0x50_u8, 0x4b, 0x01, 0x02];
+        let position = bytes
+            .windows(signature.len())
+            .position(|window| window == &signature[..])
+            .expect("native zip central directory signature");
+        // Version made by: Unix host (3), ZIP specification version 3.0.
+        bytes[position + 4..position + 6].copy_from_slice(&0x031e_u16.to_le_bytes());
+        // External attributes: Unix symlink mode in the high word and DOS archive bit
+        // in the low word so ZIP readers preserve the Unix mode.
+        let external_attributes = (0o120777_u32 << 16) | 0x20;
+        bytes[position + 38..position + 42]
+            .copy_from_slice(&external_attributes.to_le_bytes());
+        fs::write(path, bytes).expect("write patched symlink jar");
     }
 
     fn patch_zip_uncompressed_size(path: &Path, uncompressed_size: u32) {
@@ -1126,6 +1141,18 @@ mod tests {
         fs::create_dir_all(&destination).expect("natives directory");
         let jar = root.join("symlink.jar");
         write_symlink_native_jar(&jar, "native/link.dll");
+        {
+            let fixture_file = File::open(&jar).expect("open symlink fixture");
+            let mut fixture_archive = ZipArchive::new(fixture_file).expect("symlink fixture archive");
+            let fixture_entry = fixture_archive.by_index(0).expect("symlink fixture entry");
+            assert!(
+                fixture_entry
+                    .unix_mode()
+                    .map(is_zip_symlink_mode)
+                    .unwrap_or(false),
+                "symlink fixture must encode a Unix symlink mode"
+            );
+        }
         let error = extract_native_jar(&native_spec(&jar), &destination)
             .expect_err("symlink must fail closed");
         assert!(error.to_ascii_lowercase().contains("symlink"));
@@ -1285,7 +1312,10 @@ mod tests {
             command: offline_command,
             log_path: "game/logs/latest.log".to_string(),
         };
-        assert!(offline.command.contains("--accessToken 0"));
+        assert_eq!(
+            offline.command,
+            display_command(Path::new("java"), &offline_arguments)
+        );
         assert!(!offline.command.contains("[REDACTED]"));
     }
     #[test]
